@@ -99,7 +99,7 @@ flowchart TB
       direction LR
       MainBranch["main<br/>(code; auto code review;<br/>auto PR job lands here)"]
       QueueBranch["ralph-queue<br/>(.ralph/ folder lives here;<br/>supervisor skills + executor write)"]
-      FeatBranches["ralph/[PBI-ID]<br/>(per-PBI feature branches<br/>off main)"]
+      FeatBranches["per-PBI feature branches<br/>(named ralph/PBI-id, off main)"]
     end
 
     subgraph Q[".ralph/ on ralph-queue branch"]
