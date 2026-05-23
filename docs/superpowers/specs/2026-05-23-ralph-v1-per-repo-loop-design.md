@@ -464,10 +464,14 @@ The local target is [better-memory](https://github.com/emp3thy/better-memory): a
 
 Project scoping is automatic via `git rev-parse --git-common-dir`, so each repo's Ralph automatically gets its own memory bucket.
 
-For v2 on ROSA, the BP-approved memory service must expose:
-- The same MCP tool surface (or near-enough that Ralph's tool-permissions list works without change)
-- Equivalent hook integration (or hooks adapted to the BP service)
-- Local-only data storage (better-memory's local-only property is the design constraint to match)
+**For Ralph v2 on ROSA, the working hypothesis is better-memory itself, with its storage layer ported to use AWS Bedrock AgentCore Memory instead of SQLite.** The MCP surface, the three Claude Code hooks, the synthesis flow, and the project-scoping model all stay the same — Ralph's integration code doesn't change. What changes is where the data lives: SQLite (single user, local) → AgentCore (multi-user, managed, IAM-scoped). The port is feasible because the responsibilities better-memory already factors out (capture / store / retrieve / consolidate) line up with AgentCore's primitives (events / strategies / namespaces).
+
+This collapses the v2 memory story to a single concrete dependency: a better-memory variant whose storage backend is AgentCore. From Ralph's perspective there is no abstraction to design — it's the same better-memory.
+
+What v2 needs to be true:
+- The better-memory codebase has an AgentCore-backed storage variant (in progress at BP).
+- The MCP server registration + hooks installation work the same as locally (per better-memory's existing setup flow).
+- Ralph's `.claude/settings.json` `permissions.allow` list includes the better-memory MCP tools.
 
 ### Memory credit timing (v2)
 
