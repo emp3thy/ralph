@@ -8,7 +8,7 @@
 
 ## Goal
 
-A Python `ralph-executor` process that runs inside a project repository and drives an autonomous coding loop. The executor holds at most one PBI in `.ralph/current/` at a time — single-focus discipline, no context switching. When `current/` is empty, the executor sweeps prior PRs for state changes, then picks the next PBI from `.ralph/inbox/` and spawns `claude -p` against it. Ralph edits code, commits, pushes a branch — the org's existing auto PR job creates the PR. Ralph never waits for CI or human review.
+A Python `ralph-executor` process that runs inside a project repository and drives an autonomous coding loop. The executor holds at most one PBI in `.ralph/current/` at a time — single-focus discipline, no context switching. When `current/` is empty, the executor sweeps prior PRs for state changes, then picks the next PBI from `.ralph/inbox/` and spawns `claude -p` against it. Ralph edits code on a feature branch, pushes, and creates the PR via the `ado-pr` skill. The org's existing auto PR job then runs against the new PR (assigning reviewers, kicking off auto code review, etc.). Ralph never waits for CI or human review.
 
 **Humans (BAs, PMs, triagers) submit work via a small family of Claude Code skills** — not a web app. The skills push PBIs to a dedicated `ralph-queue` branch in the project repo. Symmetry: Ralph runs unattended in Claude Code via the standing PROMPT.md; humans interact attended via Claude Code skills. One mechanism, two uses.
 
@@ -26,12 +26,14 @@ v1 runs both locally (developer laptop) and on a ROSA deployment (long-running p
 ## Constraints
 
 - **Runtime targets**: developer laptop (Windows/Mac/Linux) AND ROSA pod (Linux container). Same binary, different config. The ROSA deployment may be a **long-running pod** OR an ephemeral **Coder workspaces task pod** invoked per-PBI; both are viable and the executor's logical structure is identical either way (see open questions).
-- **PR target**: PRs go to Azure DevOps. The existing **auto PR job** in the org's pipelines already creates PRs from pushed branches; Ralph leverages this rather than creating PRs directly.
-- **ADO interactions** (read threads, reply to comments, set thread status): via a small **`ado-pr` Claude Code skill** containing Python scripts that call the ADO REST API. Documented endpoints + PAT-based auth. No additional MCP server needed.
+- **PR target**: PRs go to Azure DevOps. Ralph creates the PR itself (via the `ado-pr` skill, see below) after pushing the feature branch. The org's existing **auto PR job** then runs against the new PR (assigning reviewers, applying labels, kicking off auto code review, etc.) — that part "just works" because the auto PR job is triggered by PR creation, not by branch push.
+- **ADO interactions** (create PR, read threads, reply to comments, set thread status, show PR state): via a small **`ado-pr` Claude Code skill** containing Python scripts that call the ADO REST API. Documented endpoints + PAT-based auth. No additional MCP server needed.
 - **Memory backend**: **not in v1.** Memory integration via [better-memory](https://github.com/emp3thy/better-memory) (or its BP-approved equivalent) is deferred to v2. See the [Memory section](#memory-integration-deferred-to-v2) for the v2 picture and rationale.
 - **Authentication**: API key (Anthropic) for Claude — embedded as a ROSA pod secret; local dev uses env var. PAT (ADO) — embedded as a pod secret; local uses env var. No OAuth-based auth in any environment (would break unattended operation).
 - **Queue storage**: `.ralph/` directory inside the project repo, git-tracked. Chosen so a failed pod run reproduces locally by cloning the repo at the failing commit. Cost is queue churn in git log (mitigated by distinctive commit author / message prefix; possibly a separate `ralph-queue` branch — see open questions).
-- **Git refresh**: Ralph pulls latest `main` before picking up a new PBI, so its view of the codebase is current. Avoids stale-base-branch problems on long-running pods.
+- **Git refresh**: precise timing matters.
+  - **`git pull ralph-queue` — every iteration.** Queue state can change between iterations (new CANCEL files, new feedback comments, new PBIs landed in inbox). Pull is cheap; do it every loop turn.
+  - **`git pull main` — only when starting a new PBI** (current was empty, just claimed from inbox). NOT between iterations on the same PBI — pulling main mid-feature risks conflicts with the in-flight feature branch.
 
 ## Submission surface — skills, not a service
 
@@ -127,14 +129,15 @@ flowchart TB
   Loop --> Claude
   Claude --> AdoSkill
   Claude ==>|"commits on feature branch"| FeatBranches
-  FeatBranches ==>|"git push"| AutoPR(["existing auto PR job<br/>(org pipelines)"])
-  AutoPR ==>|"creates"| PR(["PR to main (ADO)"])
+  FeatBranches ==>|"git push"| RemoteFeat["remote feature branch"]
+  AdoSkill ==>|"creates PR via REST"| PR(["PR to main (ADO)"])
+  PR --> AutoPR(["existing auto PR job<br/>runs on PR creation"])
 
   PR --> AutoReview{"auto code review<br/>(existing build)"}
   PR --> HumanReview{"human reviewer"}
   AutoReview -. "leaves comments" .-> PR
   HumanReview -. "leaves comments" .-> PR
-  PR -. "approved + policy pass" .-> Merge(["auto-complete (ADO)<br/>→ merges into main"])
+  PR -. "approved + policy pass" .-> Merge(["auto-complete (ADO)<br/>merges into main"])
   Merge -.-> MainBranch
   Sweep -.->|"observes async via ado-pr"| PR
 
@@ -152,7 +155,7 @@ flowchart TB
   class Sweep,Loop,Safety comp
   class Claude claude
   class BA,HumanReview human
-  class PR,AutoPR,AutoReview,Merge,ADO_MCP ext
+  class PR,AutoPR,AutoReview,Merge,ADO_MCP,RemoteFeat ext
   class AdoSkill,BASkills skill
   class MainBranch,QueueBranch,FeatBranches branch
 ```
@@ -178,7 +181,7 @@ flowchart LR
     P2["edits files on ralph/X"]
     P3["git commit on ralph/X"]
     P4{"PBI complete?"}
-    P5["git push ralph/X<br/>(auto PR job creates PR)"]
+    P5["git push ralph/X<br/>then create PR via ado-pr skill"]
     P6["mv current/X to pending-pr/X<br/>git commit + push ralph-queue"]
     P7["exit; PBI stays in current/<br/>next iteration continues"]
     P1 --> P2 --> P3 --> P4
@@ -195,9 +198,9 @@ flowchart LR
 ```
 
 Three branches touched:
-- `ralph-queue` — queue state only. Pulled at boundary, mutated when PBI moves between folders.
-- `main` — code base. Pulled at boundary as the starting point for feature branches.
-- `ralph/[PBI-ID]` — per-PBI feature branch off main. Where actual code work happens. Pushed → auto PR job creates PR.
+- `ralph-queue` — queue state only. Pulled **every iteration** (cheap; queue can change). Mutated when PBI moves between folders.
+- `main` — code base. Pulled **only when starting a fresh PBI** (not between iterations on the same PBI — would risk conflicts with the in-flight feature branch).
+- `ralph/[PBI-ID]` — per-PBI feature branch off main. Where actual code work happens. Pushed when the PBI is done; Ralph then creates the PR via the `ado-pr` skill.
 
 ### Components
 
@@ -208,10 +211,10 @@ Three branches touched:
   - **queue-source**: reads `.ralph/` from the `ralph-queue` branch in v1; in v2 will read from a supervisor API if added. Abstracted so the loop doesn't care.
   - **loop driver**: at PBI boundaries (current empty), pulls latest `ralph-queue` and `main`; spawns `claude -p` against the PBI in `current/`; handles the outcome (commits queue mutations to `ralph-queue`, code work on a `ralph/<PBI-ID>` feature branch off `main`).
   - **safety controls**: STUCK.md handling, attempt counter, cycle detection, global halt.
-- **`claude -p`** — Claude session spawned on the PBI in `current/`. Reads PROMPT.md (standing instructions at repo root) + PBI directory contents. Edits code on the feature branch, commits, pushes (the existing auto PR job creates the PR). Exits. Multi-step PBIs may take multiple iterations on the same PBI — the PBI stays in `current/` until done or stuck.
-- **`ado-pr` skill** — Claude Code skill containing Python scripts that wrap the ADO REST API (read threads, post replies, set thread status, show PR state). PAT-based auth. Used by Ralph (unattended) during PR-feedback work items.
+- **`claude -p`** — Claude session spawned on the PBI in `current/`. Reads PROMPT.md (standing instructions at repo root) + PBI directory contents. Edits code on the feature branch, commits, pushes. When the PBI is done, calls the `ado-pr` skill to create the PR. Exits. Multi-step PBIs may take multiple iterations on the same PBI — the PBI stays in `current/` until done or stuck.
+- **`ado-pr` skill** — Claude Code skill containing Python scripts that wrap the ADO REST API. Operations: `create-pr` (after Ralph pushes a feature branch), `read-threads`, `reply`, `set-status`, `show`. PAT-based auth. Used by Ralph (unattended) — both to open the initial PR and during PR-feedback work items.
 - **Supervisor skills family** — Claude Code skills used by BAs / PMs / triagers (attended). `ralph-add` (submit), `ralph-status` (read), `ralph-cancel`, `ralph-promote`, `ralph-triage`. All operate by committing to the `ralph-queue` branch. See [Submission surface](#submission-surface--skills-not-a-service).
-- **Existing auto PR job** — pre-existing pipeline automation that creates a PR when a feature branch is pushed. Ralph relies on this rather than creating PRs directly. The exact trigger mechanism is TBD during implementation.
+- **Existing auto PR job** — pre-existing pipeline automation that runs **when a PR is created**: assigning reviewers, applying labels, kicking off the auto code review build, etc. Ralph doesn't trigger it directly — it's triggered by PR creation. "Just works" once Ralph creates the PR via the `ado-pr` skill.
 - **Auto code review build** — pre-existing automated code review that runs against PRs and leaves comments. v1 leverages this as the primary mechanical safety mechanism (see Safety controls below). It's NOT something v1 builds.
 - **Memory backend** — **not in v1.** Deferred to v2; see Memory section.
 
@@ -251,7 +254,7 @@ attempts: 0         # executor-managed
 ---
 ```
 
-**Processing**: Ralph reads PROMPT.md → HISTORY.md → PBI.md → PLAN.md, does the next unchecked step in PLAN.md, marks it done, commits. If all steps are now complete, Ralph pushes the branch (the auto PR job creates the PR). Otherwise Ralph just commits locally and exits — the PBI stays in `current/` and the next iteration continues with the following step. Multi-step features take multiple iterations.
+**Processing**: Ralph reads PROMPT.md → HISTORY.md → PBI.md → PLAN.md, does the next unchecked step in PLAN.md, marks it done, commits. If all steps are now complete, Ralph pushes the branch and creates the PR via the `ado-pr` skill. Otherwise Ralph just commits locally and exits — the PBI stays in `current/` and the next iteration continues with the following step. Multi-step features take multiple iterations.
 
 ### Bug PBI
 
@@ -259,10 +262,11 @@ attempts: 0         # executor-managed
 .ralph/inbox/BUG-xxx/
 ├── BUG.md          ← failure context, signature, error excerpts
 ├── REPRODUCE.md    ← commands that demonstrate the failure locally
-├── INVESTIGATE.md  ← debugging playbook for this CLASS of bug
 ├── HISTORY.md
 ├── STUCK.md / CANCEL
 ```
+
+> Note: `INVESTIGATE.md` is **not** inside the PBI directory. It's a per-service guide that lives at `docs/INVESTIGATE.md` in the repo root (or wherever the team conventions place it). Ralph reads it from there. See [INVESTIGATE.md — service-level debugging guide](#investigatemd--service-level-debugging-guide) below.
 
 **Frontmatter on BUG.md:**
 
@@ -276,9 +280,39 @@ attempts: 0
 ---
 ```
 
-**Processing**: Ralph reads PROMPT.md → HISTORY.md → BUG.md → REPRODUCE.md → INVESTIGATE.md. Confirms it can reproduce the failure. Forms a hypothesis from INVESTIGATE.md. Applies a fix. Re-runs REPRODUCE.md commands. If they pass, pushes the branch (auto PR job creates the PR). If not, appends HISTORY.md and exits — the PBI stays in `current/` and the next iteration tries a different angle.
+**Processing**: Ralph reads PROMPT.md → HISTORY.md → BUG.md → REPRODUCE.md → the service's `INVESTIGATE.md` (in the repo, not in the PBI dir) → in v2, queries memory for similar past failures in this service. Confirms it can reproduce the failure. Forms a hypothesis. Applies a fix. Re-runs REPRODUCE.md commands. If they pass, pushes the branch and calls the `ado-pr` skill to create the PR. If not, appends HISTORY.md and exits — the PBI stays in `current/` and the next iteration tries a different angle.
 
-INVESTIGATE.md is per **category** of bug (e.g. `deploy-fail-rosa-irsa`, `build-fail-go-compile`, `test-flake-network`), not per-bug. The human triager attaches the appropriate one from a library (the **INVESTIGATE.md library**, maintained in a shared location — see open questions).
+### INVESTIGATE.md — service-level debugging guide
+
+A single `INVESTIGATE.md` per service repo (typically at `docs/INVESTIGATE.md`), written and maintained by the service's engineers. It's the manual a senior engineer would hand a junior who's debugging this service for the first time.
+
+**Contents — what every service's INVESTIGATE.md should cover:**
+
+- **Service overview** (1–2 paragraphs): what it does, why it exists, where it sits in the system
+- **Key classes / modules** and their responsibilities — a pointer map into the codebase
+- **How to run locally** — minimum viable setup to reproduce real behaviour
+- **How to read its logs** — log format, key signal patterns, where to look first
+- **Configuration locations** — where env vars, secrets, manifests live
+- **External dependencies** — what services / APIs / databases it talks to, and how to spot when those are the actual failure
+- **Common gotchas** — non-obvious things that bite first-timers
+- **Tests** — where they live, how to run them, what's covered vs uncovered
+
+**What INVESTIGATE.md is NOT:**
+
+- Not per-bug-category. There's no library of bug-class playbooks. The dynamic, accumulated knowledge of "what worked / didn't on similar past bugs" lives in **memory** (v2), not in INVESTIGATE.md.
+- Not regenerated by Ralph. Humans own it. Ralph reads it; Ralph never modifies it.
+- Not a runbook. Operational runbooks are separate concerns.
+
+**The bug-processing read becomes a clean three-layer (four in v2):**
+
+```
+1. BUG.md           ← what's broken right now (per-incident, dynamic)
+2. REPRODUCE.md     ← how to demonstrate it (per-incident, dynamic)
+3. INVESTIGATE.md   ← how this service works, where to look (per-service, static)
+4. memory.retrieve  ← what worked / didn't on similar past bugs here (per-service, learned — v2)
+```
+
+Static service manual + (v2) dynamic lessons. Both essential, both per-service. INVESTIGATE.md tells Ralph where to look; memory tells Ralph what's been tried.
 
 ### PR-feedback PBI
 
@@ -318,21 +352,22 @@ flowchart TB
   Start(["Iteration N starts"])
   CheckCur{"current/<br/>has a PBI?"}
 
-  WorkCur["Spawn claude -p on current PBI<br/>(Ralph reads PROMPT.md + PBI files,<br/>does next step, commits, pushes,<br/>exits)"]
+  WorkCur["Spawn claude -p on current PBI<br/>(Ralph reads PROMPT.md + PBI files,<br/>does next step, commits, pushes,<br/>creates PR via ado-pr when done,<br/>exits)"]
   Outcome{"What did Ralph do?"}
-  StayCur["Partial progress<br/>(no PR yet) →<br/>PBI stays in current/<br/>next iteration continues on it"]
-  ToPend["Branch pushed →<br/>auto PR job creates PR →<br/>mv current/ → pending-pr/"]
-  ToBlock["STUCK.md written →<br/>mv current/ → blocked/"]
+  StayCur["Partial progress<br/>(no PR yet) -<br/>PBI stays in current/<br/>next iteration continues on it"]
+  ToPend["PR created via ado-pr -<br/>mv current/ to pending-pr/"]
+  ToBlock["STUCK.md written -<br/>mv current/ to blocked/"]
   Cycle["Cycle detector check"]
   Halt{"Cycle tripped?"}
 
-  GitPull["git pull main<br/>(refresh codebase view)"]
+  PullQ["git pull ralph-queue<br/>(every iteration)"]
+  GitPullMain["git pull main<br/>(only on fresh PBI claim)"]
   Sweep["Sweep pending-pr/ for each PBI:<br/>• PR merged? → done/<br/>• PR abandoned? → blocked/<br/>• PR has new active comments? → create PR-feedback work item in inbox/<br/>• PR CI failed? → inbox/ (retry) or blocked/ (max attempts)"]
   Pick["Pick next PBI from inbox/<br/>(priority lanes) → mv to current/"]
   Empty{"Inbox empty?"}
   Sleep["Sleep briefly, iterate"]
 
-  Start --> CheckCur
+  Start --> PullQ --> CheckCur
   CheckCur -. yes .-> WorkCur --> Outcome
   Outcome -. partial .-> StayCur
   Outcome -. PR pushed .-> ToPend
@@ -344,9 +379,9 @@ flowchart TB
   Halt -. yes .-> META["write META-BUG,<br/>halt loop, wait for human ack"]
   Halt -. no .-> NextIter
 
-  CheckCur -. no .-> GitPull --> Sweep --> Pick --> Empty
+  CheckCur -. no .-> Sweep --> Pick --> Empty
   Empty -. yes .-> Sleep --> NextIter
-  Empty -. no .-> NextIter
+  Empty -. no, PBI claimed .-> GitPullMain --> NextIter
 ```
 
 ### End-to-end happy path
@@ -378,8 +413,8 @@ sequenceDiagram
 
     Claude->>Claude: read PROMPT.md + PBI<br/>edit code, commit on feat branch
     Claude->>Feat: git push
-    Feat->>AutoPR: branch pushed
-    AutoPR->>Main: PR opened
+    Claude->>AutoPR: create PR via ado-pr skill
+    AutoPR->>Main: PR opened (auto PR job runs)
     Claude-->>Exec: exit + PR URL
 
     Exec->>Queue: mv current/WI-1234 to pending-pr/WI-1234<br/>commit, push
@@ -403,11 +438,12 @@ sequenceDiagram
 
 ### Iteration rules
 
-1. **Always check `current/` first.** If it has a PBI, that's the next thing to work on.
-2. **`git pull main` only when current is empty.** Don't pull mid-PBI — that risks pulling in changes that conflict with Ralph's in-flight branch. Pull at the boundary, between PBIs.
-3. **Sweep only when current is empty.** Don't context-switch mid-PBI to respond to PR comments from earlier PRs. The PRs are async; their state will be picked up at the next boundary.
-4. **Multi-step PBIs**: Ralph may need multiple iterations to complete a feature with several PLAN.md steps. Each iteration does the next unchecked step and commits. The PBI stays in `current/` across these iterations. The PR (and the move to `pending-pr/`) only happens when Ralph pushes the branch — typically when all PLAN.md steps are complete.
-5. **Exception — cycle detection halt.** Even when busy with current, if cycle signals trip (across recently-completed PBIs), the loop halts pending human ack. The current PBI stays where it is.
+1. **`git pull ralph-queue` first, every iteration.** Cheap; queue state can have changed (new CANCEL, new feedback, new PBIs in inbox).
+2. **Always check `current/` next.** If it has a PBI, that's the next thing to work on.
+3. **`git pull main` only when claiming a fresh PBI from inbox** (not between iterations on the same PBI — would risk conflicts with the in-flight feature branch).
+4. **Sweep only when current is empty.** Don't context-switch mid-PBI to respond to PR comments from earlier PRs. The PRs are async; their state will be picked up at the next boundary.
+5. **Multi-step PBIs**: Ralph may need multiple iterations to complete a feature with several PLAN.md steps. Each iteration does the next unchecked step and commits. The PBI stays in `current/` across these iterations. The PR (and the move to `pending-pr/`) only happens when Ralph creates the PR via `ado-pr` — typically when all PLAN.md steps are complete.
+6. **Exception — cycle detection halt.** Even when busy with current, if cycle signals trip (across recently-completed PBIs), the loop halts pending human ack. The current PBI stays where it is.
 
 ### Sweep logic per pending PR
 
@@ -438,7 +474,7 @@ The lane decision is part of the queue-source abstraction — in v1 it's a sort 
 
 | Operation | ADO mechanism |
 |---|---|
-| Open PR | NOT done by Ralph — the existing auto PR job creates it when Ralph pushes the branch. |
+| Open PR | `POST /pullRequests` — Ralph calls this via the `ado-pr` skill after pushing the feature branch. The existing auto PR job then runs against the new PR. |
 | Read threads/comments | `GET /pullRequests/{id}/threads` |
 | Reply to thread | `POST /pullRequests/{id}/threads/{tid}/comments` |
 | Set thread status | `PATCH /pullRequests/{id}/threads/{tid}` (status: `fixed`, `closed`, etc.) |
@@ -449,6 +485,7 @@ Ralph invokes these via the **`ado-pr` Claude Code skill**: a small skill contai
 
 Operations the skill exposes (one Python entry-point per operation):
 
+- `ado-pr create-pr <branch> <title> [--body <text>]` — create a PR from the pushed feature branch targeting `main`. Returns the PR ID. Called by Ralph after pushing.
 - `ado-pr read-threads <pr-id>` — JSON list of threads + comments + status
 - `ado-pr reply <pr-id> <thread-id> <text>` — post a reply to a thread
 - `ado-pr set-status <pr-id> <thread-id> <status>` — set thread status (`fixed`, `closed`, etc.)
@@ -608,6 +645,25 @@ On cycle trip:
 
 **v1 does not include memory integration.** Ralph reads PROMPT.md + the PBI directory + HISTORY.md each iteration; the latter provides short-term per-PBI memory across attempts. Cross-PBI learning (Ralph getting better at a codebase over time) is a v2 capability.
 
+### Memory's asymmetric value: bugs >> features
+
+When memory comes in v2, prioritize the bug path. Memory's value is much higher for bug PBIs than for feature PBIs:
+
+| | Feature work | Bug work |
+|---|---|---|
+| External structure guiding Ralph | PLAN.md tells it the steps | Nothing — just a failure to investigate |
+| Repeat rate at the same service | Low (each feature is novel) | High (same null-pointer in the same handler; same race in the same loop) |
+| Reusable fix patterns | "How we built /healthz" doesn't transfer | "Bumped max_idle to fix pool exhaustion" transfers exactly |
+| Negative-knowledge value ("don't do X again") | Low — you mostly follow the plan | High — past dead-ends save real iterations |
+
+Implication: when memory lands in v2, the rollout focuses on bug PBIs first. Heavy retrieval before bug PBIs; light retrieval before feature PBIs. Heavy observation on bug closure (root cause, fix pattern, what didn't work); light observation on feature closure. The "memory is materially helping" success criterion is much easier to demonstrate on bugs.
+
+Memory and INVESTIGATE.md are complementary:
+- **INVESTIGATE.md** = static service manual (how the service works, where to look)
+- **Memory** = dynamic learned lessons (what's been tried, what worked, what didn't, for similar failures in this service)
+
+INVESTIGATE.md tells Ralph *where to look*; memory tells Ralph *what's been tried*.
+
 ### Why deferred
 
 - v1 already has enough novel parts (executor, folder conventions, ADO skill, single-PBI focus discipline, PR-feedback workflow). Adding memory integration on top risks the spec being too large to land in a sensible first cut.
@@ -696,8 +752,6 @@ Pre-deploy gate: `ralph-doctor` must pass in the target environment's container 
 
 - **Long-running pod vs Coder workspaces task pod for ROSA deployment.** A long-running pod runs the executor as a daemon, iterating continuously. A task-pod model dispatches one pod per PBI (pod starts, runs Ralph on the assigned PBI, exits). Both are viable; the executor's logic is the same. Task pods are cleaner for resource lifecycle (no idle compute) but require a scheduler component. Decide based on what the team's ROSA + Coder usage favours.
 - **Auto PR job integration.** The org has an existing auto PR job that creates PRs from pushed branches. The exact trigger mechanism (push to `ralph/*`? a specific commit message? a tag?) is TBD during implementation. Whatever it is, Ralph adheres to it.
-- **ADO branch policy for `ralph-queue`.** The `ralph-queue` branch needs a "no PRs to main" policy and write access scoped to the supervisor service principal + executor identity. Confirm with whoever owns branch policies during implementation. (The branch-vs-main question is resolved in favour of `ralph-queue`; only the policy specifics remain.)
-- **INVESTIGATE.md library location.** A shared library of debugging playbooks (per category of bug) needs to live somewhere accessible to all repos. Options: a separate `ralph-playbooks` repo, a section of the supervisor, or files in each repo. Likely the playbooks repo is the right answer once v2 lands; for v1, ship a small set in this repo (`docs/playbooks/`) and reference them from PBIs.
 - **`ralph-doctor` skill location.** Skills live in `~/.claude/skills/`. The skill should be installable from this repo. Document the install path during implementation.
 - **Sweep cadence on long-running pods.** If the pod is constantly busy with iterations, sweep runs naturally at PBI boundaries. If iterations are sparse, sweep should also run on a timer (e.g. every 5 minutes) so PR state doesn't lag. Decide based on observed behaviour.
 - **`git pull main` strategy on long-running pods.** Pulling at PBI boundaries is the rule, but if `main` has moved significantly while a multi-step PBI is in progress, the in-flight branch may need to rebase before the next step. Rebase-on-pull at PBI boundary is the likely answer; verify during implementation.
@@ -708,7 +762,7 @@ Pre-deploy gate: `ralph-doctor` must pass in the target environment's container 
 2. **`ralph-queue` branch setup** — pick a test repo, create the branch, configure ADO branch policy (no PRs to main, write scope). Establish that the supervisor service principal + executor identity can push.
 3. **`ralph-add` skill** — the first supervisor skill. Takes an ADO work item ID, uses the ADO MCP to fetch body/attachments, writes a PBI directory to `ralph-queue`, commits and pushes. Iterate on the skill with real BA-style work items.
 4. **`ralph-status` skill** — read-only view. Renders queue state from `ralph-queue`. Useful for validating the data shape from `ralph-add`.
-5. **`ado-pr` skill** — Python scripts wrapping the four operations (read-threads, reply, set-status, show). PAT auth. Test locally against a sandbox ADO repo.
+5. **`ado-pr` skill** — Python scripts wrapping the five operations (create-pr, read-threads, reply, set-status, show). PAT auth. Test locally against a sandbox ADO repo.
 6. **PROMPT.md** — write the standing prompt that Ralph uses every iteration. Iterate by spawning `claude -p` against the sample PBIs locally.
 7. **Executor core** — loop driver, queue-source (reads `ralph-queue` branch), spawning `claude -p`, moving folders, branch-juggling (`ralph-queue` for queue state, `main` + feature branches for code). Implement the `current/`-folder discipline. Include `git pull` of both branches at PBI boundaries. Skip safety controls for now.
 8. **Sweep logic** — observe PR state changes (via `ado-pr show`), generate PR-feedback work items from new comments, move PBIs appropriately. Mock ADO for testing.
