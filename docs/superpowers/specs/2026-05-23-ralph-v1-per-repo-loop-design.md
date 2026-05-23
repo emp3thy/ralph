@@ -45,6 +45,33 @@ Humans submit and manage Ralph's work via a small family of Claude Code skills, 
 | `ralph-promote` | BA / PM | Bumps a PBI's `severity` frontmatter field. For when "normal" became "urgent." Edits the PBI's frontmatter on `ralph-queue` and pushes. |
 | `ralph-triage` | Tech lead / on-call | Walks the `blocked/` queue: reads each PBI's STUCK.md or block reason, decides whether to return it to `inbox/` with notes added, or close it out. Same edit-and-push pattern. |
 
+### BA submission workflow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor BA as BA / PM
+    participant CC as Claude Code
+    participant ADO as ADO MCP
+    participant Skill as ralph-add skill
+    participant Git as ralph-queue branch
+    participant Exec as ralph-executor
+
+    BA->>CC: /ralph-add WI-1234 --repo service-auth
+    CC->>Skill: invoke ralph-add
+    Skill->>ADO: fetch work item WI-1234
+    ADO-->>Skill: title, body, acceptance, attachments
+    Skill->>Skill: build PBI.md + frontmatter + attached files
+    Skill->>Git: git clone (or pull) ralph-queue
+    Skill->>Git: write .ralph/inbox/WI-1234/, commit, push
+    Skill-->>CC: success + queue position
+    CC-->>BA: Submitted; WI-1234 is in inbox (position 3)
+
+    Note over Exec: independently, next time current/ is empty
+    Exec->>Git: pull ralph-queue
+    Exec->>Exec: sees new PBI, picks it up by priority lane
+```
+
 **Why this works:**
 
 - **One mechanism, two uses.** Ralph runs unattended in Claude Code via the standing PROMPT.md. Humans interact attended via these skills. The substrate is the same — Claude Code consuming and mutating the `ralph-queue` branch.
@@ -70,7 +97,7 @@ flowchart TB
       direction LR
       MainBranch["main<br/>(code; auto code review;<br/>auto PR job lands here)"]
       QueueBranch["ralph-queue<br/>(.ralph/ folder lives here;<br/>supervisor skills + executor write)"]
-      FeatBranches["ralph/&lt;PBI-ID&gt;<br/>(per-PBI feature branches<br/>off main)"]
+      FeatBranches["ralph/[PBI-ID]<br/>(per-PBI feature branches<br/>off main)"]
     end
 
     subgraph Q[".ralph/ on ralph-queue branch"]
@@ -129,6 +156,48 @@ flowchart TB
   class AdoSkill,BASkills skill
   class MainBranch,QueueBranch,FeatBranches branch
 ```
+
+### Branch dance
+
+```mermaid
+flowchart LR
+  subgraph Boundary["At PBI boundary (current empty)"]
+    direction TB
+    B1["git fetch"]
+    B2["git checkout ralph-queue<br/>git pull"]
+    B3["sweep pending-pr/ via ado-pr skill"]
+    B4["mv inbox/X to current/X<br/>git commit + push ralph-queue"]
+    B5["git checkout main<br/>git pull"]
+    B6["git checkout -b ralph/X"]
+    B1 --> B2 --> B3 --> B4 --> B5 --> B6
+  end
+
+  subgraph PBIWork["During PBI work (current occupied)"]
+    direction TB
+    P1["claude -p spawned"]
+    P2["edits files on ralph/X"]
+    P3["git commit on ralph/X"]
+    P4{"PBI complete?"}
+    P5["git push ralph/X<br/>(auto PR job creates PR)"]
+    P6["mv current/X to pending-pr/X<br/>git commit + push ralph-queue"]
+    P7["exit; PBI stays in current/<br/>next iteration continues"]
+    P1 --> P2 --> P3 --> P4
+    P4 -. yes .-> P5 --> P6
+    P4 -. no .-> P7
+  end
+
+  B6 ==> P1
+
+  classDef boundary fill:#fff7e6,stroke:#d48806,color:#333
+  classDef work fill:#e6fffb,stroke:#13c2c2,color:#333
+  class B1,B2,B3,B4,B5,B6 boundary
+  class P1,P2,P3,P5,P6,P7 work
+```
+
+Three branches touched:
+- `ralph-queue` — queue state only. Pulled at boundary, mutated when PBI moves between folders.
+- `main` — code base. Pulled at boundary as the starting point for feature branches.
+- `ralph/[PBI-ID]` — per-PBI feature branch off main. Where actual code work happens. Pushed → auto PR job creates PR.
 
 ### Components
 
@@ -278,6 +347,58 @@ flowchart TB
   CheckCur -. no .-> GitPull --> Sweep --> Pick --> Empty
   Empty -. yes .-> Sleep --> NextIter
   Empty -. no .-> NextIter
+```
+
+### End-to-end happy path
+
+Single picture from BA submission through PR merge, ties the supervisor skills, executor loop, branch dance, and PR feedback workflow together.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor BA as BA / PM
+    participant Skill as ralph-add skill
+    participant Queue as ralph-queue branch
+    participant Exec as ralph-executor
+    participant Claude as claude -p
+    participant Feat as ralph/[PBI-ID] branch
+    participant AutoPR as Auto PR job
+    participant Review as Auto code review<br/>+ human reviewer
+    participant Main as main branch
+
+    BA->>Skill: /ralph-add WI-1234
+    Skill->>Queue: write inbox/WI-1234/, commit, push
+
+    Note over Exec: next PBI boundary
+    Exec->>Queue: pull
+    Exec->>Queue: mv inbox/WI-1234 to current/WI-1234<br/>commit, push
+    Exec->>Main: pull
+    Exec->>Feat: checkout -b ralph/WI-1234
+    Exec->>Claude: spawn
+
+    Claude->>Claude: read PROMPT.md + PBI<br/>edit code, commit on feat branch
+    Claude->>Feat: git push
+    Feat->>AutoPR: branch pushed
+    AutoPR->>Main: PR opened
+    Claude-->>Exec: exit + PR URL
+
+    Exec->>Queue: mv current/WI-1234 to pending-pr/WI-1234<br/>commit, push
+
+    Note over Main,Review: PR runs CI, auto code review, human review
+    Review->>Main: leaves comments (if any)
+
+    alt Comments raised
+        Note over Exec: next boundary, sweep sees new comments
+        Exec->>Queue: write inbox/PR-feedback-WI-1234-r1/<br/>(routed back to Ralph)
+        Note over Exec: subsequent iteration addresses feedback,<br/>pushes more commits, comments resolved
+    end
+
+    Main->>Main: auto-complete on policy pass<br/>(merge into main)
+
+    Note over Exec: next boundary, sweep sees merge
+    Exec->>Queue: mv pending-pr/WI-1234 to done/WI-1234<br/>commit, push
+
+    Note over BA: ralph-status now shows WI-1234 as done
 ```
 
 ### Iteration rules
