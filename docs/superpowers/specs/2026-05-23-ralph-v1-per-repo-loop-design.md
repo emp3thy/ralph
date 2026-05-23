@@ -52,7 +52,7 @@ Humans submit and manage Ralph's work via a small family of Claude Code skills, 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor BA as BA / PM
+    actor BA as "BA or PM"
     participant CC as Claude Code
     participant ADO as ADO MCP
     participant Skill as ralph-add skill
@@ -391,14 +391,14 @@ Single picture from BA submission through PR merge, ties the supervisor skills, 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor BA as BA / PM
+    actor BA as "BA or PM"
     participant Skill as ralph-add skill
     participant Queue as ralph-queue branch
     participant Exec as ralph-executor
     participant Claude as claude -p
-    participant Feat as ralph/[PBI-ID] branch
+    participant Feat as "feature branch"
     participant AutoPR as Auto PR job
-    participant Review as Auto code review<br/>+ human reviewer
+    participant Review as "Reviewers (auto + human)"
     participant Main as main branch
 
     BA->>Skill: /ralph-add WI-1234
