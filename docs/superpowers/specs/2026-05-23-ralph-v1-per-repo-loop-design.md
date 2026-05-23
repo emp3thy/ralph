@@ -10,14 +10,16 @@
 
 A Python `ralph-executor` process that runs inside a project repository and drives an autonomous coding loop. The executor holds at most one PBI in `.ralph/current/` at a time — single-focus discipline, no context switching. When `current/` is empty, the executor sweeps prior PRs for state changes, then picks the next PBI from `.ralph/inbox/` and spawns `claude -p` against it. Ralph edits code, commits, pushes a branch — the org's existing auto PR job creates the PR. Ralph never waits for CI or human review.
 
-v1 runs both locally (developer laptop) and on a ROSA deployment (long-running pod or Coder workspaces task pod) from a single binary, with environment-specific config differences only. Humans write PBIs directly into `.ralph/inbox/`; the supervisor, watchers, and memory integration are out of scope until v2.
+**Humans (BAs, PMs, triagers) submit work via a small family of Claude Code skills** — not a web app. The skills push PBIs to a dedicated `ralph-queue` branch in the project repo. Symmetry: Ralph runs unattended in Claude Code via the standing PROMPT.md; humans interact attended via Claude Code skills. One mechanism, two uses.
+
+v1 runs both locally (developer laptop) and on a ROSA deployment (long-running pod or Coder workspaces task pod) from a single binary, with environment-specific config differences only. Out of scope for v1: watchers (automated signal ingestion), memory integration, and a web-based supervisor UI (for users who don't have Claude Code).
 
 ## Non-goals
 
-- **No supervisor service.** Humans write PBI directories by hand into `.ralph/inbox/`. The supervisor (with UI, MCP for Claude Code, signal ingestion) is v2.
-- **No automated watchers.** Build / deploy / test / runtime watchers come in v2 alongside the supervisor.
+- **No web-based supervisor UI.** Submission is via Claude Code skills (see [Submission surface](#submission-surface--skills-not-a-service) below). A web UI for users without Claude Code is a v2/v3 fallback if needed.
+- **No automated watchers.** Build / deploy / test / runtime watchers come in v2.
 - **No multi-Ralph per repo.** One executor per repo in v1. Multi-Ralph is v4+ if throughput demands it.
-- **No automated triage Ralph.** All work entering Ralph's inbox is human-curated.
+- **No automated triage Ralph.** All work entering Ralph's inbox is human-routed (a BA / PM / triager decides what enters via the `ralph-add` skill).
 - **No reflection synthesis by Ralph.** Ralph reads memory and writes episodic observations; reflection synthesis is out-of-band (e.g. the existing better-memory synthesis flow).
 - **No cross-repo coordination.** Each Ralph is scoped to one repository.
 
@@ -31,16 +33,47 @@ v1 runs both locally (developer laptop) and on a ROSA deployment (long-running p
 - **Queue storage**: `.ralph/` directory inside the project repo, git-tracked. Chosen so a failed pod run reproduces locally by cloning the repo at the failing commit. Cost is queue churn in git log (mitigated by distinctive commit author / message prefix; possibly a separate `ralph-queue` branch — see open questions).
 - **Git refresh**: Ralph pulls latest `main` before picking up a new PBI, so its view of the codebase is current. Avoids stale-base-branch problems on long-running pods.
 
+## Submission surface — skills, not a service
+
+Humans submit and manage Ralph's work via a small family of Claude Code skills, invoked from Claude Code or VS Code with the Claude Code extension. There is no separate web app, no separate backend service. The skills write to the `ralph-queue` branch directly using git.
+
+| Skill | Primary user | What it does |
+|---|---|---|
+| `ralph-add` | BA / PM | Takes an ADO work item ID (or URL). Uses the existing ADO MCP to fetch title, body, acceptance criteria, attached documents and images. Packages into a PBI directory (PBI.md + attachments). Commits to `ralph-queue` branch on the chosen target repo. Optional `--expand-children` to expand a parent work item into N child PBIs linked by `parent_id`. |
+| `ralph-status` | BA / PM / triager | Read-only view: renders the queue (inbox / current / pending-pr / done / blocked) for the repos the user has configured. Sources from `git log ralph-queue` + the folder state. Output is terminal-friendly; a VS Code panel variant is a v2 nicety. |
+| `ralph-cancel` | BA / PM | Drops a CANCEL sentinel file into the current PBI directory (the only allowed mutation on `current/`). Commits to `ralph-queue`. Ralph notices the file on its next iteration and aborts that PBI. |
+| `ralph-promote` | BA / PM | Bumps a PBI's `severity` frontmatter field. For when "normal" became "urgent." Edits the PBI's frontmatter on `ralph-queue` and pushes. |
+| `ralph-triage` | Tech lead / on-call | Walks the `blocked/` queue: reads each PBI's STUCK.md or block reason, decides whether to return it to `inbox/` with notes added, or close it out. Same edit-and-push pattern. |
+
+**Why this works:**
+
+- **One mechanism, two uses.** Ralph runs unattended in Claude Code via the standing PROMPT.md. Humans interact attended via these skills. The substrate is the same — Claude Code consuming and mutating the `ralph-queue` branch.
+- **No new service to build, deploy, monitor.** Skills install into the user's `~/.claude/skills/`. Authentication is the user's own ADO + git identity.
+- **Workboard is `ralph-status`** — no kanban UI to build.
+- **Trade-off**: requires BAs/PMs to have Claude Code (or VS Code with the extension). If the org's Claude Code rollout reaches them, this is free. If not, a web-app supervisor is the v2/v3 fallback.
+
 ## Architecture
 
 ```mermaid
 flowchart TB
-  Human(["Human (v1)<br/>writes PBI into<br/>.ralph/inbox/"])
+  BA(["BA / PM / triager<br/>in Claude Code or VS Code"])
+  BASkills["ralph-add / ralph-status /<br/>ralph-cancel / ralph-promote /<br/>ralph-triage skills"]
+  ADO_MCP["ADO MCP<br/>(existing)"]
 
-  subgraph Repo["project-repo/"]
+  BA --> BASkills
+  BASkills <==> ADO_MCP
+
+  subgraph Repo["project-repo (multi-branch)"]
     direction TB
 
-    subgraph Q[".ralph/ (filesystem queue — v1)"]
+    subgraph Branches["git branches"]
+      direction LR
+      MainBranch["main<br/>(code; auto code review;<br/>auto PR job lands here)"]
+      QueueBranch["ralph-queue<br/>(.ralph/ folder lives here;<br/>supervisor skills + executor write)"]
+      FeatBranches["ralph/&lt;PBI-ID&gt;<br/>(per-PBI feature branches<br/>off main)"]
+    end
+
+    subgraph Q[".ralph/ on ralph-queue branch"]
       direction LR
       Inbox["inbox/"]
       Current["current/<br/>(single PBI)"]
@@ -51,9 +84,9 @@ flowchart TB
 
     subgraph Exec["ralph-executor (Python)"]
       direction TB
-      QSrc["queue-source<br/>(filesystem v1; API v2)"]
-      Sweep["sweep (runs only when<br/>current/ is empty)"]
-      Loop["loop driver<br/>+ git pull main"]
+      QSrc["queue-source<br/>(ralph-queue branch v1;<br/>supervisor API v2)"]
+      Sweep["sweep (when current empty)"]
+      Loop["loop driver<br/>+ git pull ralph-queue<br/>+ git pull main"]
       Safety["safety controls"]
     end
 
@@ -61,21 +94,22 @@ flowchart TB
     AdoSkill["ado-pr skill<br/>(Python + REST + PAT)"]
   end
 
-  Human ==>|"write pbi dir"| Inbox
+  BASkills ==>|"commit + push PBI dir"| QueueBranch
+  QueueBranch -.->|"contains"| Q
   QSrc <==> Q
-  Sweep --> Q
   Loop --> Claude
   Claude --> AdoSkill
-
-  Claude ==>|"git push to branch"| AutoPR(["existing auto PR job<br/>(org pipelines)"])
+  Claude ==>|"commits on feature branch"| FeatBranches
+  FeatBranches ==>|"git push"| AutoPR(["existing auto PR job<br/>(org pipelines)"])
   AutoPR ==>|"creates"| PR(["PR to main (ADO)"])
 
   PR --> AutoReview{"auto code review<br/>(existing build)"}
   PR --> HumanReview{"human reviewer"}
   AutoReview -. "leaves comments" .-> PR
   HumanReview -. "leaves comments" .-> PR
-  PR -. "approved + policy pass" .-> Merge(["auto-complete (ADO)"])
-  Sweep -.->|"observes async"| PR
+  PR -. "approved + policy pass" .-> Merge(["auto-complete (ADO)<br/>→ merges into main"])
+  Merge -.-> MainBranch
+  Sweep -.->|"observes async via ado-pr"| PR
 
   classDef q fill:#fff7e6,stroke:#d48806,color:#333
   classDef abs fill:#fffbe6,stroke:#d4b106,color:#333,stroke-dasharray: 5 5
@@ -84,28 +118,33 @@ flowchart TB
   classDef human fill:#fffbe6,stroke:#d4b106,color:#333
   classDef ext fill:#f6ffed,stroke:#52c41a,color:#333
   classDef skill fill:#f9f0ff,stroke:#722ed1,color:#333
+  classDef branch fill:#f0f5ff,stroke:#2f54eb,color:#333
 
   class Inbox,Current,Pending,Done,Blocked q
   class QSrc abs
   class Sweep,Loop,Safety comp
   class Claude claude
-  class Human,HumanReview human
-  class PR,AutoPR,AutoReview,Merge ext
-  class AdoSkill skill
+  class BA,HumanReview human
+  class PR,AutoPR,AutoReview,Merge,ADO_MCP ext
+  class AdoSkill,BASkills skill
+  class MainBranch,QueueBranch,FeatBranches branch
 ```
 
 ### Components
 
-- **`.ralph/`** — queue state on the filesystem. Folder location = PBI state. Folders are git-tracked so a failed pod run reproduces locally. The `current/` folder holds AT MOST ONE PBI — the one Ralph is actively working on.
+- **`ralph-queue` branch** — dedicated long-lived branch in each project repo. The `.ralph/` queue lives here. Supervisor skills (BA/PM-driven) and the executor both commit to this branch. Branch policy: no PRs to `main` from `ralph-queue`; write access scoped to the supervisor service principal and the executor identity. Keeps queue churn out of `main`'s history.
+- **`main` branch** — code only. PRs from Ralph's feature branches (`ralph/<PBI-ID>`) land here, gated by the existing auto code review and human reviewers.
+- **`.ralph/`** — queue state on the filesystem of the `ralph-queue` branch. Folder location = PBI state. Git-tracked so a failed pod run reproduces locally. The `current/` folder holds AT MOST ONE PBI — the one Ralph is actively working on.
 - **`ralph-executor`** — Python process with three concerns:
-  - **queue-source**: reads from `.ralph/inbox/` in v1; in v2 will read from supervisor API. Abstracted so the loop doesn't care.
-  - **loop driver**: pulls latest `main`, spawns `claude -p` against the PBI in `current/` (or picks next from inbox if current is empty), handles the outcome.
+  - **queue-source**: reads `.ralph/` from the `ralph-queue` branch in v1; in v2 will read from a supervisor API if added. Abstracted so the loop doesn't care.
+  - **loop driver**: at PBI boundaries (current empty), pulls latest `ralph-queue` and `main`; spawns `claude -p` against the PBI in `current/`; handles the outcome (commits queue mutations to `ralph-queue`, code work on a `ralph/<PBI-ID>` feature branch off `main`).
   - **safety controls**: STUCK.md handling, attempt counter, cycle detection, global halt.
-- **`claude -p`** — Claude session spawned on the PBI in `current/`. Reads PROMPT.md (standing instructions at repo root) + PBI directory contents. Edits code, commits, pushes the branch (the existing auto PR job creates the PR), exits. Multi-step PBIs may take multiple iterations on the same PBI — the PBI stays in `current/` until done or stuck.
-- **`ado-pr` skill** — small Claude Code skill containing Python scripts that wrap the ADO REST API (read threads, post replies, set thread status). PAT-based auth. Replaces what would otherwise be an ado-pr MCP — no extra server to install.
-- **Existing auto PR job** — pre-existing pipeline automation that creates a PR when a branch is pushed. Ralph relies on this rather than creating PRs directly. The exact trigger mechanism is TBD during implementation.
+- **`claude -p`** — Claude session spawned on the PBI in `current/`. Reads PROMPT.md (standing instructions at repo root) + PBI directory contents. Edits code on the feature branch, commits, pushes (the existing auto PR job creates the PR). Exits. Multi-step PBIs may take multiple iterations on the same PBI — the PBI stays in `current/` until done or stuck.
+- **`ado-pr` skill** — Claude Code skill containing Python scripts that wrap the ADO REST API (read threads, post replies, set thread status, show PR state). PAT-based auth. Used by Ralph (unattended) during PR-feedback work items.
+- **Supervisor skills family** — Claude Code skills used by BAs / PMs / triagers (attended). `ralph-add` (submit), `ralph-status` (read), `ralph-cancel`, `ralph-promote`, `ralph-triage`. All operate by committing to the `ralph-queue` branch. See [Submission surface](#submission-surface--skills-not-a-service).
+- **Existing auto PR job** — pre-existing pipeline automation that creates a PR when a feature branch is pushed. Ralph relies on this rather than creating PRs directly. The exact trigger mechanism is TBD during implementation.
 - **Auto code review build** — pre-existing automated code review that runs against PRs and leaves comments. v1 leverages this as the primary mechanical safety mechanism (see Safety controls below). It's NOT something v1 builds.
-- **Memory backend** — **not in v1.** Deferred to v2; see [Memory section](#memory-integration-deferred-to-v2).
+- **Memory backend** — **not in v1.** Deferred to v2; see Memory section.
 
 ## PBI conventions (folder layout, not schema)
 
@@ -536,7 +575,7 @@ Pre-deploy gate: `ralph-doctor` must pass in the target environment's container 
 
 - **Long-running pod vs Coder workspaces task pod for ROSA deployment.** A long-running pod runs the executor as a daemon, iterating continuously. A task-pod model dispatches one pod per PBI (pod starts, runs Ralph on the assigned PBI, exits). Both are viable; the executor's logic is the same. Task pods are cleaner for resource lifecycle (no idle compute) but require a scheduler component. Decide based on what the team's ROSA + Coder usage favours.
 - **Auto PR job integration.** The org has an existing auto PR job that creates PRs from pushed branches. The exact trigger mechanism (push to `ralph/*`? a specific commit message? a tag?) is TBD during implementation. Whatever it is, Ralph adheres to it.
-- **`ralph-queue` branch vs main branch for queue commits.** Pollution of git log in main is a real cost. Putting the queue on a `ralph-queue` branch (rebased off main) avoids it but adds branch-juggling complexity. Decide during implementation, possibly after running v1 for a sprint with queue-on-main and measuring noise.
+- **ADO branch policy for `ralph-queue`.** The `ralph-queue` branch needs a "no PRs to main" policy and write access scoped to the supervisor service principal + executor identity. Confirm with whoever owns branch policies during implementation. (The branch-vs-main question is resolved in favour of `ralph-queue`; only the policy specifics remain.)
 - **INVESTIGATE.md library location.** A shared library of debugging playbooks (per category of bug) needs to live somewhere accessible to all repos. Options: a separate `ralph-playbooks` repo, a section of the supervisor, or files in each repo. Likely the playbooks repo is the right answer once v2 lands; for v1, ship a small set in this repo (`docs/playbooks/`) and reference them from PBIs.
 - **`ralph-doctor` skill location.** Skills live in `~/.claude/skills/`. The skill should be installable from this repo. Document the install path during implementation.
 - **Sweep cadence on long-running pods.** If the pod is constantly busy with iterations, sweep runs naturally at PBI boundaries. If iterations are sparse, sweep should also run on a timer (e.g. every 5 minutes) so PR state doesn't lag. Decide based on observed behaviour.
@@ -545,13 +584,17 @@ Pre-deploy gate: `ralph-doctor` must pass in the target environment's container 
 ## Implementation order (rough)
 
 1. **Folder conventions + sample PBIs** — write a sample feature PBI, a sample bug PBI, a sample feedback PBI by hand. Verify they're parseable and readable. (No code yet.)
-2. **`ado-pr` skill** — Python scripts wrapping the four operations (read-threads, reply, set-status, show). PAT auth. Test locally against a sandbox ADO repo.
-3. **PROMPT.md** — write the standing prompt that Ralph uses every iteration. Iterate by spawning `claude -p` against the sample PBIs locally.
-4. **Executor core** — loop driver, queue-source (filesystem), spawning `claude -p`, moving folders. Implement the `current/`-folder discipline (single-PBI focus). Include `git pull main` at PBI boundaries. Skip safety controls for now.
-5. **Sweep logic** — observe PR state changes (via `ado-pr show`), generate PR-feedback work items from new comments, move PBIs appropriately. Mock ADO for testing.
-6. **Safety controls** — Ralph self-halt (STUCK.md handling), cycle detector with synthetic-event tests.
-7. **`ralph-doctor`** — preflight skill.
-8. **ROSA packaging** — container image, k8s manifest, secrets wiring (Anthropic API key, ADO PAT). Decide long-running-pod vs Coder-task-pod model based on team usage.
-9. **End-to-end smoke** on a throwaway test repo.
+2. **`ralph-queue` branch setup** — pick a test repo, create the branch, configure ADO branch policy (no PRs to main, write scope). Establish that the supervisor service principal + executor identity can push.
+3. **`ralph-add` skill** — the first supervisor skill. Takes an ADO work item ID, uses the ADO MCP to fetch body/attachments, writes a PBI directory to `ralph-queue`, commits and pushes. Iterate on the skill with real BA-style work items.
+4. **`ralph-status` skill** — read-only view. Renders queue state from `ralph-queue`. Useful for validating the data shape from `ralph-add`.
+5. **`ado-pr` skill** — Python scripts wrapping the four operations (read-threads, reply, set-status, show). PAT auth. Test locally against a sandbox ADO repo.
+6. **PROMPT.md** — write the standing prompt that Ralph uses every iteration. Iterate by spawning `claude -p` against the sample PBIs locally.
+7. **Executor core** — loop driver, queue-source (reads `ralph-queue` branch), spawning `claude -p`, moving folders, branch-juggling (`ralph-queue` for queue state, `main` + feature branches for code). Implement the `current/`-folder discipline. Include `git pull` of both branches at PBI boundaries. Skip safety controls for now.
+8. **Sweep logic** — observe PR state changes (via `ado-pr show`), generate PR-feedback work items from new comments, move PBIs appropriately. Mock ADO for testing.
+9. **Safety controls** — Ralph self-halt (STUCK.md handling), cycle detector with synthetic-event tests.
+10. **`ralph-cancel`, `ralph-promote`, `ralph-triage` skills** — the remaining supervisor skills.
+11. **`ralph-doctor`** — preflight skill (ralph-safe Claude Code config check).
+12. **ROSA packaging** — container image, k8s manifest, secrets wiring (Anthropic API key, ADO PAT). Decide long-running-pod vs Coder-task-pod model based on team usage.
+13. **End-to-end smoke** on a throwaway test repo: BA uses `ralph-add` to submit a tiny PBI; executor picks it up; Ralph closes it via PR; sweep moves to done.
 
 Each step is a separate implementation plan (`docs/superpowers/plans/`) once this spec is approved.
