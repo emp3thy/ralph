@@ -498,7 +498,7 @@ The `verifying/` folder enters the lifecycle alongside watchers in v2 and is pai
 
 ### `ralph-doctor` checks (TBD detailed list, but at minimum)
 
-- `permissions.allow` in `.claude/settings.json` covers every tool Ralph might call (Bash, Edit, Write, Read, Grep, Glob, the ado-pr MCP, the memory MCP)
+- `permissions.allow` in `.claude/settings.json` covers every tool Ralph might call (Bash, Edit, Write, Read, Grep, Glob, the `ado-pr` skill)
 - No hook in the active set calls `AskUserQuestion` or blocks on stdin
 - No skill in the active set calls `AskUserQuestion` in its main path
 - MCP servers all configured with non-interactive auth (no OAuth refresh prompts)
