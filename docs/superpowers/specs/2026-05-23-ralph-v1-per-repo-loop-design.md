@@ -67,7 +67,7 @@ sequenceDiagram
     Skill->>Git: git clone (or pull) ralph-queue
     Skill->>Git: write .ralph/inbox/WI-1234/, commit, push
     Skill-->>CC: success + queue position
-    CC-->>BA: Submitted; WI-1234 is in inbox (position 3)
+    CC-->>BA: Submitted - WI-1234 is in inbox at position 3
 
     Note over Exec: independently, next time current/ is empty
     Exec->>Git: pull ralph-queue
