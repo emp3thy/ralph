@@ -62,11 +62,14 @@ _ALL_ENTRY_FILES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
 _TYPE_BY_ENTRY_FILE: dict[str, str] = {v: k for k, v in ENTRY_FILE_BY_TYPE.items()}
 
 
-def _split_frontmatter(text: str) -> str | None:
+def split_frontmatter(text: str) -> str | None:
     """Return the frontmatter YAML string if the file starts with a YAML block.
 
     Returns ``None`` if no leading ``---`` fence is present.  The body after
     the closing fence is not returned; it is never consumed by callers.
+
+    Public API: Plan 4 (``ralph-status`` skill) imports this for reading PBI
+    frontmatter from the live queue. See orchestrator reconciliation #6.
     """
     if not text.startswith("---"):
         return None
@@ -158,7 +161,7 @@ def validate_sample(sample_dir: Path) -> list[str]:
         return [f"failed to read {entry_file_name}: {exc}"]
 
     # Step 3: require a leading YAML frontmatter fence.
-    split = _split_frontmatter(text)
+    split = split_frontmatter(text)
     if split is None:
         return [
             f"{entry_file_name} does not start with a YAML frontmatter block "
