@@ -11,6 +11,11 @@ dist/
 .ruff_cache/
 .mypy_cache/
 
+# Ralph runtime + tooling
+.ralph/
+.worktrees/
+.superpowers/
+
 # Editor / OS
 .vscode/
 .idea/
