@@ -245,21 +245,38 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
                 cfg.write_text(CONFIG_TOML_STUB, encoding="utf-8")
 
         _git(repo, "add", ".ralph")
-        # An empty commit would mean the scaffold was a no-op (every dir
-        # and the stub already existed); allow that, the operator sees a
-        # clean status afterward.
-        commit_status = subprocess.run(
-            ["git", "commit", "-m", "chore(queue): scaffold .ralph/ skeleton"],
+        # Detect the no-op-scaffold case (every dir + stub already
+        # existed) via `git diff --cached --quiet`: exit 0 means the
+        # index matches HEAD (nothing to commit), exit 1 means staged
+        # changes are present, exit >=2 is a real error. This is locale-
+        # independent — the previous string-match on "nothing to commit"
+        # broke on non-English git installs (e.g. "rien à valider").
+        # ralph_executor.git_ops.commit_index uses the same idiom.
+        diff_check = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
             cwd=str(repo),
             capture_output=True,
             text=True,
             check=False,
         )
-        if commit_status.returncode != 0 and "nothing to commit" not in commit_status.stdout:
+        if diff_check.returncode >= 2:
             raise ScaffoldError(
-                f"git commit failed (exit {commit_status.returncode}): "
-                f"{commit_status.stderr.strip() or commit_status.stdout.strip()}"
+                f"git diff --cached --quiet failed (exit {diff_check.returncode}): "
+                f"{diff_check.stderr.strip() or diff_check.stdout.strip()}"
             )
+        if diff_check.returncode == 1:
+            commit_status = subprocess.run(
+                ["git", "commit", "-m", "chore(queue): scaffold .ralph/ skeleton"],
+                cwd=str(repo),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if commit_status.returncode != 0:
+                raise ScaffoldError(
+                    f"git commit failed (exit {commit_status.returncode}): "
+                    f"{commit_status.stderr.strip() or commit_status.stdout.strip()}"
+                )
     except ScaffoldError as exc:
         print(f"error: {exc}", file=sys.stderr)
         # Best-effort cleanup: if we switched into the queue branch
@@ -289,21 +306,30 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
         # Each step is independently guarded so one failure doesn't
         # block the next.
         if switched_to_queue:
+            reset_ok = True
             try:
                 _git(repo, "reset", "--hard", "HEAD")
             except ScaffoldError as reset_exc:
+                reset_ok = False
                 print(
-                    f"warning: could not reset queue branch before restore: {reset_exc}",
+                    f"warning: could not reset queue branch before restore: {reset_exc}. "
+                    f"Leaving you on {QUEUE_BRANCH!r}; clean up with "
+                    f"`git -C {repo} reset --hard HEAD` then "
+                    f"`git -C {repo} switch {original_branch}`.",
                     file=sys.stderr,
                 )
-            try:
-                _git(repo, "switch", original_branch)
-            except ScaffoldError as restore_exc:
-                print(
-                    f"warning: could not restore original branch "
-                    f"{original_branch!r}: {restore_exc}",
-                    file=sys.stderr,
-                )
+            # Skip the switch when reset failed: switching with staged
+            # additions would silently carry them to the original branch,
+            # which is exactly the cross-branch leak we just fixed.
+            if reset_ok:
+                try:
+                    _git(repo, "switch", original_branch)
+                except ScaffoldError as restore_exc:
+                    print(
+                        f"warning: could not restore original branch "
+                        f"{original_branch!r}: {restore_exc}",
+                        file=sys.stderr,
+                    )
         return 2
 
     print(f"scaffolded .ralph/ skeleton on {QUEUE_BRANCH} in {repo}")

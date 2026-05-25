@@ -214,6 +214,41 @@ def test_scaffold_restores_original_branch_on_commit_failure(
     assert not (fresh_repo / ".ralph").exists(), ".ralph/ should be cleaned up"
 
 
+def test_scaffold_skips_branch_switch_when_reset_fails(
+    fresh_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If `git reset --hard HEAD` fails during cleanup, we must NOT
+    proceed to `git switch` — that would silently carry staged .ralph/
+    files to the original branch."""
+    # Install a pre-commit hook so commit fails, triggering the cleanup path.
+    hook = fresh_repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    # Monkeypatch _git so any "reset" call raises but everything else
+    # passes through to the real implementation.
+    import ralph_executor.setup_cmds as sc
+
+    real_git = sc._git
+
+    def faulty_git(repo: Path, *args: str) -> str:
+        if args and args[0] == "reset":
+            raise sc.ScaffoldError("simulated reset failure")
+        return real_git(repo, *args)
+
+    monkeypatch.setattr(sc, "_git", faulty_git)
+
+    exit_code = cmd_scaffold(repo_path=fresh_repo, force=False, with_config_toml=True)
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "could not reset queue branch" in err
+    # Critical: we stay on ralph-queue (NOT switched). The warning
+    # tells the operator how to recover manually.
+    assert _current_branch(fresh_repo) == QUEUE_BRANCH
+
+
 def test_scaffold_fails_on_non_git_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     not_a_repo = tmp_path / "plain"
     not_a_repo.mkdir()
