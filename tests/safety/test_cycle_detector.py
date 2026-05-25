@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from ralph_executor.safety.cycle_detector import (
     SignalKind,
+    _mean_attempts,
     evaluate_all,
     evaluate_attempt_divergence,
     evaluate_blocked_growth,
@@ -294,6 +295,79 @@ class TestAttemptDivergence:
             ]
         )
         assert evaluate_attempt_divergence(events, now) is None
+
+    # ------------------------------------------------------------------
+    # Fix A regression: _mean_attempts must use per-PBI peak, not raw
+    # ------------------------------------------------------------------
+
+    def test_mean_attempts_uses_per_pbi_peak_not_intermediates(self, now: datetime) -> None:
+        # PBI "a" emits cumulative events [1, 2, 3, 4] — peak is 4.
+        # PBI "b" emits a single event [1] — peak is 1.
+        # Correct mean = (4 + 1) / 2 = 2.5.
+        # Old code averaged all 5 raw values → (1+2+3+4+1)/5 = 2.2 (wrong).
+        events = [
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-5),
+                pbi_id="a",
+                payload={"attempts": 1},
+            ),
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-4),
+                pbi_id="a",
+                payload={"attempts": 2},
+            ),
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-3),
+                pbi_id="a",
+                payload={"attempts": 3},
+            ),
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-2),
+                pbi_id="a",
+                payload={"attempts": 4},
+            ),
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-1),
+                pbi_id="b",
+                payload={"attempts": 1},
+            ),
+        ]
+        assert _mean_attempts(events) == 2.5
+
+    # ------------------------------------------------------------------
+    # Fix B regression: gates must count distinct PBIs, not events
+    # ------------------------------------------------------------------
+
+    def test_single_pbi_with_many_attempts_does_not_trip(self, now: datetime) -> None:
+        # One PBI retried 5 times in the recent window — only 1 distinct PBI,
+        # below ATTEMPT_RECENT_MIN_PBIS (3). The detector must return None.
+        recent_events = [
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-i - 1),
+                pbi_id="SINGLE",
+                payload={"attempts": i + 1},
+            )
+            for i in range(5)
+        ]
+        # Provide enough baseline events (5 distinct PBIs) so only the
+        # recent gate is responsible for the None result.
+        baseline_events = [
+            make_event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=offset(now, hours=-(50 + i)),
+                pbi_id=f"OLD-{i}",
+                payload={"attempts": 1},
+            )
+            for i in range(5)
+        ]
+        signal = evaluate_attempt_divergence(_events(recent_events + baseline_events), now)
+        assert signal is None
 
 
 # ----------------------------------------------------------------------

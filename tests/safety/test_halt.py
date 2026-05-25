@@ -166,3 +166,34 @@ def test_halted_error_carries_meta_bug_path(repo_dir: Path) -> None:
         )
     assert exc_info.value.meta_bug_id == "META-x"
     assert "META-x.md" in str(exc_info.value)
+
+
+# ----------------------------------------------------------------------
+# Fix C regression: write_halt_sentinel must honour the `now` kwarg
+# ----------------------------------------------------------------------
+
+
+def test_write_halt_sentinel_uses_injected_now(repo_dir: Path) -> None:
+    frozen = datetime(2026, 1, 15, 9, 30, 0, tzinfo=UTC)
+    path = write_halt_sentinel(repo=repo_dir, meta_bug_id="META-frozen", now=frozen)
+    content = path.read_text(encoding="utf-8")
+    assert f"halted_at: {frozen.isoformat()}" in content
+
+
+def test_halt_and_acknowledge_sentinel_timestamp_matches_meta_bug(
+    repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sentinel halted_at must match the now passed to halt_and_acknowledge.
+
+    Before the fix, write_halt_sentinel called datetime.now() independently,
+    so the sentinel timestamp diverged from the META-BUG created_at when a
+    frozen now was injected.
+    """
+    monkeypatch.delenv("RALPH_HALT_WEBHOOK", raising=False)
+    frozen = datetime(2026, 3, 10, 14, 0, 0, tzinfo=UTC)
+    meta = halt_and_acknowledge(repo=repo_dir, signals=[_signal()], now=frozen)
+    sentinel_path = repo_dir / ".ralph" / "state" / "halted"
+    content = sentinel_path.read_text(encoding="utf-8")
+    assert f"halted_at: {frozen.isoformat()}" in content
+    # META-BUG created_at must also match (pre-existing behaviour).
+    assert meta.created_at == frozen

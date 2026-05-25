@@ -258,9 +258,9 @@ def evaluate_attempt_divergence(events: list[Event], now: datetime) -> CycleSign
         for ev in attempt_events
         if _within(ATTEMPT_BASELINE_WINDOW, now, ev) and ev not in recent
     ]
-    if len(recent) < ATTEMPT_RECENT_MIN_PBIS:
+    if len({ev.pbi_id for ev in recent if ev.pbi_id}) < ATTEMPT_RECENT_MIN_PBIS:
         return None
-    if len(baseline) < ATTEMPT_BASELINE_MIN_PBIS:
+    if len({ev.pbi_id for ev in baseline if ev.pbi_id}) < ATTEMPT_BASELINE_MIN_PBIS:
         return None
     recent_avg = _mean_attempts(recent)
     baseline_avg = _mean_attempts(baseline)
@@ -279,10 +279,26 @@ def evaluate_attempt_divergence(events: list[Event], now: datetime) -> CycleSign
 
 
 def _mean_attempts(events: list[Event]) -> float:
-    values = [a for a in (_attempts(ev) for ev in events) if a is not None]
-    if not values:
+    """Mean of each PBI's PEAK attempt count.
+
+    Each ATTEMPT_INCREMENTED event records the cumulative count at attempt
+    time, so events for one PBI look like [1, 2, ..., N]. Averaging those
+    raw values systematically deflates the per-PBI mean (it becomes (N+1)/2
+    instead of N). Reduce to one value per PBI (its peak) before averaging.
+    """
+    if not events:
         return 0.0
-    return sum(values) / len(values)
+    peaks: dict[str, int] = {}
+    for ev in events:
+        pid = ev.pbi_id or ""
+        if not pid:
+            continue
+        a = _attempts(ev)
+        if a is not None and a > peaks.get(pid, 0):
+            peaks[pid] = a
+    if not peaks:
+        return 0.0
+    return sum(peaks.values()) / len(peaks)
 
 
 # ----------------------------------------------------------------------

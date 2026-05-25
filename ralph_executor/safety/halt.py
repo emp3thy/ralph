@@ -223,7 +223,10 @@ def write_meta_bug(
 # ----------------------------------------------------------------------
 
 
-def write_halt_sentinel(*, repo: Path, meta_bug_id: str) -> Path:
+def write_halt_sentinel(*, repo: Path, meta_bug_id: str, now: datetime | None = None) -> Path:
+    """Write halted.sentinel; uses ``now`` for halted_at if provided."""
+    if now is None:
+        now = datetime.now(tz=UTC)
     path = repo / _SENTINEL_RELATIVE
     path.parent.mkdir(parents=True, exist_ok=True)
     content = (
@@ -236,7 +239,7 @@ def write_halt_sentinel(*, repo: Path, meta_bug_id: str) -> Path:
         f"# the META-BUG it references after fixing the underlying cause.\n"
         f"#\n"
         f"meta_bug_id: {meta_bug_id}\n"
-        f"halted_at: {datetime.now(tz=UTC).isoformat()}\n"
+        f"halted_at: {now.isoformat()}\n"
         f"acknowledged_by:\n"
         f"acknowledged_at:\n"
     )
@@ -330,7 +333,7 @@ def halt_and_acknowledge(
         signals=list(signals),
         now=now,
     )
-    write_halt_sentinel(repo=repo, meta_bug_id=meta.id)
+    write_halt_sentinel(repo=repo, meta_bug_id=meta.id, now=now)
     webhook_url = os.environ.get(webhook_env, "").strip() or None
     notify_halt(meta, webhook_url=webhook_url)
     return meta
