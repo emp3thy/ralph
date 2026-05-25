@@ -51,7 +51,12 @@ class GhClient:
         if not isinstance(base_url, str) or not base_url.strip():
             raise ValueError("base_url must be a non-empty string")
 
-        self.base_url = base_url.rstrip("/")
+        # Strip surrounding whitespace BEFORE storing. The validation above
+        # uses .strip() to test emptiness but does not assign back; the raw
+        # value then leaks into the Authorization header / URL, producing
+        # silent 401s.
+        token = token.strip()
+        self.base_url = base_url.strip().rstrip("/")
         self.api_version = api_version
         self.timeout = timeout
         self._session = session or requests.Session()

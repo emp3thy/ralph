@@ -160,6 +160,33 @@ def test_strips_trailing_slash_from_base_url() -> None:
 
 
 @responses.activate
+def test_strips_whitespace_from_token_before_use() -> None:
+    """Regression: validation uses token.strip() to check emptiness, so a
+    token like '  ghp_abc  ' passes validation. The raw value must NOT then
+    leak into the Authorization header (would produce 'Bearer   ghp_abc  '
+    and a silent 401). Caught by BugBot on PR #2.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE}/repos/{OWNER}/{REPO}",
+        json={"id": 1},
+        status=200,
+    )
+
+    client = GhClient(token=f"  {TOKEN}  ")
+    client.get(f"/repos/{OWNER}/{REPO}")
+    call = responses.calls[0]
+    assert call.request.headers["Authorization"] == f"Bearer {TOKEN}"
+
+
+def test_strips_whitespace_from_base_url_before_use() -> None:
+    """Same regression scoped to base_url — leading/trailing whitespace must
+    be stripped, not just used to test emptiness."""
+    client = GhClient(token=TOKEN, base_url=f"  {BASE}/  ")
+    assert client.base_url == BASE
+
+
+@responses.activate
 def test_path_without_leading_slash_is_handled() -> None:
     responses.add(
         responses.GET,
