@@ -47,6 +47,14 @@ def read_ralph_home() -> Path | None:
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{cfg_file}: invalid TOML: {exc}") from exc
+    except OSError as exc:
+        # Catches permission denied, IO errors, and the is_file/open
+        # race (file deleted between the existence check and open).
+        # Both callers only catch ConfigError; without this wrap, a
+        # permission-denied user-config file would surface as a raw
+        # traceback rather than the clean operator-facing error the
+        # docstring promises.
+        raise ConfigError(f"{cfg_file}: cannot read file: {exc}") from exc
     raw = data.get("ralph_home")
     if raw is None:
         return None

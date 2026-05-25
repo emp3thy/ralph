@@ -79,6 +79,25 @@ def test_read_rejects_empty_string_ralph_home(fake_home: Path) -> None:
         read_ralph_home()
 
 
+def test_read_wraps_oserror_as_configerror(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per the docstring, unreadable files raise ConfigError — not the
+    raw OSError from Path.open. Simulated by patching tomllib.load to
+    raise OSError (more portable than chmod tricks which behave
+    differently on Windows)."""
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('ralph_home = "/x"\n', encoding="utf-8")
+
+    def fake_load(_fh: object) -> dict[str, object]:
+        raise PermissionError("simulated")
+
+    monkeypatch.setattr("ralph_executor.user_config.tomllib.load", fake_load)
+    with pytest.raises(ConfigError, match="cannot read file"):
+        read_ralph_home()
+
+
 def test_read_raises_on_malformed_toml(fake_home: Path) -> None:
     cfg = fake_home / ".ralph" / "config.toml"
     cfg.parent.mkdir(parents=True)
