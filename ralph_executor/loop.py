@@ -232,6 +232,14 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             )
             target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                # shutil.move would silently move pbi.path INSIDE the existing
+                # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
+                # the queue scanner. Mirrors the same guard in
+                # ralph_executor/safety/stuck.py::move_to_blocked.
+                raise FileExistsError(
+                    f"cannot move {pbi.path} to {target}: target already exists"
+                ) from exc
             shutil.move(str(pbi.path), str(target))
             dummy = ClaudeOutcome(
                 kind="error",
