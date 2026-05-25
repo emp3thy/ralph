@@ -30,7 +30,6 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass
-from typing import Any
 
 import requests
 
@@ -70,9 +69,9 @@ class _MissingEnv(Exception):
         self.name = name
 
 
-def _lookup_repo(client: GhClient, owner: str, repo: str) -> dict[str, Any]:
-    data: dict[str, Any] = client.get(f"/repos/{owner}/{repo}")
-    return data
+def _lookup_repo(client: GhClient, owner: str, repo: str) -> None:
+    """Confirm the repo exists and the token can read it; raises GhError otherwise."""
+    client.get(f"/repos/{owner}/{repo}")
 
 
 def _read_branch_tip(client: GhClient, owner: str, repo: str, branch: str) -> str | None:
@@ -105,7 +104,10 @@ def _apply_protection(client: GhClient, owner: str, repo: str, branch: str) -> N
     https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection.
 
     Intent:
-      - ``enforce_admins=True``: admins can't bypass the rules.
+      - ``enforce_admins=True``: admins can't bypass the rules. Note that on
+        some GitHub plans (personal repos, lower org tiers) the API accepts
+        this flag but the actual enforcement depends on the plan; the
+        runbook documents the plan-level caveat.
       - ``allow_force_pushes=False`` and ``allow_deletions=False``: nothing
         rewrites or removes the queue branch.
       - ``required_status_checks=None``: no CI checks are required at
