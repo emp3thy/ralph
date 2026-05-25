@@ -195,6 +195,19 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # Capture the original branch BEFORE any state-mutating step so the
+    # error handler can restore it on commit failure. If even this call
+    # fails (e.g. detached HEAD or corrupt repo), we report and bail
+    # before touching anything else.
+    try:
+        original_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    except ScaffoldError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Track whether we actually moved off the original branch so the
+    # cleanup path knows whether a restore is needed.
+    switched_to_queue = False
     try:
         if not _working_tree_clean(repo):
             raise ScaffoldError(
@@ -202,10 +215,9 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
                 "changes before scaffolding so the queue commit lands cleanly"
             )
 
-        current_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-        if current_branch != "main" and current_branch != "master":
+        if original_branch != "main" and original_branch != "master":
             print(
-                f"warning: current branch is {current_branch!r}, not main/master. "
+                f"warning: current branch is {original_branch!r}, not main/master. "
                 f"ralph-queue will be created off it.",
                 file=sys.stderr,
             )
@@ -219,6 +231,7 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
             _git(repo, "switch", QUEUE_BRANCH)
         else:
             _git(repo, "switch", "-c", QUEUE_BRANCH)
+        switched_to_queue = True
 
         ralph_dir = repo / ".ralph"
         for sub in QUEUE_SUBDIRS:
@@ -249,6 +262,21 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
             )
     except ScaffoldError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        # Best-effort: if we switched into the queue branch before the
+        # error fired, switch back so the operator's working tree isn't
+        # silently parked on ralph-queue with .ralph/ files staged but
+        # uncommitted. The restore itself may fail (e.g. dirty index
+        # from the partial scaffold); swallow that and tell the operator
+        # to clean up manually.
+        if switched_to_queue:
+            try:
+                _git(repo, "switch", original_branch)
+            except ScaffoldError as restore_exc:
+                print(
+                    f"warning: could not restore original branch "
+                    f"{original_branch!r}: {restore_exc}",
+                    file=sys.stderr,
+                )
         return 2
 
     print(f"scaffolded .ralph/ skeleton on {QUEUE_BRANCH} in {repo}")

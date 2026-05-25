@@ -184,6 +184,26 @@ def test_scaffold_force_switches_into_existing_queue_branch(fresh_repo: Path) ->
     assert _current_branch(fresh_repo) == QUEUE_BRANCH
 
 
+def test_scaffold_restores_original_branch_on_commit_failure(
+    fresh_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """If `git commit` fails after the queue switch + stage, scaffold
+    must switch back to the original branch so the operator isn't left
+    on ralph-queue with .ralph/ files staged but uncommitted."""
+    # Install a pre-commit hook that always rejects.
+    hooks_dir = fresh_repo / ".git" / "hooks"
+    hook = hooks_dir / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    exit_code = cmd_scaffold(repo_path=fresh_repo, force=False, with_config_toml=True)
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "git commit failed" in err
+    # Critical: we're back on main, not parked on ralph-queue.
+    assert _current_branch(fresh_repo) == "main"
+
+
 def test_scaffold_fails_on_non_git_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     not_a_repo = tmp_path / "plain"
     not_a_repo.mkdir()
