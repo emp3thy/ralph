@@ -153,7 +153,10 @@ def _persist_iteration_writes(cfg: ExecutorConfig, pbi_id: str) -> None:
         # PBI was moved out of current/ by handle_stuck or
         # move_current_to_pending_pr — nothing to persist here.
         return
-    git_ops.add(cfg.repo_path, pbi_dir)
+    # Use add_all_changes so deletions of tracked files (e.g. Claude
+    # removing a resolved STUCK.md) are staged too — bare `git add <dir>`
+    # would skip them and leave index + working tree divergent.
+    git_ops.add_all_changes(cfg.repo_path, pbi_dir)
     head_before = git_ops.rev_parse_head(cfg.repo_path)
     message = f"chore(queue): persist iteration writes for {pbi_id}"
     head_after = git_ops.commit_index(cfg.repo_path, message)

@@ -110,14 +110,38 @@ def commit_index(repo: Path, message: str) -> str:
     """Commit whatever is currently staged. Returns new HEAD sha.
 
     Unlike ``commit_all``, this does NOT run ``git add -A`` first —
-    callers stage the exact paths they want via ``add()``. No-ops
-    (returns current HEAD) when the index is empty.
+    callers stage the exact paths they want via ``add()`` /
+    ``add_all_changes()``. No-ops (returns current HEAD) when the index
+    is empty.
+
+    ``git diff --cached --quiet`` exits 0 (no diff), 1 (diff found),
+    or >=2 (git itself errored — bad ref, repo corruption, etc.).
+    Treat anything outside {0, 1} as a real failure and raise rather
+    than letting it fall through to ``git commit`` (which would then
+    error with a confusing 'nothing to commit' message).
     """
     diff = _run_git(repo, "diff", "--cached", "--quiet", check=False)
     if diff.returncode == 0:
         return rev_parse_head(repo)
+    if diff.returncode != 1:
+        raise GitCommandError(
+            ["git", "diff", "--cached", "--quiet"],
+            diff.returncode,
+            diff.stderr,
+        )
     _run_git(repo, "commit", "-m", message)
     return rev_parse_head(repo)
+
+
+def add_all_changes(repo: Path, path: Path) -> None:
+    """Run ``git add -A <path>`` — stages new, modified, AND deleted
+    files inside ``<path>``.
+
+    Bare ``git add <path>`` skips deletions of tracked files, which
+    leaves the index inconsistent with the working tree when a caller
+    (e.g. Claude removing a stale STUCK.md) deletes a tracked file.
+    """
+    _run_git(repo, "add", "-A", "--", str(path.relative_to(repo)))
 
 
 def push(repo: Path, branch: str, remote: str = "origin") -> None:
