@@ -75,11 +75,17 @@ def test_load_config_missing_repo_path(
         load_config()
 
 
-def test_load_config_missing_anthropic_key(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> None:
+def test_load_config_missing_anthropic_key_is_optional(
+    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+) -> None:
+    """ANTHROPIC_API_KEY is optional — claude -p falls back to OAuth.
+    Missing key must NOT raise; cfg.anthropic_api_key is the empty
+    string and claude_spawn skips propagating it.
+    """
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
-        load_config()
+    cfg = load_config()
+    assert cfg.anthropic_api_key == ""
 
 
 def test_load_config_repo_path_not_a_directory(

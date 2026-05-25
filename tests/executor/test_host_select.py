@@ -184,7 +184,7 @@ def _make_fake_skill_source(skills_root: Path, host: str) -> None:
     wi_src = skills_root / f"workitem-fetch-{host}"
     (pr_src / "scripts").mkdir(parents=True)
     (pr_src / "SKILL.md").write_text(f"# pr-{host} skill\n", encoding="utf-8")
-    (pr_src / "scripts" / "create-pr.py").write_text(f"# create-pr for {host}\n", encoding="utf-8")
+    (pr_src / "scripts" / "create_pr.py").write_text(f"# create-pr for {host}\n", encoding="utf-8")
     (pr_src / "marker.txt").write_text(host, encoding="utf-8")
 
     (wi_src / "scripts").mkdir(parents=True)
@@ -206,7 +206,7 @@ def test_stage_skills_copies_github_pair_to_canonical_names(
     assert (claude_skills_dir / "pr" / "SKILL.md").read_text(
         encoding="utf-8"
     ) == "# pr-github skill\n"
-    assert (claude_skills_dir / "pr" / "scripts" / "create-pr.py").is_file()
+    assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
     assert (claude_skills_dir / "pr" / "marker.txt").read_text(encoding="utf-8") == "github"
     assert (claude_skills_dir / "workitem-fetch" / "SKILL.md").is_file()
     assert (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").is_file()
@@ -274,21 +274,28 @@ def test_stage_skills_missing_pr_source_raises_clear_error(
     assert str(skills_root) in msg
 
 
-def test_stage_skills_missing_workitem_fetch_source_raises_clear_error(
+def test_stage_skills_missing_workitem_fetch_source_is_tolerated(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """workitem-fetch-<host>/ is OPTIONAL (Plan 3 deferred). Missing dir
+    must emit a warning and skip -- NOT raise. The executor only needs
+    pr/; only supervisor skills consume workitem-fetch/.
+    """
+    import logging
+
     skills_root = tmp_path / "skills"
     claude_skills_dir = tmp_path / "claude_skills"
     claude_skills_dir.mkdir()
     (skills_root / "pr-ado" / "scripts").mkdir(parents=True)
-    (skills_root / "pr-ado" / "scripts" / "create-pr.py").write_text(
+    (skills_root / "pr-ado" / "scripts" / "create_pr.py").write_text(
         "# create-pr\n", encoding="utf-8"
     )
 
-    with pytest.raises(HostSelectionError) as excinfo:
+    with caplog.at_level(logging.WARNING, logger="ralph_executor.host_select"):
         stage_skills("ado", skills_root, claude_skills_dir)
-    msg = str(excinfo.value)
-    assert "workitem-fetch-ado" in msg
+    assert any("workitem-fetch-ado" in rec.message for rec in caplog.records)
+    assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
 
 
 def test_stage_skills_unknown_host_raises(tmp_path: Path) -> None:
@@ -299,7 +306,7 @@ def test_stage_skills_unknown_host_raises(tmp_path: Path) -> None:
 def test_verify_staged_happy_path(tmp_path: Path) -> None:
     claude_skills_dir = tmp_path / "claude_skills"
     (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
-    (claude_skills_dir / "pr" / "scripts" / "create-pr.py").write_text("# stub\n", encoding="utf-8")
+    (claude_skills_dir / "pr" / "scripts" / "create_pr.py").write_text("# stub\n", encoding="utf-8")
     (claude_skills_dir / "workitem-fetch" / "scripts").mkdir(parents=True)
     (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").write_text(
         "# stub\n", encoding="utf-8"
@@ -314,17 +321,19 @@ def test_verify_staged_missing_pr_script_raises(tmp_path: Path) -> None:
     with pytest.raises(HostSelectionError) as excinfo:
         verify_staged(claude_skills_dir)
     msg = str(excinfo.value)
-    assert "pr/scripts/create-pr.py" in msg
+    assert "pr/scripts/create_pr.py" in msg
 
 
-def test_verify_staged_missing_workitem_fetch_script_raises(
+def test_verify_staged_missing_workitem_fetch_script_is_tolerated(
     tmp_path: Path,
 ) -> None:
+    """workitem-fetch/ is optional (Plan 3 deferred). Verify must NOT
+    require workitem-fetch/scripts/fetch.py -- only pr/scripts/create_pr.py.
+    """
     claude_skills_dir = tmp_path / "claude_skills"
     (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
-    (claude_skills_dir / "pr" / "scripts" / "create-pr.py").write_text("", encoding="utf-8")
-    with pytest.raises(HostSelectionError, match="workitem-fetch/scripts/fetch.py"):
-        verify_staged(claude_skills_dir)
+    (claude_skills_dir / "pr" / "scripts" / "create_pr.py").write_text("", encoding="utf-8")
+    verify_staged(claude_skills_dir)  # must not raise
 
 
 # --- prepare_host_environment ----------------------------------------
@@ -346,7 +355,7 @@ def test_prepare_host_environment_github_end_to_end(
         claude_skills_dir=claude_skills_dir,
     )
     assert result == "github"
-    assert (claude_skills_dir / "pr" / "scripts" / "create-pr.py").is_file()
+    assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
     assert (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").is_file()
 
 
