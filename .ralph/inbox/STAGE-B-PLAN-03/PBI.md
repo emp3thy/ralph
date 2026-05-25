@@ -1,7 +1,7 @@
 ---
 id: STAGE-B-PLAN-03
 type: feature
-status: current
+status: inbox
 severity: normal
 attempts: 0
 created_at: 2026-05-25T19:46:00+00:00
