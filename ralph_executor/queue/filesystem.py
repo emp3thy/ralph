@@ -1,0 +1,211 @@
+"""Filesystem-backed queue source.
+
+Reads PBI directories from ``.ralph/<state>/`` on the ``ralph-queue``
+checkout. Parses the YAML frontmatter of the type-appropriate entry file
+and returns ``PBI`` dataclasses. Sorts the inbox by priority lane, then
+by ``created_at`` within the lane.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
+from typing import Any, cast, get_args
+
+import yaml
+
+from ralph_executor.config import ExecutorConfig
+from ralph_executor.types import PBI, PBIStatus, PBIType, Severity
+
+ENTRY_FILE_BY_TYPE: Mapping[str, str] = {
+    "feature": "PBI.md",
+    "bug": "BUG.md",
+    "pr-feedback": "FEEDBACK.md",
+}
+
+# Severity lane ordering for non-pr-feedback PBIs (lower = higher priority).
+_SEVERITY_RANK: Mapping[str, int] = {
+    "critical": 0,
+    "high": 1,
+    "normal": 2,
+    "low": 3,
+}
+
+# PR-feedback PBIs always take priority over plain severity ordering, per
+# the spec's "Priority lanes" section.
+_PR_FEEDBACK_LANE_RANK = -1
+
+
+class QueueError(RuntimeError):
+    """Raised when the queue layout is malformed."""
+
+
+def _split_frontmatter(text: str) -> tuple[str, str] | None:
+    if not text.startswith("---"):
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            return "\n".join(lines[1:idx]), "\n".join(lines[idx + 1 :])
+    return None
+
+
+def _detect_entry_file(pbi_dir: Path) -> tuple[str, str] | None:
+    """Return ``(entry_filename, pbi_type)`` if exactly one entry file exists."""
+    for pbi_type, entry_name in ENTRY_FILE_BY_TYPE.items():
+        if (pbi_dir / entry_name).is_file():
+            return entry_name, pbi_type
+    return None
+
+
+def _coerce_datetime(value: Any, field: str, pbi_dir: Path) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise QueueError(f"{pbi_dir}/{field}={value!r} is not ISO-8601: {exc}") from exc
+    raise QueueError(
+        f"{pbi_dir}/{field} must be a datetime or ISO-8601 string, got {type(value).__name__}"
+    )
+
+
+def parse_pbi_directory(pbi_dir: Path, *, status: str) -> PBI:
+    """Parse the entry file of ``pbi_dir`` into a ``PBI`` dataclass.
+
+    The ``status`` argument is the canonical state name (one of
+    ``inbox``/``current``/``pending-pr``/``done``/``blocked``/``archive``);
+    the caller knows it because it just read ``.ralph/<status>/`` from
+    disk. The frontmatter's ``status`` field is also validated against
+    this value when both are present.
+    """
+    if not pbi_dir.is_dir():
+        raise QueueError(f"not a directory: {pbi_dir}")
+
+    detected = _detect_entry_file(pbi_dir)
+    if detected is None:
+        raise QueueError(
+            f"{pbi_dir}: no entry file (expected one of {sorted(ENTRY_FILE_BY_TYPE.values())})"
+        )
+    entry_name, detected_type = detected
+    entry = pbi_dir / entry_name
+
+    text = entry.read_text(encoding="utf-8")
+    split = _split_frontmatter(text)
+    if split is None:
+        raise QueueError(f"{entry}: missing YAML frontmatter block")
+    try:
+        fm_any: Any = yaml.safe_load(split[0])
+    except yaml.YAMLError as exc:
+        raise QueueError(f"{entry}: invalid YAML frontmatter: {exc}") from exc
+    if not isinstance(fm_any, Mapping):
+        raise QueueError(
+            f"{entry}: frontmatter must be a YAML mapping, got {type(fm_any).__name__}"
+        )
+
+    try:
+        pbi_id = str(fm_any["id"]).strip()
+        declared_type = str(fm_any["type"]).strip()
+        severity_raw = str(fm_any["severity"]).strip()
+        attempts = int(fm_any["attempts"])
+        created_at = _coerce_datetime(fm_any["created_at"], "created_at", pbi_dir)
+        updated_at = _coerce_datetime(fm_any["updated_at"], "updated_at", pbi_dir)
+    except KeyError as exc:
+        raise QueueError(f"{entry}: missing required field {exc}") from exc
+
+    if declared_type != detected_type:
+        raise QueueError(
+            f"{entry}: frontmatter type={declared_type!r} disagrees with "
+            f"on-disk entry file {entry_name!r} (type={detected_type!r})"
+        )
+
+    if declared_type not in get_args(PBIType):
+        raise QueueError(f"{entry}: type={declared_type!r} not in {get_args(PBIType)}")
+    if severity_raw not in get_args(Severity):
+        raise QueueError(f"{entry}: severity={severity_raw!r} not in {get_args(Severity)}")
+    if status not in get_args(PBIStatus):
+        raise QueueError(f"caller passed status={status!r} not in {get_args(PBIStatus)}")
+
+    return PBI(
+        id=pbi_id,
+        type=cast(PBIType, declared_type),
+        status=cast(PBIStatus, status),
+        severity=cast(Severity, severity_raw),
+        attempts=attempts,
+        created_at=created_at,
+        updated_at=updated_at,
+        path=pbi_dir,
+    )
+
+
+def _lane_rank(pbi: PBI) -> tuple[int, int, datetime]:
+    """Sort key for inbox PBIs: lane, severity, then created_at."""
+    lane: int = (
+        _PR_FEEDBACK_LANE_RANK if pbi.type == "pr-feedback" else _SEVERITY_RANK[pbi.severity]
+    )
+    return (lane, _SEVERITY_RANK[pbi.severity], pbi.created_at)
+
+
+class FilesystemQueueSource:
+    """Reads PBI directories from ``.ralph/<state>/`` on disk."""
+
+    def __init__(self, config: ExecutorConfig) -> None:
+        self._config = config
+
+    @property
+    def _root(self) -> Path:
+        return self._config.repo_path / ".ralph"
+
+    def _list_pbis(self, state: str) -> list[PBI]:
+        state_dir = self._root / state
+        if not state_dir.is_dir():
+            return []
+        pbis: list[PBI] = []
+        for child in sorted(state_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            # Skip `.gitkeep` etc. by checking for at least one entry file.
+            if _detect_entry_file(child) is None:
+                continue
+            pbis.append(parse_pbi_directory(child, status=state))
+        return pbis
+
+    def current_pbi(self) -> PBI | None:
+        """Return the single PBI in ``current/``, or None.
+
+        Raises ``QueueError`` if more than one PBI is present —
+        ``current/`` is the single-focus folder; anything else violates
+        the executor's invariants.
+        """
+        pbis = self._list_pbis("current")
+        if not pbis:
+            return None
+        if len(pbis) > 1:
+            ids = sorted(p.id for p in pbis)
+            raise QueueError(f"current/ contains more than one PBI: {ids}")
+        return pbis[0]
+
+    def inbox_pbis(self) -> list[PBI]:
+        """Return all inbox PBIs sorted by priority lane + created_at."""
+        return sorted(self._list_pbis("inbox"), key=_lane_rank)
+
+    def pick_next(self) -> PBI | None:
+        """Return the highest-priority inbox PBI, or None if inbox is empty."""
+        ordered = self.inbox_pbis()
+        return ordered[0] if ordered else None
+
+    def pending_pr_pbis(self) -> list[PBI]:
+        """Return all PBIs in pending-pr/ (used by Plan 8's sweep)."""
+        return self._list_pbis("pending-pr")
+
+    def blocked_pbis(self) -> list[PBI]:
+        """Return all PBIs in blocked/ (used by Plans 9 / 10)."""
+        return self._list_pbis("blocked")
+
+    def done_pbis(self) -> list[PBI]:
+        """Return all PBIs in done/ (used by Plan 9's cycle detector)."""
+        return self._list_pbis("done")

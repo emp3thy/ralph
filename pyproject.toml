@@ -30,6 +30,15 @@ python_version = "3.12"
 strict = true
 files = ["ralph_executor", "scripts", "skills", "tests"]
 
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["ralph_executor*"]
+
+[project.scripts]
+ralph-executor = "ralph_executor.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
