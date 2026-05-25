@@ -228,6 +228,8 @@ Plan 1 → Plan 6 → Plan 7 → Plan 9 → Plan 12 → Plan 13. About six seque
 
 The execution order above describes plan-level dependencies. This section describes the meta-level bootstrap: who (human vs Ralph) builds which plans, and the explicit gates between stages.
 
+> **Operator companion document:** [`docs/bootstrap-operator-runbook.md`](../../bootstrap-operator-runbook.md) is the authoritative "how to operate" reference for every stage below. It covers prerequisites, one-time host setup, MVR sanity check, hand-crafting PBIs (while `ralph-add` doesn't exist yet), inspecting queue state (while `ralph-status` doesn't exist yet), manual preflight (while `ralph-doctor` doesn't exist yet), and recovering from failures. Any human or LLM executing a stage below should keep this runbook open. Stage B in particular is the runbook's primary use case.
+
 ### Stage A — Humans build the MVR (Minimum Viable Ralph)
 
 Until Stage A completes, Ralph cannot run. Humans must build this.
@@ -246,7 +248,9 @@ Until Stage A completes, Ralph cannot run. Humans must build this.
 
 ### Stage B — Ralph builds the rest of Phase 1
 
-With the MVR running, Ralph picks up the remaining Phase 1 plans as PBIs. Each plan file in `docs/superpowers/plans/` is dropped into Ralph's queue with a thin wrapper PBI ("implement this plan: …").
+> **Stage B operator must read** [`docs/bootstrap-operator-runbook.md`](../../bootstrap-operator-runbook.md) **first.** It documents every manual operation needed during Stage B before the corresponding tool ships — hand-crafting PBIs (sections 4.2 and 5), inspecting queue state (4.4), preflight checks (4.6), and recovering from failures (4.7). The 8-step checklist for handing the next Stage B PBI to Ralph is in section 5.
+
+With the MVR running, Ralph picks up the remaining Phase 1 plans as PBIs. Each plan file in `docs/superpowers/plans/` is dropped into Ralph's queue with a thin wrapper PBI ("implement this plan: …") — the runbook's section 4.2 shows the exact template.
 
 **Deliverables (recommended order):**
 1. Plan 04 (`ralph-status`) — read-only, easy first PBI to validate the bootstrap loop
