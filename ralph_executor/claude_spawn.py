@@ -139,12 +139,26 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
     return str(url) if isinstance(url, str) and url else None
 
 
-def _tee_stream(stream: IO[str], prefix: str, buf: list[str]) -> None:
+def _tee_stream(
+    stream: IO[str],
+    prefix: str,
+    buf: list[str],
+    err_slot: list[BaseException],
+) -> None:
     """Drain a subprocess stream line-by-line: log each line live with a
-    prefix AND accumulate the raw content into ``buf`` for the caller."""
-    for raw_line in stream:
-        buf.append(raw_line)
-        log.info("%s %s", prefix, raw_line.rstrip())
+    prefix AND accumulate the raw content into ``buf`` for the caller.
+
+    Any exception is captured into ``err_slot`` so the parent can re-raise
+    it after join — otherwise it would be silently swallowed by Python's
+    default ``threading.excepthook``, leaving ``buf`` truncated and
+    causing the classifier to act on partial output.
+    """
+    try:
+        for raw_line in stream:
+            buf.append(raw_line)
+            log.info("%s %s", prefix, raw_line.rstrip())
+    except BaseException as exc:  # noqa: BLE001 - re-raised in parent
+        err_slot.append(exc)
 
 
 def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
@@ -154,6 +168,12 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     operator sees Claude's progress between iteration markers) while ALSO
     accumulating the streams into ``outcome.stdout`` / ``outcome.stderr``
     for the classifier and downstream diagnostics.
+
+    On KeyboardInterrupt or any other exception from ``proc.wait()``, the
+    child process is killed and the tee threads are joined before the
+    exception propagates — otherwise the non-daemon I/O threads would
+    block interpreter shutdown indefinitely on a pipe read that nobody
+    can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
     argv = _build_argv(cfg, pbi)
     env = os.environ.copy()
@@ -176,15 +196,41 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     )
     stdout_buf: list[str] = []
     stderr_buf: list[str] = []
+    stdout_err: list[BaseException] = []
+    stderr_err: list[BaseException] = []
     # Popen with PIPE returns IO streams; assert for the type-checker.
     assert proc.stdout is not None and proc.stderr is not None
-    t_out = threading.Thread(target=_tee_stream, args=(proc.stdout, "[claude]", stdout_buf))
-    t_err = threading.Thread(target=_tee_stream, args=(proc.stderr, "[claude!]", stderr_buf))
+    t_out = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stdout, "[claude]", stdout_buf, stdout_err),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stderr, "[claude!]", stderr_buf, stderr_err),
+        daemon=True,
+    )
     t_out.start()
     t_err.start()
-    returncode = proc.wait()
+    try:
+        returncode = proc.wait()
+    except BaseException:
+        # KeyboardInterrupt (Ctrl-C from the operator) or any other
+        # exception: terminate the child so the pipe-read threads exit
+        # cleanly, join them, then re-raise. Without this, the non-daemon
+        # threads would block interpreter shutdown forever.
+        proc.kill()
+        t_out.join()
+        t_err.join()
+        raise
     t_out.join()
     t_err.join()
+    # Re-raise any exception the tee threads captured so the classifier
+    # never operates on truncated output.
+    if stdout_err:
+        raise stdout_err[0]
+    if stderr_err:
+        raise stderr_err[0]
     stdout_text = "".join(stdout_buf)
     stderr_text = "".join(stderr_buf)
     duration = time.monotonic() - start
