@@ -43,7 +43,7 @@ def test_load_config_uses_defaults(env_minimal: Path) -> None:
     assert cfg.repo_path == env_minimal
     assert cfg.queue_branch == "ralph-queue"
     assert cfg.main_branch == "main"
-    assert cfg.max_attempts == 3
+    assert cfg.max_attempts == 20
     assert cfg.log_level == logging.INFO
     assert cfg.iteration_sleep_seconds == 30.0
     assert cfg.claude_binary == "claude"

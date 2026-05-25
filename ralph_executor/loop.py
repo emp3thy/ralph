@@ -222,9 +222,14 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     ``blocked/`` and returns a ``StuckOutcome`` carrying a ``pbi.blocked``
     event the caller appends to the event log.
 
-    Also increments the attempt counter before spawning (Plan 9 Layer 1).
-    If the counter exceeds the configured maximum, the PBI is moved to
-    ``blocked/`` without spawning Claude.
+    Increments the attempt counter ONLY when the outcome is ``stuck`` or
+    ``error`` (i.e. a genuine failed iteration). ``partial`` outcomes
+    represent legitimate multi-step progress and do NOT count against
+    the max-attempts budget — otherwise long plans (many sub-tasks
+    spread across iterations) would always hit the wall. If the
+    increment pushes the counter past the configured maximum, the PBI
+    is moved to ``blocked/`` and a synthetic ``error`` outcome is
+    returned to mirror the AttemptsExceeded path.
 
     KNOWN ISSUE: the working tree is currently left on ``cfg.queue_branch``
     when spawning so that ``.ralph/current/<PBI-ID>/`` is visible on disk
@@ -244,58 +249,60 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     now = datetime.now(tz=UTC)
     event_log = open_log(cfg.repo_path)
     try:
-        # --- Plan 9: increment attempt counter before spawning -----------
-        counter = AttemptCounter(pbi_dir=pbi.path)
-        try:
-            new_attempts = counter.increment()
-        except AttemptsExceeded as exc:
-            log.warning(
-                "PBI %s exceeded max attempts (%d/%d); moving to blocked/",
-                pbi.id,
-                exc.attempts,
-                exc.limit,
-            )
-            event_log.append(
-                Event(
-                    kind=EventType.PBI_BLOCKED,
-                    recorded_at=now,
-                    pbi_id=pbi.id,
-                    payload={"reason": str(exc), "source": "max-attempts"},
-                )
-            )
-            target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                # shutil.move would silently move pbi.path INSIDE the existing
-                # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
-                # the queue scanner. Mirrors the same guard in
-                # ralph_executor/safety/stuck.py::move_to_blocked.
-                raise FileExistsError(
-                    f"cannot move {pbi.path} to {target}: target already exists"
-                ) from exc
-            shutil.move(str(pbi.path), str(target))
-            dummy = ClaudeOutcome(
-                kind="error",
-                pr_url=None,
-                stdout="",
-                stderr=str(exc),
-                exit_code=1,
-                duration_seconds=0.0,
-            )
-            return dummy, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
-
-        event_log.append(
-            Event(
-                kind=EventType.ATTEMPT_INCREMENTED,
-                recorded_at=now,
-                pbi_id=pbi.id,
-                payload={"attempts": new_attempts},
-            )
-        )
-
         # --- Spawn Claude ------------------------------------------------
         outcome = spawn_claude_p(cfg, pbi)
         log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
+
+        # --- Plan 9: bump attempt counter ONLY on failure outcomes -------
+        # `partial` outcomes are legitimate multi-step progress and don't
+        # count toward the failure budget. Only stuck / error do.
+        if outcome.kind in ("stuck", "error"):
+            counter = AttemptCounter(pbi_dir=pbi.path)
+            try:
+                new_attempts = counter.increment()
+            except AttemptsExceeded as exc:
+                log.warning(
+                    "PBI %s exceeded max failed attempts (%d/%d); moving to blocked/",
+                    pbi.id,
+                    exc.attempts,
+                    exc.limit,
+                )
+                event_log.append(
+                    Event(
+                        kind=EventType.PBI_BLOCKED,
+                        recorded_at=now,
+                        pbi_id=pbi.id,
+                        payload={"reason": str(exc), "source": "max-attempts"},
+                    )
+                )
+                target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    # shutil.move would silently move pbi.path INSIDE the existing
+                    # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
+                    # the queue scanner. Mirrors the same guard in
+                    # ralph_executor/safety/stuck.py::move_to_blocked.
+                    raise FileExistsError(
+                        f"cannot move {pbi.path} to {target}: target already exists"
+                    ) from exc
+                shutil.move(str(pbi.path), str(target))
+                dummy = ClaudeOutcome(
+                    kind="error",
+                    pr_url=None,
+                    stdout="",
+                    stderr=str(exc),
+                    exit_code=1,
+                    duration_seconds=0.0,
+                )
+                return dummy, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+            event_log.append(
+                Event(
+                    kind=EventType.ATTEMPT_INCREMENTED,
+                    recorded_at=now,
+                    pbi_id=pbi.id,
+                    payload={"attempts": new_attempts},
+                )
+            )
 
         if outcome.kind == "pr_created":
             move_current_to_pending_pr(cfg, pbi)
