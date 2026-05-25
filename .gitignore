@@ -12,7 +12,9 @@ dist/
 .mypy_cache/
 
 # Ralph runtime + tooling
-.ralph/
+# NOTE: .ralph/ is intentionally NOT ignored on the ralph-queue branch —
+# the queue state is the whole purpose of this branch. The same line on
+# main DOES ignore it. Per-branch .gitignore divergence is by design.
 .worktrees/
 .superpowers/
 
