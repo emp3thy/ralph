@@ -162,6 +162,14 @@ def test_prompt_smoke_feature_iteration(tmp_ralph_workspace: Path) -> None:
     content, not on prose.
     """
     workspace = tmp_ralph_workspace
+
+    # Capture HISTORY.md content BEFORE Ralph runs. The fixture sample
+    # already contains a non-empty placeholder comment, so a bare
+    # truthiness check on the post-iteration content would silently pass
+    # even if Ralph appended nothing. Compare against this baseline.
+    history_path = workspace / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
+    history_before = history_path.read_text(encoding="utf-8")
+
     result = _run_claude(workspace)
 
     # 1. Subprocess exits cleanly.
@@ -180,12 +188,16 @@ def test_prompt_smoke_feature_iteration(tmp_ralph_workspace: Path) -> None:
     assert payload, "claude -p returned an empty JSON payload"
 
     # 4. The PBI files Ralph SHOULD have touched were touched.
-    history = workspace / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
     plan = workspace / ".ralph" / "current" / "WI-1234" / "PLAN.md"
-    assert history.is_file(), "HISTORY.md should still exist"
-    history_text = history.read_text(encoding="utf-8")
-    assert history_text.strip(), (
-        "HISTORY.md should have been appended to (was empty after iteration)"
+    assert history_path.is_file(), "HISTORY.md should still exist"
+    history_after = history_path.read_text(encoding="utf-8")
+    assert history_after != history_before, (
+        "HISTORY.md was not modified during the iteration "
+        "(content identical to the pre-iteration baseline)"
+    )
+    assert len(history_after) > len(history_before), (
+        "HISTORY.md shrunk during the iteration "
+        f"(was {len(history_before)} bytes, now {len(history_after)} bytes)"
     )
 
     # 5. At least one PLAN.md checkbox should be marked done OR a
