@@ -175,7 +175,11 @@ def main(argv: list[str] | None = None) -> int:
             f"reading PR {pr_id} reviews in {client.owner}/{repo}...",
             file=sys.stderr,
         )
-        reviews_raw = client.get_rest(f"/repos/{client.owner}/{repo}/pulls/{pr_id}/reviews")
+        # per_page=100 raises the page cap from GitHub's default 30; without
+        # it, a PR with >30 reviews would silently truncate.
+        reviews_raw = client.get_rest(
+            f"/repos/{client.owner}/{repo}/pulls/{pr_id}/reviews?per_page=100"
+        )
         reviews = reviews_raw if isinstance(reviews_raw, list) else []
 
         head = pr.get("head") or {}
@@ -186,8 +190,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"reading check-runs for {head_sha} in {client.owner}/{repo}...",
                 file=sys.stderr,
             )
+            # per_page=100 — same silent-truncation hazard as reviews.
             checks_raw: dict[str, Any] = client.get_rest(
-                f"/repos/{client.owner}/{repo}/commits/{head_sha}/check-runs"
+                f"/repos/{client.owner}/{repo}/commits/{head_sha}/check-runs?per_page=100"
             )
             check_runs = checks_raw.get("check_runs", []) if isinstance(checks_raw, dict) else []
         else:
