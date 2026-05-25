@@ -117,6 +117,20 @@ def parse_pbi_directory(pbi_dir: Path, *, status: str) -> PBI:
     except KeyError as exc:
         raise QueueError(f"{entry}: missing required field {exc}") from exc
 
+    # depends_on is OPTIONAL. Default empty. Accept absent, null, or
+    # an empty list. Reject anything else with a clear error so an
+    # operator typo doesn't silently disable the dependency gate.
+    raw_deps = fm_any.get("depends_on")
+    depends_on: tuple[str, ...]
+    if raw_deps is None:
+        depends_on = ()
+    elif isinstance(raw_deps, list) and all(isinstance(d, str) for d in raw_deps):
+        depends_on = tuple(d.strip() for d in raw_deps if d.strip())
+    else:
+        raise QueueError(
+            f"{entry}: depends_on must be a list of PBI-id strings, got {type(raw_deps).__name__}"
+        )
+
     if declared_type != detected_type:
         raise QueueError(
             f"{entry}: frontmatter type={declared_type!r} disagrees with "
@@ -139,6 +153,7 @@ def parse_pbi_directory(pbi_dir: Path, *, status: str) -> PBI:
         created_at=created_at,
         updated_at=updated_at,
         path=pbi_dir,
+        depends_on=depends_on,
     )
 
 
@@ -194,9 +209,20 @@ class FilesystemQueueSource:
         return sorted(self._list_pbis("inbox"), key=_lane_rank)
 
     def pick_next(self) -> PBI | None:
-        """Return the highest-priority inbox PBI, or None if inbox is empty."""
-        ordered = self.inbox_pbis()
-        return ordered[0] if ordered else None
+        """Return the highest-priority inbox PBI whose ``depends_on`` deps
+        are all in ``done/``, or None if no eligible PBI exists.
+
+        Dependency semantics: a PBI is eligible IFF every id in its
+        ``depends_on`` list is the id of a PBI currently in ``done/``.
+        Deps that point at non-existent PBIs OR that point at PBIs not
+        yet in done/ block the PBI. The operator is responsible for
+        avoiding cycles (the dependency graph is hand-authored and small).
+        """
+        done_ids = {p.id for p in self.done_pbis()}
+        for candidate in self.inbox_pbis():
+            if all(dep in done_ids for dep in candidate.depends_on):
+                return candidate
+        return None
 
     def pending_pr_pbis(self) -> list[PBI]:
         """Return all PBIs in pending-pr/ (used by Plan 8's sweep)."""
