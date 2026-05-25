@@ -12,6 +12,7 @@ Two of the spec's three safety layers live here:
 Layer 2 (mechanical PR guards) is intentionally not implemented; the
 spec acknowledges the team's existing auto code review fills the role.
 """
+
 from __future__ import annotations
 
 from ralph_executor.safety.cycle_detector import (

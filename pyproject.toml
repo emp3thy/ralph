@@ -16,7 +16,7 @@ dev = [
     "types-pyyaml>=6.0",
     "responses>=0.26.1",
     "types-requests>=2.33.0.20260518",
-    "pytest-freezegun>=0.4.2",
+    "freezegun>=1.5",
 ]
 
 [tool.ruff]
