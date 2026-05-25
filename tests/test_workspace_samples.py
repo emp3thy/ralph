@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_samples import validate_sample
+from scripts.validate_samples import split_frontmatter, validate_sample
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SAMPLES_DIR = REPO_ROOT / "samples"
@@ -156,6 +156,40 @@ def test_null_required_field_treated_as_missing(tmp_path: Path) -> None:
     missing_msg = next(e for e in errors if "missing frontmatter fields" in e)
     for field in ("id", "type", "status", "severity", "attempts", "created_at", "updated_at"):
         assert field in missing_msg, f"{field} not reported as missing: {missing_msg}"
+
+
+def test_split_frontmatter_ignores_indented_dashes() -> None:
+    """Regression: `  ---` inside a YAML block scalar must NOT be treated as
+    the closing fence. Earlier .strip()-based matching truncated the
+    frontmatter early. Caught by BugBot review on PR #1.
+    """
+    text = (
+        "---\n"
+        "id: WI-1\n"
+        "description: |\n"
+        "  some prose\n"
+        "  ---\n"
+        "  more prose after a literal ---\n"
+        "type: feature\n"
+        "---\n"
+        "body content\n"
+    )
+    fm = split_frontmatter(text)
+    assert fm is not None
+    # The full 7-line YAML scalar block must be present; indented `---`
+    # must not have truncated it.
+    assert "description: |" in fm
+    assert "more prose after a literal ---" in fm
+    assert "type: feature" in fm
+
+
+def test_split_frontmatter_requires_exact_opening_fence() -> None:
+    """Opening fence must be exactly `---` at column 0, not `---foo` or
+    indented."""
+    assert split_frontmatter("---foo\nbody") is None
+    assert split_frontmatter("  ---\nbody") is None
+    assert split_frontmatter("") is None
+    assert split_frontmatter("no fence here\n") is None
 
 
 def test_single_null_field_treated_as_missing(tmp_path: Path) -> None:

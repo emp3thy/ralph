@@ -68,16 +68,19 @@ def split_frontmatter(text: str) -> str | None:
     Returns ``None`` if no leading ``---`` fence is present.  The body after
     the closing fence is not returned; it is never consumed by callers.
 
+    Fence lines must be EXACTLY ``---`` (no leading or trailing whitespace).
+    An indented ``  ---`` line is treated as YAML content (e.g. inside a block
+    scalar), not as a fence — earlier ``.strip()``-based matching would
+    prematurely terminate the frontmatter on such lines.
+
     Public API: Plan 4 (``ralph-status`` skill) imports this for reading PBI
     frontmatter from the live queue. See orchestrator reconciliation #6.
     """
-    if not text.startswith("---"):
-        return None
     lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0] != "---":
         return None
     for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
+        if lines[idx] == "---":
             return "\n".join(lines[1:idx])
     return None
 
