@@ -66,13 +66,33 @@ def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_mini
     assert cfg.claude_binary == "/usr/local/bin/claude"
 
 
-def test_load_config_missing_repo_path(
-    monkeypatch: pytest.MonkeyPatch,
+def test_load_config_missing_repo_path_falls_back_to_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """RALPH_REPO_PATH unset falls back to the current working directory.
+
+    Validation still runs against cwd, so a cwd that isn't a git repo
+    surfaces a clear ConfigError pointing at "cwd" rather than the env var.
+    """
     monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    with pytest.raises(ConfigError, match="RALPH_REPO_PATH"):
+    monkeypatch.chdir(tmp_path)  # tmp_path has no .git
+    with pytest.raises(ConfigError, match="from cwd.*not a git repository"):
         load_config()
+
+
+def test_load_config_uses_cwd_when_repo_path_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Happy path: cwd is a valid git repo and RALPH_REPO_PATH is unset."""
+    repo = tmp_path / "in-here"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.chdir(repo)
+    cfg = load_config()
+    assert cfg.repo_path == repo.resolve()
 
 
 def test_load_config_missing_anthropic_key_is_optional(
@@ -94,7 +114,7 @@ def test_load_config_repo_path_not_a_directory(
     missing = tmp_path / "nope"
     monkeypatch.setenv("RALPH_REPO_PATH", str(missing))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    with pytest.raises(ConfigError, match="not a directory"):
+    with pytest.raises(ConfigError, match="does not exist"):
         load_config()
 
 
