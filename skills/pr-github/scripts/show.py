@@ -27,6 +27,15 @@ Check-run conclusion/status -> state:
     conclusion=neutral / skipped -> neutral
     status=in_progress / queued (no conclusion) -> pending
 
+Merge-status mapping (``mergeable_state`` -> shared vocabulary):
+    When GitHub's ``mergeable`` field is null (async computation not yet
+    done), ``mergeable_state`` is consulted.  The raw GitHub vocabulary is
+    larger than the three values we expose, so we map it explicitly:
+        clean / unstable / has_hooks -> mergeable
+        dirty                        -> conflicting
+        blocked / behind / unknown   -> unknown
+        anything else                -> unknown
+
 Exit codes: 0 success, 2 validation, 3 GitHub error.
 """
 
@@ -57,6 +66,21 @@ REVIEW_LABELS: dict[str, str] = {
     "COMMENTED": "commented",
     "DISMISSED": "no-vote",
     "PENDING": "no-vote",
+}
+
+# Mapping from GitHub's raw ``mergeable_state`` values onto the shared
+# cross-host vocabulary {mergeable, conflicting, unknown}.  Used only when
+# the ``mergeable`` boolean field is null (GitHub's async merge-check hasn't
+# resolved yet).  GitHub may add new states in the future; any unmapped
+# value falls through to "unknown" by default.
+MERGEABLE_STATE_TO_STATUS: dict[str, str] = {
+    "clean": "mergeable",
+    "unstable": "mergeable",
+    "has_hooks": "mergeable",
+    "dirty": "conflicting",
+    "blocked": "unknown",
+    "behind": "unknown",
+    "unknown": "unknown",
 }
 
 CHECK_CONCLUSION_TO_STATE: dict[str, str] = {
@@ -129,6 +153,13 @@ def _map_pr_status(state: str, merged: bool) -> str:
 
 
 def _map_merge_status(pr: dict[str, Any]) -> str:
+    """Map GitHub PR merge fields onto the shared vocabulary.
+
+    Consults ``mergeable`` first (True/False/None); when None (async
+    check not yet complete), falls back to ``MERGEABLE_STATE_TO_STATUS``
+    keyed by ``mergeable_state``.  Any unmapped ``mergeable_state`` value
+    resolves to "unknown".
+    """
     mergeable = pr.get("mergeable")
     mergeable_state = pr.get("mergeable_state")
     if mergeable is True:
@@ -136,7 +167,7 @@ def _map_merge_status(pr: dict[str, Any]) -> str:
     if mergeable is False:
         return "conflicting"
     if isinstance(mergeable_state, str) and mergeable_state:
-        return mergeable_state
+        return MERGEABLE_STATE_TO_STATUS.get(mergeable_state, "unknown")
     return "unknown"
 
 

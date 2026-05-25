@@ -234,6 +234,27 @@ def test_common_parse_branch_rejects_empty(common_module: ModuleType) -> None:
         common_module.parse_branch("   ")
 
 
+@responses.activate
+def test_common_graphql_error_handles_non_dict_items(env: None) -> None:
+    """GraphQL errors array can contain non-dict items (plain strings).
+    Earlier filter dropped them, producing 'GraphQL errors: ' with no
+    detail. Caught by BugBot on PR #3.
+    """
+    common = _load_module("common_test_err", SCRIPTS_DIR / "_common.py")
+    responses.add(
+        responses.POST,
+        GRAPHQL_URL,
+        json={"errors": ["raw string error", {"message": "structured error"}]},
+        status=200,
+    )
+    client = common.load_client()
+    with pytest.raises(common.HttpError) as excinfo:
+        client.graphql(query="query{viewer{login}}", variables={}, operation_name="Test")
+    msg = str(excinfo.value)
+    assert "raw string error" in msg
+    assert "structured error" in msg
+
+
 # ----------------------------------------------------------------------
 # create-pr tests
 # ----------------------------------------------------------------------
@@ -535,6 +556,28 @@ def test_read_threads_malformed_pr_id_exits_two(
     exit_code = read_threads_module.main(["--repo", REPO, "--pr-id", "not-a-number"])
     assert exit_code == 2
     assert "positive integer" in capsys.readouterr().err
+
+
+@responses.activate
+def test_read_threads_nonexistent_pr_exits_two(
+    env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """GraphQL returns {data: {repository: {pullRequest: null}}} when the PR
+    doesn't exist. The script must surface this as an error, not silently
+    return an empty thread list with exit 0. Caught by BugBot on PR #3.
+    """
+    responses.add(
+        responses.POST,
+        GRAPHQL_URL,
+        json={"data": {"repository": {"pullRequest": None}}},
+        status=200,
+    )
+    mod = _load_module("read_threads_test", SCRIPTS_DIR / "read_threads.py")
+    exit_code = mod.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "not found" in err.lower() or f"#{PR_ID}" in err
 
 
 # ----------------------------------------------------------------------
@@ -1027,3 +1070,60 @@ def test_show_malformed_pr_id_exits_two(
     exit_code = show_module.main(["--repo", REPO, "--pr-id", "abc"])
     assert exit_code == 2
     assert "positive integer" in capsys.readouterr().err
+
+
+@responses.activate
+@pytest.mark.parametrize(
+    "mergeable_state,expected_status",
+    [
+        ("clean", "mergeable"),
+        ("unstable", "mergeable"),
+        ("has_hooks", "mergeable"),
+        ("dirty", "conflicting"),
+        ("blocked", "unknown"),
+        ("behind", "unknown"),
+        ("unknown", "unknown"),
+        ("some_future_state", "unknown"),
+    ],
+)
+def test_show_merge_status_mapping(
+    env: None,
+    capsys: pytest.CaptureFixture[str],
+    mergeable_state: str,
+    expected_status: str,
+) -> None:
+    """When GitHub's mergeable is null, mergeable_state is consulted. Map
+    every GitHub vocabulary onto the documented {mergeable, conflicting,
+    unknown} set. Caught by BugBot on PR #3.
+    """
+    pr_url = _pr_url()
+    reviews_url = f"{pr_url}/reviews?per_page=100"
+    checks_url = _check_runs_url("abc123") + "?per_page=100"
+    responses.add(
+        responses.GET,
+        pr_url,
+        json={
+            "number": PR_ID,
+            "title": "x",
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "mergeable": None,
+            "mergeable_state": mergeable_state,
+            "head": {"ref": "feat", "sha": "abc123"},
+            "base": {"ref": "main"},
+            "user": {"login": "u"},
+            "created_at": "2026-05-25T00:00:00Z",
+            "closed_at": None,
+            "html_url": pr_url,
+        },
+        status=200,
+    )
+    responses.add(responses.GET, reviews_url, json=[], status=200)
+    responses.add(responses.GET, checks_url, json={"check_runs": []}, status=200)
+
+    mod = _load_module(f"show_test_merge_{mergeable_state}", SCRIPTS_DIR / "show.py")
+    exit_code = mod.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["merge_status"] == expected_status

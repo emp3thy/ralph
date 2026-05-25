@@ -122,7 +122,8 @@ class GitHubClient:
             raise HttpError("GraphQL response was not JSON: " + response.text[:200]) from exc
         if isinstance(body, dict) and body.get("errors"):
             messages = "; ".join(
-                str(err.get("message", err)) for err in body["errors"] if isinstance(err, dict)
+                str(err.get("message", err)) if isinstance(err, dict) else str(err)
+                for err in body["errors"]
             )
             raise HttpError(f"GraphQL errors: {messages}")
         return body.get("data", {}) if isinstance(body, dict) else body

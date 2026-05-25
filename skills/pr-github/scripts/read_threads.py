@@ -152,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
 
         repository = data.get("repository") if isinstance(data, dict) else None
         pull_request = repository.get("pullRequest") if isinstance(repository, dict) else None
+        if pull_request is None:
+            raise FatalError(f"pull request #{pr_id} not found in {client.owner}/{repo}")
         review_threads = (
             pull_request.get("reviewThreads") if isinstance(pull_request, dict) else None
         )
