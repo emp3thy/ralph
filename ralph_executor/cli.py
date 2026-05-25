@@ -144,6 +144,58 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit diagnostics as JSON.",
     )
 
+    # ``ralph-executor init``
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Per-machine setup: pick ralph_home, write ~/.ralph/config.toml.",
+    )
+    init_parser.add_argument(
+        "--ralph-home",
+        type=Path,
+        metavar="PATH",
+        help="Skip the prompt and set ralph_home to PATH.",
+    )
+    init_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Non-interactive: accept the OS default for ralph_home.",
+    )
+
+    # ``ralph-executor scaffold``
+    scaffold_parser = subparsers.add_parser(
+        "scaffold",
+        help=(
+            "Per-repo setup: create ralph-queue branch with .ralph/ skeleton "
+            "(inbox, current, pending-pr, done, blocked) + commented config.toml stub. "
+            "Resolves target via the same --repo / --workspace / cwd chain as the loop."
+        ),
+    )
+    # Re-register --repo / --workspace on the subparser so they can appear
+    # AFTER the `scaffold` subcommand name (which matches the natural CLI
+    # shape `ralph-executor scaffold --repo PATH`). argparse-level mutual
+    # exclusion is preserved by the inner group.
+    scaffold_repo_group = scaffold_parser.add_mutually_exclusive_group()
+    scaffold_repo_group.add_argument(
+        "--repo",
+        help="Explicit path to the repo to scaffold.",
+    )
+    scaffold_repo_group.add_argument(
+        "--workspace",
+        metavar="NAME",
+        help="Resolve target against $RALPH_HOME/NAME (or ~/.ralph/config.toml).",
+    )
+    scaffold_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Scaffold even if ralph-queue branch already exists.",
+    )
+    scaffold_parser.add_argument(
+        "--no-config-toml",
+        dest="with_config_toml",
+        action="store_false",
+        help="Skip writing the .ralph/config.toml stub.",
+    )
+
     return parser
 
 
@@ -156,35 +208,58 @@ def _configure_logging(level: int) -> None:
     logging.getLogger("ralph_executor").setLevel(level)
 
 
+def _scaffold_resolve_target(args: argparse.Namespace) -> Path:
+    """Resolve the scaffold target via the same chain the loop uses:
+    ``--repo`` > ``--workspace`` > ``$RALPH_REPO_PATH`` > cwd.
+
+    Unlike ``load_config``, the scaffold path is NOT required to be a
+    valid git repo yet — ``cmd_scaffold`` will call ``validate_repo_path``
+    itself and surface the error consistently with its other errors.
+    """
+    if args.repo:
+        return Path(args.repo).resolve()
+    if args.workspace:
+        return _resolve_workspace(args.workspace)
+    env_value = os.environ.get("RALPH_REPO_PATH", "").strip()
+    if env_value:
+        return Path(env_value).resolve()
+    return Path.cwd().resolve()
+
+
 def _resolve_workspace(name: str) -> Path:
-    """Resolve ``--workspace NAME`` against ``$RALPH_HOME``.
+    """Resolve ``--workspace NAME`` against the ralph_home root.
+
+    Root resolution: ``$RALPH_HOME`` env var if set, else ``ralph_home``
+    from ``~/.ralph/config.toml`` (written by ``ralph-executor init``).
 
     ``NAME`` must be a plain directory name (no path separators, no
     parent-traversal, not absolute). Otherwise ``Path(home) / name``
-    would silently escape ``$RALPH_HOME`` — Python's ``Path / abs``
-    discards the LHS, and ``..`` traversal resolves outside the root.
+    would silently escape the root — Python's ``Path / abs`` discards
+    the LHS, and ``..`` traversal resolves outside the root.
 
-    Raises ``ConfigError`` if ``RALPH_HOME`` is unset/empty or if
-    ``name`` violates the plain-directory-name invariant.
+    Raises ``ConfigError`` if no root can be resolved or if ``name``
+    violates the plain-directory-name invariant.
     """
-    home_raw = os.environ.get("RALPH_HOME", "").strip()
-    if not home_raw:
-        raise ConfigError(
-            "--workspace requires RALPH_HOME to be set (e.g. "
-            "RALPH_HOME=C:\\dev\\ralph; ralph-executor --workspace my-repo "
-            "then resolves to C:\\dev\\ralph\\my-repo)"
-        )
+    from ralph_executor.user_config import read_ralph_home, user_config_path
+
+    env_value = os.environ.get("RALPH_HOME", "").strip()
+    if env_value:
+        home_path = Path(env_value)
+    else:
+        home_path_or_none = read_ralph_home()
+        if home_path_or_none is None:
+            raise ConfigError(
+                "--workspace needs a ralph_home root. Set $RALPH_HOME, or run "
+                f"`ralph-executor init` to write one to {user_config_path()}."
+            )
+        home_path = home_path_or_none
     name_path = Path(name)
-    if (
-        name_path.is_absolute()
-        or len(name_path.parts) != 1
-        or name_path.parts[0] in ("..", ".")
-    ):
+    if name_path.is_absolute() or len(name_path.parts) != 1 or name_path.parts[0] in ("..", "."):
         raise ConfigError(
             f"--workspace name must be a plain directory name "
             f"(no separators, no '.' or '..', not absolute); got: {name!r}"
         )
-    return (Path(home_raw) / name).resolve()
+    return (home_path / name).resolve()
 
 
 def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
@@ -270,11 +345,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
 
-    # --- dispatch subcommands that don't need config ---
+    # --- dispatch subcommands that don't need load_config ---
     if args.subcommand == "health":
         return _cmd_health(args)
     if args.subcommand == "doctor":
         return _cmd_doctor(args)
+    if args.subcommand == "init":
+        from ralph_executor.setup_cmds import cmd_init
+
+        try:
+            return cmd_init(ralph_home=args.ralph_home, assume_yes=args.yes)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.subcommand == "scaffold":
+        from ralph_executor.setup_cmds import cmd_scaffold
+
+        # Reuse the --repo / --workspace / cwd resolution chain rather
+        # than reimplement: synthesise a path the same way the loop does.
+        try:
+            scaffold_target = _scaffold_resolve_target(args)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return cmd_scaffold(
+            repo_path=scaffold_target,
+            force=args.force,
+            with_config_toml=args.with_config_toml,
+        )
 
     # --- default command: run the executor loop ---
     try:
