@@ -28,7 +28,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["ralph_executor", "scripts", "tests"]
+files = ["ralph_executor", "scripts", "skills", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
