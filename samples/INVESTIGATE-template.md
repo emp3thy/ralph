@@ -31,6 +31,9 @@ Minimum viable setup to reproduce real behaviour. Include:
 - Any non-obvious prerequisites (Docker, local databases, fake AWS).
 
 ## How to read the logs
+<!-- Test: tests/test_workspace_samples.py::test_investigate_template_present
+     searches for "How to read" as a case-insensitive substring. Keep this
+     prefix when editing. -->
 
 - Log format (JSON, key=value, plain text) and where to inspect them
   locally vs in each deployment environment.

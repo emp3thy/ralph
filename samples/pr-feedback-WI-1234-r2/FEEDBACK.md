@@ -10,7 +10,7 @@ updated_at: 2026-05-24T11:02:00+00:00
 
 # PR feedback — PBI WI-1234 — round 2
 
-**PR:** !4711 — "WI-1234: add /healthz endpoint"
+**PR:** #4711 — "WI-1234: add /healthz endpoint"
 **Branch:** ralph/WI-1234
 **Commit at time of feedback:** 9f1c0a3d1e4b2c5a7f8b6e3d4c5a9b8e7d6c5b4a
 **Reviewers:** alice@example.com, bob@example.com
@@ -25,7 +25,7 @@ updated_at: 2026-05-24T11:02:00+00:00
 
 > The new route is registered before the existing `@app.middleware("http")`
 > logging middleware. Move the registration below it so the health probes
-> are excluded from the access log filter we already added in PR !4690.
+> are excluded from the access log filter we already added in PR #4690.
 
 ---
 
