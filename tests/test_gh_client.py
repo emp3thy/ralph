@@ -117,6 +117,22 @@ def test_delete_returns_none_on_204() -> None:
 
 
 @responses.activate
+def test_200_with_empty_body_returns_none() -> None:
+    """A 200 response with an empty body returns None (defensive against
+    callers that would otherwise hit json.JSONDecodeError on response.json())."""
+    responses.add(
+        responses.GET,
+        f"{BASE}/repos/{OWNER}/{REPO}/empty",
+        body=b"",
+        status=200,
+    )
+
+    client = GhClient(token=TOKEN)
+    result = client.get(f"/repos/{OWNER}/{REPO}/empty")
+    assert result is None
+
+
+@responses.activate
 def test_non_2xx_raises_gh_error_with_status_and_body() -> None:
     responses.add(
         responses.GET,
@@ -155,3 +171,22 @@ def test_path_without_leading_slash_is_handled() -> None:
     client = GhClient(token=TOKEN)
     result = client.get(f"repos/{OWNER}/{REPO}")
     assert result == {"id": 1}
+
+
+@responses.activate
+def test_extra_headers_are_forwarded() -> None:
+    """extra_headers passed via _request are sent on the request."""
+    responses.add(
+        responses.GET,
+        f"{BASE}/repos/{OWNER}/{REPO}",
+        json={"id": 1},
+        status=200,
+    )
+
+    client = GhClient(token=TOKEN)
+    result = client._request(
+        "GET", f"/repos/{OWNER}/{REPO}", extra_headers={"X-Custom-Header": "ralph-test"}
+    )
+    assert result == {"id": 1}
+    call = responses.calls[0]
+    assert call.request.headers["X-Custom-Header"] == "ralph-test"

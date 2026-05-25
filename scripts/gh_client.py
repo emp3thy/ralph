@@ -56,6 +56,7 @@ class GhClient:
         self.timeout = timeout
         self._session = session or requests.Session()
 
+        # Note: any pre-existing Authorization on an injected session is overwritten.
         self._session.headers.update(
             {
                 "Authorization": f"Bearer {token}",
