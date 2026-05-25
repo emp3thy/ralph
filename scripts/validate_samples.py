@@ -86,7 +86,13 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
     """Validate frontmatter fields; return a list of error strings."""
     errors: list[str] = []
 
-    missing = [f for f in REQUIRED_FRONTMATTER_FIELDS if f not in frontmatter]
+    # Treat explicit null (YAML `field: null` / `field: ~`) the same as an
+    # absent key. Without this, `id: null` would pass the presence check;
+    # all per-field validators below short-circuit on None, so a fully-null
+    # frontmatter would validate clean.
+    missing = [
+        f for f in REQUIRED_FRONTMATTER_FIELDS if f not in frontmatter or frontmatter[f] is None
+    ]
     if missing:
         errors.append(f"missing frontmatter fields: {sorted(missing)}")
 

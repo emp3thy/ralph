@@ -123,3 +123,61 @@ def test_attempts_valid_int_accepted(tmp_path: Path) -> None:
     _write_feature_pbi(sample, attempts="2")
     errors = validate_sample(sample)
     assert errors == [], f"expected clean validation, got: {errors}"
+
+
+def test_null_required_field_treated_as_missing(tmp_path: Path) -> None:
+    """Regression: YAML `id: null` parses to Python None; without an explicit
+    None-as-missing rule, the presence check passes and every per-field
+    validator short-circuits on None, so an entirely-null frontmatter passes
+    clean. Caught by BugBot review on PR #1.
+    """
+    sample = tmp_path / "WI-null"
+    sample.mkdir()
+    (sample / "PBI.md").write_text(
+        "---\n"
+        "id: null\n"
+        "type: null\n"
+        "status: null\n"
+        "severity: null\n"
+        "attempts: null\n"
+        "created_at: null\n"
+        "updated_at: null\n"
+        "---\n\n# body\n",
+        encoding="utf-8",
+    )
+    (sample / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    (sample / "HISTORY.md").write_text("", encoding="utf-8")
+    errors = validate_sample(sample)
+    # All seven required fields are null; the validator must report them all
+    # as missing in a single aggregate error.
+    assert any("missing frontmatter fields" in e for e in errors), (
+        f"expected missing-fields error, got: {errors}"
+    )
+    missing_msg = next(e for e in errors if "missing frontmatter fields" in e)
+    for field in ("id", "type", "status", "severity", "attempts", "created_at", "updated_at"):
+        assert field in missing_msg, f"{field} not reported as missing: {missing_msg}"
+
+
+def test_single_null_field_treated_as_missing(tmp_path: Path) -> None:
+    """Same regression scoped to a single null field — `id: ~` (YAML tilde
+    syntax for null). Other fields present and valid."""
+    sample = tmp_path / "WI-null-id"
+    sample.mkdir()
+    (sample / "PBI.md").write_text(
+        "---\n"
+        "id: ~\n"
+        "type: feature\n"
+        "status: inbox\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "created_at: 2026-05-25T00:00:00+00:00\n"
+        "updated_at: 2026-05-25T00:00:00+00:00\n"
+        "---\n\n# body\n",
+        encoding="utf-8",
+    )
+    (sample / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    (sample / "HISTORY.md").write_text("", encoding="utf-8")
+    errors = validate_sample(sample)
+    assert any("missing frontmatter fields" in e and "'id'" in e for e in errors), (
+        f"expected id reported as missing, got: {errors}"
+    )
