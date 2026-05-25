@@ -31,11 +31,12 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal
 
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.types import PBI
@@ -138,8 +139,22 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
     return str(url) if isinstance(url, str) and url else None
 
 
+def _tee_stream(stream: IO[str], prefix: str, buf: list[str]) -> None:
+    """Drain a subprocess stream line-by-line: log each line live with a
+    prefix AND accumulate the raw content into ``buf`` for the caller."""
+    for raw_line in stream:
+        buf.append(raw_line)
+        log.info("%s %s", prefix, raw_line.rstrip())
+
+
 def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
-    """Run ``claude -p`` against the PBI and return a classified outcome."""
+    """Run ``claude -p`` against the PBI and return a classified outcome.
+
+    Tees Claude's stdout and stderr to the executor's logger live (so the
+    operator sees Claude's progress between iteration markers) while ALSO
+    accumulating the streams into ``outcome.stdout`` / ``outcome.stderr``
+    for the classifier and downstream diagnostics.
+    """
     argv = _build_argv(cfg, pbi)
     env = os.environ.copy()
     env["RALPH_PBI_DIR"] = str(pbi.path)
@@ -150,15 +165,30 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
         env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
-    result = subprocess.run(
+    proc = subprocess.Popen(
         argv,
         cwd=str(cfg.repo_path),
         env=env,
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        bufsize=1,
     )
+    stdout_buf: list[str] = []
+    stderr_buf: list[str] = []
+    # Popen with PIPE returns IO streams; assert for the type-checker.
+    assert proc.stdout is not None and proc.stderr is not None
+    t_out = threading.Thread(target=_tee_stream, args=(proc.stdout, "[claude]", stdout_buf))
+    t_err = threading.Thread(target=_tee_stream, args=(proc.stderr, "[claude!]", stderr_buf))
+    t_out.start()
+    t_err.start()
+    returncode = proc.wait()
+    t_out.join()
+    t_err.join()
+    stdout_text = "".join(stdout_buf)
+    stderr_text = "".join(stderr_buf)
     duration = time.monotonic() - start
+
     # Resolve PR state via gh AFTER Claude exits — this is the source of
     # truth for the "did Claude create a PR?" decision. stdout parsing
     # would be unreliable (PROMPT.md doesn't mandate a marker line and
@@ -167,9 +197,9 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     pr_url = _query_open_pr_via_gh(cfg.repo_path, feature_branch)
     return classify_outcome(
         pbi_dir=pbi.path,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        exit_code=result.returncode,
+        stdout=stdout_text,
+        stderr=stderr_text,
+        exit_code=returncode,
         duration_seconds=duration,
         pr_url=pr_url,
     )

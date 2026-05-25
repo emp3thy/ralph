@@ -161,6 +161,90 @@ def test_iterate_once_treats_error_like_partial(
     assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
 
 
+def test_partial_outcome_does_not_increment_attempts(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``partial`` outcomes are legitimate multi-step progress
+    and must NOT decrement the attempts budget."""
+    from ralph_executor.safety.attempts import read_attempts
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
+    before = read_attempts(pbi_dir)
+
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+    iterate_once(cfg_for_repo)
+    iterate_once(cfg_for_repo)
+    iterate_once(cfg_for_repo)
+
+    assert read_attempts(pbi_dir) == before, "partial must not increment attempts"
+
+
+def test_error_outcome_increments_attempts(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``error`` outcomes count as failed iterations and DO
+    decrement the budget."""
+    from ralph_executor.safety.attempts import read_attempts
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
+    before = read_attempts(pbi_dir)
+
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("error"),
+    )
+    iterate_once(cfg_for_repo)
+
+    assert read_attempts(pbi_dir) == before + 1, "error must increment attempts"
+
+
+def test_stuck_outcome_increments_attempts(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ``stuck`` outcomes also count as failed iterations.
+
+    The PBI is moved to ``blocked/`` by ``handle_stuck`` so we record the
+    attempts value AFTER the move (from the new location).
+    """
+    from ralph_executor.safety.attempts import read_attempts
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
+    before = read_attempts(pbi_dir)
+
+    def _stuck_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+        (pbi_dir / "STUCK.md").write_text("# stuck\n", encoding="utf-8")
+        return ClaudeOutcome(
+            kind="stuck",
+            pr_url=None,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.0,
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
+    iterate_once(cfg_for_repo)
+
+    blocked_dir = fake_repo / ".ralph" / "blocked" / "WI-1234"
+    assert blocked_dir.is_dir(), "stuck should move PBI to blocked/"
+    assert read_attempts(blocked_dir) == before + 1, "stuck must increment attempts"
+
+
 def test_iterate_once_invokes_sweep_stub_when_current_empty(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
@@ -359,7 +443,7 @@ def test_persist_iteration_writes_excludes_state_dir(
 
     monkeypatch.setattr(
         "ralph_executor.loop.spawn_claude_p",
-        _stub_spawn("partial"),  # attempts increment still dirties PBI.md
+        _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
 

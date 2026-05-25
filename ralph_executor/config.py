@@ -15,7 +15,10 @@ from typing import cast
 
 DEFAULT_QUEUE_BRANCH = "ralph-queue"
 DEFAULT_MAIN_BRANCH = "main"
-DEFAULT_MAX_ATTEMPTS = 3
+# Counts only FAILED iterations (stuck / error) — partial is multi-step
+# progress and doesn't decrement the budget. 20 gives a long plan plenty
+# of room to surface a genuinely stuck loop without false-tripping.
+DEFAULT_MAX_ATTEMPTS = 20
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_ITERATION_SLEEP_SECONDS = 30.0
 DEFAULT_CLAUDE_BINARY = "claude"
