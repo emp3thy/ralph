@@ -3,6 +3,7 @@
 Drives ``scripts.validate_samples`` against every directory under ``samples/``
 to verify that the canonical PBI frontmatter and sibling-file layout hold.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -54,7 +55,6 @@ def test_required_sample_dirs_exist(sample_name: str) -> None:
 @pytest.mark.parametrize("sample_name", REQUIRED_SAMPLE_DIRS)
 def test_sample_validates(sample_name: str) -> None:
     errors = validate_sample(SAMPLES_DIR / sample_name)
-    assert errors == [], (
-        f"validator errors for samples/{sample_name}:\n  - "
-        + "\n  - ".join(errors)
+    assert errors == [], f"validator errors for samples/{sample_name}:\n  - " + "\n  - ".join(
+        errors
     )

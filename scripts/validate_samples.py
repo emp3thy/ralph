@@ -9,6 +9,7 @@ Cross-plan reconciliation note #3: type is derived from the frontmatter
 directory names (e.g. ``feature-WI-1234``) are accepted as-is; the validator
 does not require or validate any naming prefix.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,9 +41,7 @@ ALLOWED_TYPES: frozenset[str] = frozenset({"feature", "bug", "pr-feedback"})
 ALLOWED_STATUSES: frozenset[str] = frozenset(
     {"inbox", "current", "pending-pr", "done", "blocked", "archive"}
 )
-ALLOWED_SEVERITIES: frozenset[str] = frozenset(
-    {"critical", "high", "normal", "low"}
-)
+ALLOWED_SEVERITIES: frozenset[str] = frozenset({"critical", "high", "normal", "low"})
 
 ENTRY_FILE_BY_TYPE: dict[str, str] = {
     "feature": "PBI.md",
@@ -90,22 +89,15 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
 
     pbi_type = frontmatter.get("type")
     if pbi_type is not None and pbi_type not in ALLOWED_TYPES:
-        errors.append(
-            f"type={pbi_type!r} not in allowed set {sorted(ALLOWED_TYPES)}"
-        )
+        errors.append(f"type={pbi_type!r} not in allowed set {sorted(ALLOWED_TYPES)}")
 
     status = frontmatter.get("status")
     if status is not None and status not in ALLOWED_STATUSES:
-        errors.append(
-            f"status={status!r} not in allowed set {sorted(ALLOWED_STATUSES)}"
-        )
+        errors.append(f"status={status!r} not in allowed set {sorted(ALLOWED_STATUSES)}")
 
     severity = frontmatter.get("severity")
     if severity is not None and severity not in ALLOWED_SEVERITIES:
-        errors.append(
-            f"severity={severity!r} not in allowed set "
-            f"{sorted(ALLOWED_SEVERITIES)}"
-        )
+        errors.append(f"severity={severity!r} not in allowed set {sorted(ALLOWED_SEVERITIES)}")
 
     attempts = frontmatter.get("attempts")
     if attempts is not None and not isinstance(attempts, int):
@@ -123,13 +115,10 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
             try:
                 datetime.fromisoformat(value)
             except ValueError:
-                errors.append(
-                    f"{field}={value!r} is not a valid ISO-8601 datetime"
-                )
+                errors.append(f"{field}={value!r} is not a valid ISO-8601 datetime")
         else:
             errors.append(
-                f"{field} must be a datetime or ISO-8601 string, "
-                f"got {type(value).__name__}"
+                f"{field} must be a datetime or ISO-8601 string, got {type(value).__name__}"
             )
 
     pbi_id = frontmatter.get("id")
@@ -155,10 +144,7 @@ def validate_sample(sample_dir: Path) -> list[str]:
     # Step 1: find candidate entry files.
     present = [f for f in _ALL_ENTRY_FILES if (sample_dir / f).is_file()]
     if len(present) == 0:
-        return [
-            "no entry file found; expected one of: "
-            + ", ".join(_ALL_ENTRY_FILES)
-        ]
+        return ["no entry file found; expected one of: " + ", ".join(_ALL_ENTRY_FILES)]
     if len(present) > 1:
         return [f"multiple entry files found: {present}"]
 
@@ -189,8 +175,7 @@ def validate_sample(sample_dir: Path) -> list[str]:
 
     if not isinstance(parsed, Mapping):
         return [
-            f"{entry_file_name} frontmatter must be a YAML mapping, "
-            f"got {type(parsed).__name__}"
+            f"{entry_file_name} frontmatter must be a YAML mapping, got {type(parsed).__name__}"
         ]
 
     errors: list[str] = []
@@ -223,9 +208,7 @@ def validate_sample(sample_dir: Path) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Validate sample PBI directories."
-    )
+    parser = argparse.ArgumentParser(description="Validate sample PBI directories.")
     parser.add_argument(
         "samples_dir",
         type=Path,
