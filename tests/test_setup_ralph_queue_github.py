@@ -243,3 +243,38 @@ def test_network_error_exits_nonzero(env: None, capsys: pytest.CaptureFixture[st
     assert exit_code == 2
     stderr = capsys.readouterr().err
     assert "network error" in stderr.lower() or "simulated network failure" in stderr
+
+
+@responses.activate
+def test_concurrent_create_422_still_applies_protection(
+    env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Race regression: when a concurrent run creates ralph-queue between our
+    GET-ref check and our POST-ref attempt, GitHub returns 422 'Reference
+    already exists'. The script must treat this as branch-existed-already and
+    still apply branch protection — otherwise the repo is left unprotected.
+    Caught by BugBot on PR #2.
+    """
+    _register_repo_lookup()
+    _register_main_tip()
+    _register_queue_branch_absent()
+    # POST returns 422 — branch was concurrently created.
+    responses.add(
+        responses.POST,
+        REFS_CREATE_URL,
+        json={"message": "Reference already exists"},
+        status=422,
+    )
+    _register_protection_put()
+
+    exit_code = setup_ralph_queue_github.main(["--repo", REPO])
+    assert exit_code == 0
+
+    payload: dict[str, Any] = json.loads(capsys.readouterr().out)
+    assert payload["branch_created"] is False
+    assert payload["branch_existed"] is True
+    assert payload["protection_applied"] is True
+    # Confirm the protection PUT actually fired (would be skipped if the 422
+    # had escaped to the outer GhError handler).
+    put_calls = [c for c in responses.calls if c.request.method == "PUT"]
+    assert len(put_calls) == 1

@@ -209,8 +209,22 @@ def main(argv: list[str] | None = None) -> int:
                     f"creating {args.branch} off {base_sha}...",
                     file=sys.stderr,
                 )
-                _create_branch(client, owner, args.repo, args.branch, base_sha)
-                branch_created = True
+                try:
+                    _create_branch(client, owner, args.repo, args.branch, base_sha)
+                    branch_created = True
+                except GhError as exc:
+                    # 422 "Reference already exists" — a concurrent run created
+                    # ralph-queue between our GET-ref (step 3) and our POST-ref
+                    # (step 4). Treat as already-existed and continue to
+                    # branch-protection so the repo doesn't end up unprotected.
+                    if exc.status_code == 422:
+                        print(
+                            f"{args.branch} was created concurrently; continuing",
+                            file=sys.stderr,
+                        )
+                        branch_existed = True
+                    else:
+                        raise
 
         protection_applied = False
         if args.dry_run:
