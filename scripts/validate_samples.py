@@ -1,0 +1,250 @@
+"""Validate sample PBI directories against the canonical frontmatter schema.
+
+The schema is defined in
+``docs/superpowers/plans/2026-05-24-00-orchestrator.md`` (Cross-plan
+integration points) and mirrored here for runtime enforcement.
+
+Cross-plan reconciliation note #3: type is derived from the frontmatter
+``type`` field, NOT from the directory name prefix. Type-prefixed sample
+directory names (e.g. ``feature-WI-1234``) are accepted as-is; the validator
+does not require or validate any naming prefix.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+REQUIRED_FRONTMATTER_FIELDS: tuple[str, ...] = (
+    "id",
+    "type",
+    "status",
+    "severity",
+    "attempts",
+    "created_at",
+    "updated_at",
+)
+
+ALLOWED_TYPES: frozenset[str] = frozenset({"feature", "bug", "pr-feedback"})
+ALLOWED_STATUSES: frozenset[str] = frozenset(
+    {"inbox", "current", "pending-pr", "done", "blocked", "archive"}
+)
+ALLOWED_SEVERITIES: frozenset[str] = frozenset(
+    {"critical", "high", "normal", "low"}
+)
+
+ENTRY_FILE_BY_TYPE: dict[str, str] = {
+    "feature": "PBI.md",
+    "bug": "BUG.md",
+    "pr-feedback": "FEEDBACK.md",
+}
+
+REQUIRED_SIBLINGS_BY_TYPE: dict[str, tuple[str, ...]] = {
+    "feature": ("PBI.md", "PLAN.md", "HISTORY.md"),
+    "bug": ("BUG.md", "REPRODUCE.md", "HISTORY.md"),
+    "pr-feedback": ("FEEDBACK.md", "PR-LINK.md", "ORIGINAL.md", "HISTORY.md"),
+}
+
+# All candidate entry filenames for exhaustive search.
+_ALL_ENTRY_FILES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
+
+# Maps entry filename back to the expected frontmatter type value.
+_TYPE_BY_ENTRY_FILE: dict[str, str] = {v: k for k, v in ENTRY_FILE_BY_TYPE.items()}
+
+
+def _split_frontmatter(text: str) -> tuple[str, str] | None:
+    """Return ``(frontmatter_yaml, body)`` if the file starts with a YAML block.
+
+    Returns ``None`` if no leading ``---`` fence is present.
+    """
+    if not text.startswith("---"):
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            frontmatter = "\n".join(lines[1:idx])
+            body = "\n".join(lines[idx + 1 :])
+            return frontmatter, body
+    return None
+
+
+def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
+    """Validate frontmatter fields; return a list of error strings."""
+    errors: list[str] = []
+
+    missing = [f for f in REQUIRED_FRONTMATTER_FIELDS if f not in frontmatter]
+    if missing:
+        errors.append(f"missing frontmatter fields: {sorted(missing)}")
+
+    pbi_type = frontmatter.get("type")
+    if pbi_type is not None and pbi_type not in ALLOWED_TYPES:
+        errors.append(
+            f"type={pbi_type!r} not in allowed set {sorted(ALLOWED_TYPES)}"
+        )
+
+    status = frontmatter.get("status")
+    if status is not None and status not in ALLOWED_STATUSES:
+        errors.append(
+            f"status={status!r} not in allowed set {sorted(ALLOWED_STATUSES)}"
+        )
+
+    severity = frontmatter.get("severity")
+    if severity is not None and severity not in ALLOWED_SEVERITIES:
+        errors.append(
+            f"severity={severity!r} not in allowed set "
+            f"{sorted(ALLOWED_SEVERITIES)}"
+        )
+
+    attempts = frontmatter.get("attempts")
+    if attempts is not None and not isinstance(attempts, int):
+        errors.append(f"attempts must be int, got {type(attempts).__name__}")
+    elif isinstance(attempts, int) and attempts < 0:
+        errors.append(f"attempts must be >= 0, got {attempts}")
+
+    for field in ("created_at", "updated_at"):
+        value = frontmatter.get(field)
+        if value is None:
+            continue
+        if isinstance(value, datetime):
+            continue
+        if isinstance(value, str):
+            try:
+                datetime.fromisoformat(value)
+            except ValueError:
+                errors.append(
+                    f"{field}={value!r} is not a valid ISO-8601 datetime"
+                )
+        else:
+            errors.append(
+                f"{field} must be a datetime or ISO-8601 string, "
+                f"got {type(value).__name__}"
+            )
+
+    pbi_id = frontmatter.get("id")
+    if pbi_id is not None and not isinstance(pbi_id, str):
+        errors.append(f"id must be a string, got {type(pbi_id).__name__}")
+    elif isinstance(pbi_id, str) and not pbi_id.strip():
+        errors.append("id must be a non-empty string")
+
+    return errors
+
+
+def validate_sample(sample_dir: Path) -> list[str]:
+    """Validate a single sample PBI directory.
+
+    Returns a list of error strings. An empty list means the sample is valid.
+
+    Type is derived from the frontmatter ``type`` field (reconciliation #3),
+    not the directory name. The directory name may carry any prefix or none.
+    """
+    if not sample_dir.is_dir():
+        return [f"not a directory: {sample_dir}"]
+
+    # Step 1: find candidate entry files.
+    present = [f for f in _ALL_ENTRY_FILES if (sample_dir / f).is_file()]
+    if len(present) == 0:
+        return [
+            "no entry file found; expected one of: "
+            + ", ".join(_ALL_ENTRY_FILES)
+        ]
+    if len(present) > 1:
+        return [f"multiple entry files found: {present}"]
+
+    entry_file_name = present[0]
+    entry_file = sample_dir / entry_file_name
+
+    # Step 2: read the entry file.
+    try:
+        text = entry_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"failed to read {entry_file_name}: {exc}"]
+
+    # Step 3: require a leading YAML frontmatter fence.
+    split = _split_frontmatter(text)
+    if split is None:
+        return [
+            f"{entry_file_name} does not start with a YAML frontmatter block "
+            f"(expected leading '---' fence)"
+        ]
+
+    frontmatter_yaml, _body = split
+
+    # Step 4: parse YAML.
+    try:
+        parsed: Any = yaml.safe_load(frontmatter_yaml)
+    except yaml.YAMLError as exc:
+        return [f"{entry_file_name} frontmatter is not valid YAML: {exc}"]
+
+    if not isinstance(parsed, Mapping):
+        return [
+            f"{entry_file_name} frontmatter must be a YAML mapping, "
+            f"got {type(parsed).__name__}"
+        ]
+
+    errors: list[str] = []
+
+    # Step 5: validate individual frontmatter fields.
+    errors.extend(_validate_frontmatter(parsed))
+
+    # Step 6: cross-check frontmatter type against entry filename.
+    # E.g. BUG.md requires type=bug; PBI.md requires type=feature, etc.
+    fm_type = parsed.get("type")
+    expected_type_for_entry = _TYPE_BY_ENTRY_FILE[entry_file_name]
+    if fm_type != expected_type_for_entry:
+        errors.append(
+            f"type={fm_type!r} does not match entry file {entry_file_name!r} "
+            f"(expected type={expected_type_for_entry!r})"
+        )
+
+    # Step 7: check required siblings.
+    # Use the entry-file-derived type (already validated above) for sibling
+    # lookup; fall back gracefully if type is unknown/invalid.
+    sibling_key = expected_type_for_entry
+    for sibling in REQUIRED_SIBLINGS_BY_TYPE[sibling_key]:
+        if not (sample_dir / sibling).is_file():
+            errors.append(f"missing required sibling file: {sibling}")
+
+    return errors
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Validate sample PBI directories."
+    )
+    parser.add_argument(
+        "samples_dir",
+        type=Path,
+        help="Path to the samples/ directory.",
+    )
+    args = parser.parse_args(argv)
+
+    samples_dir: Path = args.samples_dir
+    if not samples_dir.is_dir():
+        print(f"error: not a directory: {samples_dir}", file=sys.stderr)
+        return 2
+
+    any_errors = False
+    for child in sorted(samples_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        errs = validate_sample(child)
+        if errs:
+            any_errors = True
+            print(f"FAIL {child.name}", file=sys.stderr)
+            for err in errs:
+                print(f"  - {err}", file=sys.stderr)
+        else:
+            print(f"OK   {child.name}")
+
+    return 1 if any_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
