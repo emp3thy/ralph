@@ -29,6 +29,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["ralph_executor", "scripts", "skills", "tests"]
+exclude = ["skills/pr-github/scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
