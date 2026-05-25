@@ -90,6 +90,9 @@ All sub-plans MUST follow these conventions. Sub-plans should NOT re-explain the
 | `RALPH_RUN_ONCE` | Plans 7, 12 | When set (any non-empty value), executor runs exactly one iteration and exits — used by the pod smoke gate |
 | `RALPH_LOG_LEVEL` | Plan 7 | Logging level for the executor (default `INFO`) |
 | `RALPH_USE_BEDROCK` | Plan 11 | Switches `ralph-doctor`'s auth check from Anthropic API to AWS Bedrock |
+| `RALPH_GIT_HOST` | Plans 2, 3, 5, 7, 11, 12 | **Required, no default.** `github` or `ado`. Set once per pod / per local dev session. Determines which host-specific skills the executor stages at startup. |
+| `GH_TOKEN` | Plan 5, 11 (when `RALPH_GIT_HOST=github`) | GitHub PAT for the `pr` skill and `ralph-doctor` |
+| `GH_OWNER` | Plan 5 (when `RALPH_GIT_HOST=github`) | GitHub org or user (e.g. `myorg`) |
 
 ### Code style
 
@@ -106,10 +109,10 @@ All sub-plans MUST follow these conventions. Sub-plans should NOT re-explain the
 | # | File | One-line goal | Produces |
 |---|---|---|---|
 | 1 | `2026-05-24-01-workspace-samples.md` | Bootstrap Python project + sample PBI directories | `pyproject.toml`, `samples/feature-*/`, `samples/bug-*/`, `samples/pr-feedback-*/`, `samples/INVESTIGATE-template.md` |
-| 2 | `2026-05-24-02-ralph-queue-branch.md` | Set up `ralph-queue` branch + ADO branch policy on a test repo | Doc: how to set up `ralph-queue` on any service repo (manifest of policy settings + manual steps) |
-| 3 | `2026-05-24-03-ralph-add-skill.md` | `ralph-add` skill: takes ADO work item ID, writes PBI to `ralph-queue` | `skills/ralph-add/SKILL.md`, `skills/ralph-add/scripts/add.py`, `tests/skills/test_ralph_add.py` |
-| 4 | `2026-05-24-04-ralph-status-skill.md` | `ralph-status` skill: read-only queue view | `skills/ralph-status/SKILL.md`, `skills/ralph-status/scripts/show.py`, tests |
-| 5 | `2026-05-24-05-ado-pr-skill.md` | `ado-pr` skill: create-pr, read-threads, reply, set-status, show | `skills/ado-pr/SKILL.md`, `skills/ado-pr/scripts/*.py` (5 ops), tests |
+| 2 | `2026-05-24-02-ralph-queue-branch.md` | Set up `ralph-queue` branch + branch protection on a test repo. **Phase 1** = GitHub branch protection (the script we run at home); **Phase 2** = ADO branch policy. | `scripts/setup_ralph_queue_github.py` (Phase 1), `scripts/setup_ralph_queue_ado.py` (Phase 2), runbook covering both |
+| 3 | `2026-05-24-03-ralph-add-skill.md` | `ralph-add` skill (host-agnostic orchestrator) + `workitem-fetch-github/` (Phase 1). Phase 2 adds `workitem-fetch-ado/`. | `skills/ralph-add/`, `skills/workitem-fetch-github/`, `skills/workitem-fetch-ado/` (Phase 2), tests |
+| 4 | `2026-05-24-04-ralph-status-skill.md` | `ralph-status` skill: read-only queue view (host-agnostic) | `skills/ralph-status/SKILL.md`, `skills/ralph-status/scripts/show.py`, tests |
+| 5 | `2026-05-24-05-ado-pr-skill.md` | `pr` skill: create-pr, read-threads, reply, set-status, show. **Phase 1** = `pr-github/`; **Phase 2** = `pr-ado/`. Skills are host-pure; executor stages whichever one at startup. | `skills/pr-github/` (Phase 1), `skills/pr-ado/` (Phase 2), shared SKILL.md conventions, tests for both |
 | 6 | `2026-05-24-06-prompt-md.md` | The standing PROMPT.md Ralph reads every iteration | `prompt/PROMPT.md`, plus a doc explaining how to iterate it |
 | 7 | `2026-05-24-07-executor-core.md` | `ralph-executor` Python package: loop driver, queue-source, claude-p spawn, branch juggling, `current/` discipline | `ralph_executor/` package, `tests/` package |
 | 8 | `2026-05-24-08-sweep-logic.md` | Sweep module: observe PR state changes, generate PR-feedback PBIs | `ralph_executor/sweep/`, tests |
@@ -352,6 +355,61 @@ Ralph v1 is "done" when:
 - A demo run on a throwaway service repo shows: BA submits a PBI via `ralph-add`, executor picks it up, Ralph closes it via PR, the PR auto-merges, `ralph-status` shows it as done
 
 Any deviation gets a follow-up plan, not a hack.
+
+---
+
+## Host selection architecture — GitHub (Phase 1) and ADO (Phase 2)
+
+Ralph supports two git-host backends: **GitHub** and **Azure DevOps**. The choice is made once per pod (or once per local dev session) via `RALPH_GIT_HOST` and is fixed for that pod's lifetime. The executor stages the chosen host's skills at startup; Claude never sees both.
+
+### Why this shape
+
+- **Skills are host-pure**, not host-aware. Each skill implementation deals with one backend only — no `if HOST == "github"` ladders inside scripts.
+- **The executor is the multiplexer.** At startup, it reads `RALPH_GIT_HOST`, stages the matching skills, and verifies auth env vars are present for that host. Same pattern as every other "executor controls Claude" property in the design.
+- **Phase 1 = GitHub.** Built by humans at home, used to dogfood Ralph against real GitHub projects.
+- **Phase 2 = ADO.** Built by Ralph (or humans) for work deployment. The Phase 2 work is host-pure too: separate skill files implementing the same operation surface as Phase 1's GitHub skills.
+
+### Skill staging at startup
+
+The executor's startup phase (before the iteration loop) does:
+
+1. Read `RALPH_GIT_HOST` (fail fast if unset).
+2. Verify the host's auth env vars are present (`GH_TOKEN`+`GH_OWNER` for `github`; `ADO_PAT`+`ADO_ORG_URL`+`ADO_PROJECT` for `ado`).
+3. Stage the chosen skill directories into the Claude skills location:
+   - `skills/pr-github/` → exposed to Claude as `pr/` (when host is `github`)
+   - `skills/pr-ado/` → exposed to Claude as `pr/` (when host is `ado`)
+   - `skills/workitem-fetch-github/` → exposed as `workitem-fetch/` (when host is `github`)
+   - `skills/workitem-fetch-ado/` → exposed as `workitem-fetch/` (when host is `ado`)
+4. Verify the stage worked (the `pr` and `workitem-fetch` skill directories exist with the expected scripts).
+5. Write `.claude/settings.json` with `permissions.allow` entries — same skill names regardless of host.
+
+Staging can be symlink (Linux/Mac) or copy (Windows / when symlinks aren't available). Both work; symlink is faster.
+
+**Alternative — pre-staged image (Plan 12):** the Dockerfile can do the staging at build time using a `--build-arg RALPH_GIT_HOST=github|ado` flag, producing host-specific images. Then there's no runtime staging at all. Plan 12 documents both approaches; either works.
+
+### Skills affected
+
+| Skill | GitHub variant (Phase 1) | ADO variant (Phase 2) |
+|---|---|---|
+| `pr` | `pr-github/` — uses `gh` CLI or GitHub REST | `pr-ado/` — uses ADO REST via `ado_client.py` |
+| `workitem-fetch` | `workitem-fetch-github/` — GitHub Issues API | `workitem-fetch-ado/` — ADO Work Items REST |
+
+The other skills (`ralph-add`, `ralph-status`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-doctor`) are host-agnostic in their orchestration but `ralph-doctor` probes one host at a time based on `RALPH_GIT_HOST`.
+
+### Plans affected
+
+- **Plan 2** — splits into Phase 1 (GitHub branch protection script) + Phase 2 (ADO branch policy script). Both produce a single Python helper for their host, plus a runbook covering both.
+- **Plan 3** — `ralph-add` becomes a host-agnostic orchestrator that calls the staged `workitem-fetch/` skill. Plan 3 also delivers Phase 1's `workitem-fetch-github/`. Phase 2's `workitem-fetch-ado/` is a follow-up.
+- **Plan 5** — split into Phase 1 (`pr-github/` skill) + Phase 2 (`pr-ado/` skill). Both implement the same 5 operations.
+- **Plan 7** — executor adds `host_select.py` (~100 lines) that runs at startup, stages skills, verifies auth.
+- **Plan 11** — `ralph-doctor` probes one configured host. Adds a check that the staged skills directory matches `RALPH_GIT_HOST`.
+- **Plan 12** — Dockerfile adds `ARG RALPH_GIT_HOST` and conditional `COPY` of the appropriate skills, producing host-specific images. Alternative: runtime staging via Plan 7's `host_select.py`.
+
+The other 7 plans (1, 4, 6, 8, 9, 10, 13) are unchanged — they're already host-agnostic.
+
+### Phase order
+
+Phase 1 (GitHub) work is everything needed to run Ralph at home on real GitHub repos. Phase 2 (ADO) work is everything needed to run Ralph at work on ADO repos — and is itself a candidate for being built BY Ralph running on GitHub. The bootstrap order described in the spec's "Ralph builds Ralph" discussion fits naturally: humans build Phase 1, then Ralph picks up Phase 2 PBIs.
 
 ---
 

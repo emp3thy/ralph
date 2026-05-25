@@ -8,13 +8,18 @@
 
 - `types.py` — the canonical typed shapes (`PBIType`, `PBIStatus`, `Severity`, `PBI` dataclass) referenced by Plans 8, 9, 10 per the orchestrator's [Cross-plan integration points](./2026-05-24-00-orchestrator.md#cross-plan-integration-points).
 - `config.py` — `ExecutorConfig` dataclass + `load_config()` that reads `RALPH_*` / `ANTHROPIC_API_KEY` environment variables, validates the working tree, and produces an immutable configuration object passed through the rest of the package.
+- `host_select.py` — startup-phase host selection (per the orchestrator's [Host selection architecture](./2026-05-24-00-orchestrator.md#host-selection-architecture--github-phase-1-and-ado-phase-2)). Reads `RALPH_GIT_HOST`, verifies the host's auth env vars, stages the chosen `pr-<host>/` and `workitem-fetch-<host>/` skill directories into the Claude skills location, and verifies the stage. Called once from `cli.py` BEFORE the iteration loop. Fails fast with a clear error if any step fails.
 - `git_ops.py` — thin subprocess wrappers around the git binary (`fetch`, `checkout`, `pull`, `current_branch`, `commit_all`, `push`, `mv` via `git mv`, `is_branch_present`). Every git call goes through `_run_git` so tests can monkeypatch one place.
 - `queue/filesystem.py` — `FilesystemQueueSource` implementing the canonical queue-source contract: read PBIs from the `.ralph/<state>/` directories on the `ralph-queue` checkout, parse their frontmatter, return `PBI` dataclasses, sorted by priority lane.
 - `queue/movements.py` — atomic folder-move operations between queue states (`move_inbox_to_current`, `move_current_to_pending_pr`, `move_current_to_blocked`). Every move uses `git mv` + commit + push on `ralph-queue` and updates the entry file's frontmatter (`status:` and `updated_at:`).
 - `claude_spawn.py` — `spawn_claude_p` runs `claude -p` as a subprocess against the current PBI, captures stdout/stderr, and `classify_outcome` inspects the combined output + on-disk side effects (`STUCK.md` present? PR URL printed? branch advanced?) to produce a typed `ClaudeOutcome`.
 - `loop.py` — `iterate_once(cfg)` runs one iteration of the loop (the algorithm described in the spec's "Iteration model"); `run_loop(cfg)` repeatedly calls `iterate_once` until interrupted. The sweep step and the cycle-detector hook are typed stubs that Plans 8 and 9 implement.
-- `cli.py` — `main(argv)` entry point: argparse, load config, run loop, handle KeyboardInterrupt cleanly.
-- `__init__.py` — re-exports the public API (`PBI`, `ExecutorConfig`, `iterate_once`, `run_loop`, `main`).
+- `cli.py` — `main(argv)` entry point: argparse, load config, run `prepare_host_environment` (from `host_select.py`) BEFORE entering the loop, run loop, handle KeyboardInterrupt cleanly.
+- `__init__.py` — re-exports the public API (`PBI`, `ExecutorConfig`, `iterate_once`, `run_loop`, `main`, `prepare_host_environment`).
+
+### Phases
+
+`host_select.py` is **Phase 1 essential** — Ralph cannot start without it. The module ships in this plan with the GitHub assets it requires (`skills/pr-github/`, `skills/workitem-fetch-github/`) produced by Plans 3 and 5. Phase 2 (ADO) adds `skills/pr-ado/` and `skills/workitem-fetch-ado/` — `host_select.py` is forward-compatible with both: it reads the `RALPH_GIT_HOST` value and stages whatever pair of directories exists for that host. If the chosen pair is absent (e.g. ADO selected before Phase 2 ADO skill PRs land), `prepare_host_environment` fails fast with a clear pointer to which skill directory is missing.
 
 The tests mirror the package: every module gets a `tests/executor/test_<module>.py`. Git is mocked through a single `fake_git` fixture that intercepts subprocess invocations. `claude -p` is mocked through a fake-claude script (a tiny Python script written into `tmp_path` and invoked as the binary) so the executor's spawn-and-classify logic is exercised end-to-end without ever calling real Claude.
 
@@ -30,6 +35,7 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
 | `ralph_executor/__init__.py` | Replace the Plan 1 stub with a small re-export surface so callers write `from ralph_executor import PBI, ExecutorConfig, iterate_once, run_loop`. |
 | `ralph_executor/types.py` | Canonical typed shapes shared with Plans 8, 9, 10: `PBIType`, `PBIStatus`, `Severity` (Literal aliases) plus the frozen `PBI` dataclass. |
 | `ralph_executor/config.py` | `ExecutorConfig` dataclass; `load_config()` resolves env vars (`RALPH_REPO_PATH`, `RALPH_QUEUE_BRANCH`, `RALPH_MAIN_BRANCH`, `RALPH_MAX_ATTEMPTS`, `RALPH_LOG_LEVEL`, `RALPH_ITERATION_SLEEP_SECONDS`, `RALPH_CLAUDE_BINARY`, `ANTHROPIC_API_KEY`); validates the repo path is a git working tree. |
+| `ralph_executor/host_select.py` | Startup-phase host selection per the orchestrator's [Host selection architecture](./2026-05-24-00-orchestrator.md#host-selection-architecture--github-phase-1-and-ado-phase-2). Exposes `select_host()`, `verify_auth_env(host)`, `stage_skills(host, skills_root, claude_skills_dir)`, `verify_staged(claude_skills_dir)`, and the orchestrator `prepare_host_environment(...)`. Reads `RALPH_GIT_HOST`, `RALPH_SKILLS_ROOT` (default: `<package_install_dir>/../skills` resolved relative to this module's `__file__`), and `RALPH_CLAUDE_SKILLS_DIR` (default: `~/.claude/skills`). Stages `pr-<host>/` → `pr/` and `workitem-fetch-<host>/` → `workitem-fetch/` via `shutil.copytree(..., dirs_exist_ok=True)` (Windows-safe; symlink is an optional optimisation on POSIX). |
 | `ralph_executor/git_ops.py` | Subprocess wrappers: `_run_git`, `current_branch`, `fetch`, `pull`, `checkout`, `checkout_new`, `branch_exists`, `is_branch_remote`, `commit_all`, `push`, `mv`, `add`, `rev_parse_head`. |
 | `ralph_executor/queue/__init__.py` | Empty package marker. |
 | `ralph_executor/queue/filesystem.py` | `FilesystemQueueSource` class: `current_pbi()`, `inbox_pbis()`, `pick_next()`, plus shared frontmatter parsing (`parse_pbi_directory`). Sorts by severity lane (`PR-feedback type` > `critical` > `high` > `normal` > `low`) and within each lane by `created_at`. |
@@ -46,7 +52,8 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
 | `tests/executor/test_movements.py` | Each `move_*` helper performs `git mv`, updates frontmatter, commits, pushes; PBI lands in the destination folder and the entry file's `status:` is updated. |
 | `tests/executor/test_claude_spawn.py` | `spawn_claude_p` invokes the fake binary, captures output, and `classify_outcome` returns the right `ClaudeOutcome.kind` for each of the four cases. |
 | `tests/executor/test_loop.py` | Full iteration scenarios: `current` empty → claim from inbox; `current` occupied → spawn Ralph; PR-created outcome → move to pending-pr; stuck outcome → move to blocked; partial outcome → PBI stays in current. Plan-8 and Plan-9 stub call sites are asserted via spies. |
-| `tests/executor/test_cli.py` | `main` returns 0 on KeyboardInterrupt, parses `--once`, `--repo`, `--log-level`. |
+| `tests/executor/test_cli.py` | `main` returns 0 on KeyboardInterrupt, parses `--once`, `--repo`, `--log-level`; calls `prepare_host_environment` before the loop and exits non-zero on failure. |
+| `tests/executor/test_host_select.py` | `select_host` + `verify_auth_env` env-driven success / failure cases; `stage_skills` + `verify_staged` against tempdir fixtures asserting `pr-<host>/` → `pr/` and `workitem-fetch-<host>/` → `workitem-fetch/`; `prepare_host_environment` orchestration end-to-end with synthetic env. |
 
 ---
 
@@ -2782,7 +2789,1003 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
 
 ---
 
-## Task 10 — CLI entry point (`ralph_executor/cli.py`) + public re-exports
+## Task 10 — Host selection: env reader + auth verification (`ralph_executor/host_select.py`, part 1)
+
+**Files**
+- Create: `tests/executor/test_host_select.py`
+- Create: `ralph_executor/host_select.py`
+
+This is the first of three host-selection tasks. It introduces `select_host()` (reads `RALPH_GIT_HOST`) and `verify_auth_env(host)` (checks the host's required auth env vars). The next task (Task 11) adds `stage_skills` + `verify_staged`; Task 12 wires the orchestrator function and CLI startup.
+
+The defaulting logic for `RALPH_SKILLS_ROOT` and `RALPH_CLAUDE_SKILLS_DIR` is documented here but implemented in Task 11 where it is first used.
+
+**Steps**
+
+- [ ] 1. Write the failing test at `tests/executor/test_host_select.py`. This step lands tests for `select_host` and `verify_auth_env` only; the stage_skills / verify_staged / prepare_host_environment tests are added in Tasks 11 and 12 (each task lands its own red-then-green pair).
+  ```python
+  """Tests for ``ralph_executor.host_select``.
+
+  Each task in the host-selection sequence adds its own tests to this
+  module — start with ``select_host`` and ``verify_auth_env``, then
+  ``stage_skills``/``verify_staged``, then ``prepare_host_environment``.
+  """
+  from __future__ import annotations
+
+  import pytest
+
+  from ralph_executor.host_select import (
+      HostSelectionError,
+      select_host,
+      verify_auth_env,
+  )
+
+
+  # --- select_host ------------------------------------------------------
+
+  def test_select_host_returns_github(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      assert select_host() == "github"
+
+
+  def test_select_host_returns_ado(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("RALPH_GIT_HOST", "ado")
+      assert select_host() == "ado"
+
+
+  def test_select_host_is_case_insensitive(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("RALPH_GIT_HOST", "GitHub")
+      assert select_host() == "github"
+
+
+  def test_select_host_missing_env_raises_clear_error(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.delenv("RALPH_GIT_HOST", raising=False)
+      with pytest.raises(HostSelectionError) as excinfo:
+          select_host()
+      msg = str(excinfo.value)
+      assert "RALPH_GIT_HOST" in msg
+      assert "github" in msg
+      assert "ado" in msg
+
+
+  def test_select_host_unknown_value_raises_clear_error(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("RALPH_GIT_HOST", "gitlab")
+      with pytest.raises(HostSelectionError) as excinfo:
+          select_host()
+      msg = str(excinfo.value)
+      assert "RALPH_GIT_HOST" in msg
+      assert "gitlab" in msg
+      assert "github" in msg
+      assert "ado" in msg
+
+
+  def test_select_host_empty_env_raises(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("RALPH_GIT_HOST", "   ")
+      with pytest.raises(HostSelectionError, match="RALPH_GIT_HOST"):
+          select_host()
+
+
+  # --- verify_auth_env --------------------------------------------------
+
+  def test_verify_auth_env_github_happy_path(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("GH_TOKEN", "ghp_dummy")
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+      verify_auth_env("github")  # must not raise
+
+
+  def test_verify_auth_env_ado_happy_path(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("ADO_PAT", "pat_dummy")
+      monkeypatch.setenv("ADO_ORG_URL", "https://dev.azure.com/contoso")
+      monkeypatch.setenv("ADO_PROJECT", "Contoso")
+      verify_auth_env("ado")
+
+
+  def test_verify_auth_env_github_missing_token(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.delenv("GH_TOKEN", raising=False)
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+      with pytest.raises(HostSelectionError) as excinfo:
+          verify_auth_env("github")
+      msg = str(excinfo.value)
+      assert "GH_TOKEN" in msg
+      assert "github" in msg
+
+
+  def test_verify_auth_env_github_missing_owner(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("GH_TOKEN", "ghp_dummy")
+      monkeypatch.delenv("GH_OWNER", raising=False)
+      with pytest.raises(HostSelectionError, match="GH_OWNER"):
+          verify_auth_env("github")
+
+
+  def test_verify_auth_env_ado_missing_pat(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.delenv("ADO_PAT", raising=False)
+      monkeypatch.setenv("ADO_ORG_URL", "https://dev.azure.com/contoso")
+      monkeypatch.setenv("ADO_PROJECT", "Contoso")
+      with pytest.raises(HostSelectionError, match="ADO_PAT"):
+          verify_auth_env("ado")
+
+
+  def test_verify_auth_env_ado_missing_org_url(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("ADO_PAT", "pat_dummy")
+      monkeypatch.delenv("ADO_ORG_URL", raising=False)
+      monkeypatch.setenv("ADO_PROJECT", "Contoso")
+      with pytest.raises(HostSelectionError, match="ADO_ORG_URL"):
+          verify_auth_env("ado")
+
+
+  def test_verify_auth_env_ado_missing_project(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      monkeypatch.setenv("ADO_PAT", "pat_dummy")
+      monkeypatch.setenv("ADO_ORG_URL", "https://dev.azure.com/contoso")
+      monkeypatch.delenv("ADO_PROJECT", raising=False)
+      with pytest.raises(HostSelectionError, match="ADO_PROJECT"):
+          verify_auth_env("ado")
+
+
+  def test_verify_auth_env_unknown_host_raises(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      with pytest.raises(HostSelectionError, match="unknown host"):
+          verify_auth_env("gitlab")
+
+
+  def test_verify_auth_env_error_message_names_all_missing_vars(
+      monkeypatch: pytest.MonkeyPatch,
+  ) -> None:
+      """When multiple required vars are missing, the message names all of them."""
+      monkeypatch.delenv("ADO_PAT", raising=False)
+      monkeypatch.delenv("ADO_ORG_URL", raising=False)
+      monkeypatch.delenv("ADO_PROJECT", raising=False)
+      with pytest.raises(HostSelectionError) as excinfo:
+          verify_auth_env("ado")
+      msg = str(excinfo.value)
+      assert "ADO_PAT" in msg
+      assert "ADO_ORG_URL" in msg
+      assert "ADO_PROJECT" in msg
+  ```
+
+- [ ] 2. Run the failing test:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: `ModuleNotFoundError: No module named 'ralph_executor.host_select'`.
+
+- [ ] 3. Implement `ralph_executor/host_select.py` with the content below. This step lands the module skeleton + `select_host` + `verify_auth_env` + the `HostSelectionError` exception; `stage_skills`, `verify_staged`, and `prepare_host_environment` are stubbed with `NotImplementedError` and filled in by Tasks 11 and 12. The stubs carry docstrings tagged "Task 11 fills this in" / "Task 12 fills this in" so the seams are explicit.
+  ```python
+  """Startup-phase host selection for the executor.
+
+  Ralph supports two git-host backends: ``github`` and ``ado``. The choice
+  is made once per pod (or once per local dev session) via the
+  ``RALPH_GIT_HOST`` environment variable and is fixed for that pod's
+  lifetime. This module runs once at startup BEFORE the iteration loop:
+
+    1. ``select_host()`` reads and validates ``RALPH_GIT_HOST``.
+    2. ``verify_auth_env(host)`` checks the host's required auth vars.
+    3. ``stage_skills(host, skills_root, claude_skills_dir)`` copies the
+       chosen ``pr-<host>/`` and ``workitem-fetch-<host>/`` directories
+       into the Claude skills location as ``pr/`` and ``workitem-fetch/``.
+    4. ``verify_staged(claude_skills_dir)`` sanity-checks the result.
+    5. ``prepare_host_environment(...)`` orchestrates the above and is
+       called once from ``cli.py`` before the iteration loop starts.
+
+  See the orchestrator's "Host selection architecture" section for the
+  design rationale.
+
+  Environment variables (all read here, none in ``config.py``):
+
+  * ``RALPH_GIT_HOST`` — required. Either ``github`` or ``ado``.
+  * ``GH_TOKEN``, ``GH_OWNER`` — required when host is ``github``.
+  * ``ADO_PAT``, ``ADO_ORG_URL``, ``ADO_PROJECT`` — required when ``ado``.
+  * ``RALPH_SKILLS_ROOT`` — optional. Path to the source ``skills/`` tree
+    containing ``pr-github/``, ``pr-ado/``, ``workitem-fetch-github/``,
+    ``workitem-fetch-ado/``. Defaults to ``<this_module_dir>/../skills``,
+    i.e. the ``skills/`` sibling of the ``ralph_executor/`` package in a
+    source checkout. Override when running from a packaged install whose
+    skills tree lives elsewhere.
+  * ``RALPH_CLAUDE_SKILLS_DIR`` — optional. Path to the Claude skills
+    directory (where staged ``pr/`` and ``workitem-fetch/`` end up).
+    Defaults to ``~/.claude/skills``.
+  """
+  from __future__ import annotations
+
+  import logging
+  import os
+  from pathlib import Path
+  from typing import Final, Literal
+
+  log = logging.getLogger(__name__)
+
+  Host = Literal["github", "ado"]
+
+  VALID_HOSTS: Final[tuple[Host, ...]] = ("github", "ado")
+
+  REQUIRED_AUTH_ENV: Final[dict[str, tuple[str, ...]]] = {
+      "github": ("GH_TOKEN", "GH_OWNER"),
+      "ado": ("ADO_PAT", "ADO_ORG_URL", "ADO_PROJECT"),
+  }
+
+
+  class HostSelectionError(RuntimeError):
+      """Raised when host selection / staging / verification fails.
+
+      Every message names the offending env var (or skill directory) so the
+      operator can fix the problem without reading source.
+      """
+
+
+  def _is_blank(value: str | None) -> bool:
+      return value is None or not value.strip()
+
+
+  def select_host() -> Host:
+      """Read ``RALPH_GIT_HOST`` and return the canonical host string.
+
+      Raises ``HostSelectionError`` if the variable is unset, blank, or
+      not one of the supported hosts.
+      """
+      raw = os.environ.get("RALPH_GIT_HOST")
+      if _is_blank(raw):
+          raise HostSelectionError(
+              "RALPH_GIT_HOST is required but unset or blank. "
+              f"Set it to one of {list(VALID_HOSTS)} before starting "
+              "ralph-executor (e.g. `export RALPH_GIT_HOST=github`)."
+          )
+      assert raw is not None  # narrowed by _is_blank
+      normalised = raw.strip().lower()
+      if normalised not in VALID_HOSTS:
+          raise HostSelectionError(
+              f"RALPH_GIT_HOST={raw!r} is not a supported host. "
+              f"Valid values: {list(VALID_HOSTS)}. "
+              "Set RALPH_GIT_HOST=github for GitHub repos or "
+              "RALPH_GIT_HOST=ado for Azure DevOps repos."
+          )
+      return normalised  # type: ignore[return-value]
+
+
+  def verify_auth_env(host: str) -> None:
+      """Check that the host's required auth env vars are present.
+
+      Raises ``HostSelectionError`` listing every missing variable. The
+      caller is expected to have already validated ``host`` via
+      ``select_host``; we re-check defensively here.
+      """
+      if host not in REQUIRED_AUTH_ENV:
+          raise HostSelectionError(
+              f"verify_auth_env: unknown host {host!r}. "
+              f"Valid hosts: {list(VALID_HOSTS)}."
+          )
+      required = REQUIRED_AUTH_ENV[host]
+      missing = [name for name in required if _is_blank(os.environ.get(name))]
+      if missing:
+          raise HostSelectionError(
+              f"RALPH_GIT_HOST={host} but required auth env var(s) "
+              f"missing or blank: {missing}. "
+              f"Set all of {list(required)} before starting "
+              "ralph-executor. See docs/superpowers/plans/"
+              "2026-05-24-00-orchestrator.md#host-selection-architecture--"
+              "github-phase-1-and-ado-phase-2 for the full list."
+          )
+
+
+  def stage_skills(
+      host: str, skills_root: Path, claude_skills_dir: Path
+  ) -> None:
+      """Stub — Task 11 fills this in.
+
+      Will copy ``skills_root/pr-<host>/`` to
+      ``claude_skills_dir/pr/`` and
+      ``skills_root/workitem-fetch-<host>/`` to
+      ``claude_skills_dir/workitem-fetch/`` using
+      ``shutil.copytree(..., dirs_exist_ok=True)``.
+      """
+      raise NotImplementedError("stage_skills lands in Task 11")
+
+
+  def verify_staged(claude_skills_dir: Path) -> None:
+      """Stub — Task 11 fills this in.
+
+      Will assert that ``claude_skills_dir/pr/scripts/create-pr.py`` and
+      ``claude_skills_dir/workitem-fetch/scripts/fetch.py`` are present.
+      """
+      raise NotImplementedError("verify_staged lands in Task 11")
+
+
+  def prepare_host_environment(
+      *,
+      skills_root: Path | None = None,
+      claude_skills_dir: Path | None = None,
+  ) -> Host:
+      """Stub — Task 12 fills this in.
+
+      Will call ``select_host`` → ``verify_auth_env`` → ``stage_skills``
+      → ``verify_staged`` in order. Returns the selected host so callers
+      can log it.
+      """
+      raise NotImplementedError("prepare_host_environment lands in Task 12")
+  ```
+
+- [ ] 4. Re-run the test; it must pass:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: every `select_host` / `verify_auth_env` test passes. (The `NotImplementedError` stubs are not exercised yet.)
+
+- [ ] 5. Run ruff + mypy:
+  ```
+  uv run ruff check ralph_executor/host_select.py tests/executor/test_host_select.py
+  uv run mypy ralph_executor/host_select.py tests/executor/test_host_select.py
+  ```
+  Expected: both report success.
+
+- [ ] 6. Commit:
+  ```
+  git add ralph_executor/host_select.py tests/executor/test_host_select.py
+  git commit -m "feat(executor): add host_select.select_host + verify_auth_env (Phase 1 essential)"
+  ```
+  Expected: commit succeeds.
+
+---
+
+## Task 11 — Host selection: skill staging + post-stage verification
+
+**Files**
+- Modify: `tests/executor/test_host_select.py`
+- Modify: `ralph_executor/host_select.py`
+
+**Steps**
+
+- [ ] 1. Append the failing tests for `stage_skills` + `verify_staged` to `tests/executor/test_host_select.py`. Add the imports up top (alongside the existing ones) and the test functions at the bottom of the file:
+
+  Add to the existing import line:
+  ```python
+  from pathlib import Path
+
+  from ralph_executor.host_select import (
+      HostSelectionError,
+      select_host,
+      stage_skills,
+      verify_auth_env,
+      verify_staged,
+  )
+  ```
+
+  Append the test bodies at the end of the file:
+  ```python
+
+
+  # --- stage_skills / verify_staged ------------------------------------
+
+  def _make_fake_skill_source(
+      skills_root: Path, host: str
+  ) -> None:
+      """Build a synthetic ``skills/`` tree with the per-host skill dirs.
+
+      Layout mirrors the real Phase 1 / Phase 2 structure: each skill
+      directory has a ``scripts/`` subdir with one script, a SKILL.md,
+      and a marker file so tests can prove the copy preserved contents.
+      """
+      pr_src = skills_root / f"pr-{host}"
+      wi_src = skills_root / f"workitem-fetch-{host}"
+      (pr_src / "scripts").mkdir(parents=True)
+      (pr_src / "SKILL.md").write_text(
+          f"# pr-{host} skill\n", encoding="utf-8"
+      )
+      (pr_src / "scripts" / "create-pr.py").write_text(
+          f"# create-pr for {host}\n", encoding="utf-8"
+      )
+      (pr_src / "marker.txt").write_text(host, encoding="utf-8")
+
+      (wi_src / "scripts").mkdir(parents=True)
+      (wi_src / "SKILL.md").write_text(
+          f"# workitem-fetch-{host} skill\n", encoding="utf-8"
+      )
+      (wi_src / "scripts" / "fetch.py").write_text(
+          f"# fetch for {host}\n", encoding="utf-8"
+      )
+      (wi_src / "marker.txt").write_text(host, encoding="utf-8")
+
+
+  def test_stage_skills_copies_github_pair_to_canonical_names(
+      tmp_path: Path,
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      claude_skills_dir.mkdir()
+      _make_fake_skill_source(skills_root, "github")
+
+      stage_skills("github", skills_root, claude_skills_dir)
+
+      assert (claude_skills_dir / "pr" / "SKILL.md").read_text(
+          encoding="utf-8"
+      ) == "# pr-github skill\n"
+      assert (claude_skills_dir / "pr" / "scripts" / "create-pr.py").is_file()
+      assert (claude_skills_dir / "pr" / "marker.txt").read_text(
+          encoding="utf-8"
+      ) == "github"
+      assert (claude_skills_dir / "workitem-fetch" / "SKILL.md").is_file()
+      assert (
+          claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py"
+      ).is_file()
+
+
+  def test_stage_skills_copies_ado_pair_to_canonical_names(
+      tmp_path: Path,
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      claude_skills_dir.mkdir()
+      _make_fake_skill_source(skills_root, "ado")
+
+      stage_skills("ado", skills_root, claude_skills_dir)
+
+      assert (claude_skills_dir / "pr" / "marker.txt").read_text(
+          encoding="utf-8"
+      ) == "ado"
+      assert (claude_skills_dir / "workitem-fetch" / "marker.txt").read_text(
+          encoding="utf-8"
+      ) == "ado"
+
+
+  def test_stage_skills_is_idempotent(tmp_path: Path) -> None:
+      """Re-running stage_skills must not raise (dirs_exist_ok semantics)."""
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      claude_skills_dir.mkdir()
+      _make_fake_skill_source(skills_root, "github")
+
+      stage_skills("github", skills_root, claude_skills_dir)
+      stage_skills("github", skills_root, claude_skills_dir)  # second run
+
+      assert (claude_skills_dir / "pr" / "SKILL.md").is_file()
+
+
+  def test_stage_skills_creates_claude_skills_dir_if_absent(
+      tmp_path: Path,
+  ) -> None:
+      """When ~/.claude/skills doesn't yet exist, staging must create it."""
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills_new"  # NOT created
+      _make_fake_skill_source(skills_root, "github")
+
+      stage_skills("github", skills_root, claude_skills_dir)
+
+      assert claude_skills_dir.is_dir()
+      assert (claude_skills_dir / "pr" / "SKILL.md").is_file()
+
+
+  def test_stage_skills_missing_pr_source_raises_clear_error(
+      tmp_path: Path,
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      claude_skills_dir.mkdir()
+      # Only the workitem-fetch source exists; pr-github is missing.
+      (skills_root / "workitem-fetch-github" / "scripts").mkdir(parents=True)
+      (skills_root / "workitem-fetch-github" / "scripts" / "fetch.py").write_text(
+          "# fetch\n", encoding="utf-8"
+      )
+
+      with pytest.raises(HostSelectionError) as excinfo:
+          stage_skills("github", skills_root, claude_skills_dir)
+      msg = str(excinfo.value)
+      assert "pr-github" in msg
+      assert str(skills_root) in msg
+
+
+  def test_stage_skills_missing_workitem_fetch_source_raises_clear_error(
+      tmp_path: Path,
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      claude_skills_dir.mkdir()
+      (skills_root / "pr-ado" / "scripts").mkdir(parents=True)
+      (skills_root / "pr-ado" / "scripts" / "create-pr.py").write_text(
+          "# create-pr\n", encoding="utf-8"
+      )
+
+      with pytest.raises(HostSelectionError) as excinfo:
+          stage_skills("ado", skills_root, claude_skills_dir)
+      msg = str(excinfo.value)
+      assert "workitem-fetch-ado" in msg
+
+
+  def test_stage_skills_unknown_host_raises(tmp_path: Path) -> None:
+      with pytest.raises(HostSelectionError, match="unknown host"):
+          stage_skills("gitlab", tmp_path / "skills", tmp_path / "claude")
+
+
+  def test_verify_staged_happy_path(tmp_path: Path) -> None:
+      claude_skills_dir = tmp_path / "claude_skills"
+      (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
+      (claude_skills_dir / "pr" / "scripts" / "create-pr.py").write_text(
+          "# stub\n", encoding="utf-8"
+      )
+      (claude_skills_dir / "workitem-fetch" / "scripts").mkdir(parents=True)
+      (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").write_text(
+          "# stub\n", encoding="utf-8"
+      )
+      verify_staged(claude_skills_dir)  # must not raise
+
+
+  def test_verify_staged_missing_pr_script_raises(tmp_path: Path) -> None:
+      claude_skills_dir = tmp_path / "claude_skills"
+      (claude_skills_dir / "workitem-fetch" / "scripts").mkdir(parents=True)
+      (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").write_text(
+          "", encoding="utf-8"
+      )
+      with pytest.raises(HostSelectionError) as excinfo:
+          verify_staged(claude_skills_dir)
+      msg = str(excinfo.value)
+      assert "pr/scripts/create-pr.py" in msg
+
+
+  def test_verify_staged_missing_workitem_fetch_script_raises(
+      tmp_path: Path,
+  ) -> None:
+      claude_skills_dir = tmp_path / "claude_skills"
+      (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
+      (claude_skills_dir / "pr" / "scripts" / "create-pr.py").write_text(
+          "", encoding="utf-8"
+      )
+      with pytest.raises(HostSelectionError, match="workitem-fetch/scripts/fetch.py"):
+          verify_staged(claude_skills_dir)
+  ```
+
+- [ ] 2. Run the failing tests:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: the new stage_skills / verify_staged tests fail with `NotImplementedError`.
+
+- [ ] 3. Replace the Task-10 stubs in `ralph_executor/host_select.py` with real implementations. Edit the file: keep everything above `stage_skills` unchanged, and replace the `stage_skills`, `verify_staged`, and (still-stubbed) `prepare_host_environment` definitions with:
+  ```python
+  def _skill_pair(host: str) -> tuple[str, str]:
+      """Return the ``(pr_dirname, workitem_fetch_dirname)`` for the host."""
+      if host not in REQUIRED_AUTH_ENV:
+          raise HostSelectionError(
+              f"stage_skills: unknown host {host!r}. "
+              f"Valid hosts: {list(VALID_HOSTS)}."
+          )
+      return f"pr-{host}", f"workitem-fetch-{host}"
+
+
+  def _copy_skill_tree(src: Path, dst: Path) -> None:
+      """Copy ``src`` to ``dst`` overwriting any existing destination.
+
+      ``shutil.copytree(..., dirs_exist_ok=True)`` is the cross-platform
+      primitive — Windows-safe, no symlink dependency, idempotent. On
+      POSIX a symlink would be marginally faster, but the copy is fast
+      enough at the scale of a single skill directory and avoids the
+      Windows-vs-POSIX divergence entirely.
+      """
+      import shutil
+
+      shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+  def stage_skills(
+      host: str, skills_root: Path, claude_skills_dir: Path
+  ) -> None:
+      """Stage the host's skill directories into the Claude skills location.
+
+      Copies ``skills_root/pr-<host>/`` → ``claude_skills_dir/pr/`` and
+      ``skills_root/workitem-fetch-<host>/`` → ``claude_skills_dir/workitem-fetch/``.
+      Uses ``shutil.copytree(..., dirs_exist_ok=True)`` so the operation
+      is idempotent and works identically on Windows and POSIX.
+
+      Raises ``HostSelectionError`` if either source directory is missing
+      (the message names the missing directory and the search root so the
+      operator can fix the deployment).
+      """
+      pr_dirname, wi_dirname = _skill_pair(host)
+      pr_src = skills_root / pr_dirname
+      wi_src = skills_root / wi_dirname
+      if not pr_src.is_dir():
+          raise HostSelectionError(
+              f"host={host}: source skill directory {pr_dirname}/ "
+              f"not found under {skills_root}. "
+              f"Expected path: {pr_src}. "
+              f"Set RALPH_SKILLS_ROOT to the directory containing "
+              f"the per-host skill folders, or ensure the {pr_dirname}/ "
+              f"directory has been built (Plans 3 and 5)."
+          )
+      if not wi_src.is_dir():
+          raise HostSelectionError(
+              f"host={host}: source skill directory {wi_dirname}/ "
+              f"not found under {skills_root}. "
+              f"Expected path: {wi_src}. "
+              f"Set RALPH_SKILLS_ROOT to the directory containing "
+              f"the per-host skill folders, or ensure the {wi_dirname}/ "
+              f"directory has been built (Plans 3 and 5)."
+          )
+      claude_skills_dir.mkdir(parents=True, exist_ok=True)
+      log.info(
+          "staging skills: %s -> %s, %s -> %s",
+          pr_src,
+          claude_skills_dir / "pr",
+          wi_src,
+          claude_skills_dir / "workitem-fetch",
+      )
+      _copy_skill_tree(pr_src, claude_skills_dir / "pr")
+      _copy_skill_tree(wi_src, claude_skills_dir / "workitem-fetch")
+
+
+  def verify_staged(claude_skills_dir: Path) -> None:
+      """Sanity-check that the staged skills landed where Claude expects.
+
+      Asserts the two script entry points exist:
+        * ``<claude_skills_dir>/pr/scripts/create-pr.py``
+        * ``<claude_skills_dir>/workitem-fetch/scripts/fetch.py``
+
+      Raises ``HostSelectionError`` listing every missing file.
+      """
+      expected = [
+          claude_skills_dir / "pr" / "scripts" / "create-pr.py",
+          claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py",
+      ]
+      missing = [
+          str(path.relative_to(claude_skills_dir))
+          for path in expected
+          if not path.is_file()
+      ]
+      if missing:
+          raise HostSelectionError(
+              f"staged skills incomplete under {claude_skills_dir}: "
+              f"missing {missing}. Check that stage_skills ran "
+              "successfully and the source skill directories under "
+              "RALPH_SKILLS_ROOT are well-formed."
+          )
+
+
+  def prepare_host_environment(
+      *,
+      skills_root: Path | None = None,
+      claude_skills_dir: Path | None = None,
+  ) -> Host:
+      """Stub — Task 12 fills this in.
+
+      Will call ``select_host`` → ``verify_auth_env`` → ``stage_skills``
+      → ``verify_staged`` in order. Returns the selected host so callers
+      can log it.
+      """
+      raise NotImplementedError("prepare_host_environment lands in Task 12")
+  ```
+
+- [ ] 4. Re-run the test; every test (Task 10's + Task 11's new ones) must pass:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: all `select_host` / `verify_auth_env` / `stage_skills` / `verify_staged` tests pass. The `prepare_host_environment` stub is not exercised yet.
+
+- [ ] 5. Run ruff + mypy:
+  ```
+  uv run ruff check ralph_executor/host_select.py tests/executor/test_host_select.py
+  uv run mypy ralph_executor/host_select.py tests/executor/test_host_select.py
+  ```
+  Expected: both report success.
+
+- [ ] 6. Commit:
+  ```
+  git add ralph_executor/host_select.py tests/executor/test_host_select.py
+  git commit -m "feat(executor): add host_select.stage_skills + verify_staged with cross-platform copytree"
+  ```
+  Expected: commit succeeds.
+
+---
+
+## Task 12 — Host selection: orchestrator `prepare_host_environment` + CLI wiring
+
+**Files**
+- Modify: `tests/executor/test_host_select.py`
+- Modify: `ralph_executor/host_select.py`
+
+This task lands `prepare_host_environment`, which sequences the four primitives in the order the orchestrator's "Host selection architecture" spells out:
+**env check → auth check → stage → verify**. It also defaults `skills_root` and `claude_skills_dir` from the documented env vars and falls back to source-checkout / home-directory defaults so local dev works without setting either var. Task 13 wires `prepare_host_environment` into `cli.py`.
+
+**Steps**
+
+- [ ] 1. Append the failing tests for `prepare_host_environment` to `tests/executor/test_host_select.py`. Add `prepare_host_environment` to the existing import block, and append the test bodies at the end of the file:
+
+  Add to the import block:
+  ```python
+  from ralph_executor.host_select import (
+      HostSelectionError,
+      prepare_host_environment,
+      select_host,
+      stage_skills,
+      verify_auth_env,
+      verify_staged,
+  )
+  ```
+
+  Append the test bodies at the end:
+  ```python
+
+
+  # --- prepare_host_environment ----------------------------------------
+
+  def test_prepare_host_environment_github_end_to_end(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      _make_fake_skill_source(skills_root, "github")
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      monkeypatch.setenv("GH_TOKEN", "ghp_test")
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+
+      result = prepare_host_environment(
+          skills_root=skills_root,
+          claude_skills_dir=claude_skills_dir,
+      )
+      assert result == "github"
+      assert (claude_skills_dir / "pr" / "scripts" / "create-pr.py").is_file()
+      assert (
+          claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py"
+      ).is_file()
+
+
+  def test_prepare_host_environment_ado_end_to_end(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      _make_fake_skill_source(skills_root, "ado")
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "ado")
+      monkeypatch.setenv("ADO_PAT", "pat_test")
+      monkeypatch.setenv("ADO_ORG_URL", "https://dev.azure.com/contoso")
+      monkeypatch.setenv("ADO_PROJECT", "Contoso")
+
+      result = prepare_host_environment(
+          skills_root=skills_root,
+          claude_skills_dir=claude_skills_dir,
+      )
+      assert result == "ado"
+
+
+  def test_prepare_host_environment_missing_host_raises_first(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """Env-check failure surfaces BEFORE any other check."""
+      monkeypatch.delenv("RALPH_GIT_HOST", raising=False)
+      with pytest.raises(HostSelectionError, match="RALPH_GIT_HOST"):
+          prepare_host_environment(
+              skills_root=tmp_path / "skills",
+              claude_skills_dir=tmp_path / "claude",
+          )
+
+
+  def test_prepare_host_environment_missing_auth_raises_before_stage(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """Auth-check failure surfaces BEFORE staging is attempted."""
+      skills_root = tmp_path / "skills"
+      claude_skills_dir = tmp_path / "claude_skills"
+      _make_fake_skill_source(skills_root, "github")
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      monkeypatch.delenv("GH_TOKEN", raising=False)
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+
+      with pytest.raises(HostSelectionError, match="GH_TOKEN"):
+          prepare_host_environment(
+              skills_root=skills_root,
+              claude_skills_dir=claude_skills_dir,
+          )
+      # Staging must not have run.
+      assert not (claude_skills_dir / "pr").exists()
+
+
+  def test_prepare_host_environment_missing_skills_raises_after_auth(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """Staging failure surfaces AFTER auth passed."""
+      skills_root = tmp_path / "skills"  # empty — no per-host dirs
+      claude_skills_dir = tmp_path / "claude_skills"
+      skills_root.mkdir()
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      monkeypatch.setenv("GH_TOKEN", "ghp_test")
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+
+      with pytest.raises(HostSelectionError, match="pr-github"):
+          prepare_host_environment(
+              skills_root=skills_root,
+              claude_skills_dir=claude_skills_dir,
+          )
+
+
+  def test_prepare_host_environment_uses_env_default_paths(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """When called with no kwargs, paths come from RALPH_SKILLS_ROOT
+      / RALPH_CLAUDE_SKILLS_DIR env vars.
+      """
+      skills_root = tmp_path / "env_skills"
+      claude_skills_dir = tmp_path / "env_claude_skills"
+      _make_fake_skill_source(skills_root, "github")
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      monkeypatch.setenv("GH_TOKEN", "ghp_test")
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+      monkeypatch.setenv("RALPH_SKILLS_ROOT", str(skills_root))
+      monkeypatch.setenv("RALPH_CLAUDE_SKILLS_DIR", str(claude_skills_dir))
+
+      result = prepare_host_environment()
+      assert result == "github"
+      assert (claude_skills_dir / "pr" / "SKILL.md").is_file()
+
+
+  def test_prepare_host_environment_kwargs_override_env(
+      tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """Explicit kwargs take precedence over RALPH_SKILLS_ROOT /
+      RALPH_CLAUDE_SKILLS_DIR.
+      """
+      env_root = tmp_path / "env_skills"
+      env_claude = tmp_path / "env_claude"
+      arg_root = tmp_path / "arg_skills"
+      arg_claude = tmp_path / "arg_claude"
+      # Only the kwarg-pointed source has the skill dirs; the env-pointed
+      # one is empty. If kwargs win, prepare succeeds; if env wins, it
+      # fails with "pr-github not found".
+      _make_fake_skill_source(arg_root, "github")
+      env_root.mkdir()
+      env_claude.mkdir()
+
+      monkeypatch.setenv("RALPH_GIT_HOST", "github")
+      monkeypatch.setenv("GH_TOKEN", "ghp_test")
+      monkeypatch.setenv("GH_OWNER", "emp3thy")
+      monkeypatch.setenv("RALPH_SKILLS_ROOT", str(env_root))
+      monkeypatch.setenv("RALPH_CLAUDE_SKILLS_DIR", str(env_claude))
+
+      result = prepare_host_environment(
+          skills_root=arg_root,
+          claude_skills_dir=arg_claude,
+      )
+      assert result == "github"
+      assert (arg_claude / "pr" / "SKILL.md").is_file()
+      assert not (env_claude / "pr").exists()
+  ```
+
+- [ ] 2. Run the failing tests:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: the new `prepare_host_environment` tests fail with `NotImplementedError`.
+
+- [ ] 3. Replace the `prepare_host_environment` stub at the bottom of `ralph_executor/host_select.py` with the implementation below. Also add the two private defaulting helpers right above it (still inside the same module):
+  ```python
+  def _default_skills_root() -> Path:
+      """Resolve the default ``skills_root`` for source-checkout layouts.
+
+      Layout assumed by the default: the package lives at
+      ``<repo>/ralph_executor/host_select.py`` and the skill sources live
+      at ``<repo>/skills/<per-host-dir>/``. The default walks up two
+      parents from this file (``ralph_executor`` then the repo root) and
+      appends ``skills``. Packaged installs whose layout differs MUST set
+      ``RALPH_SKILLS_ROOT`` explicitly.
+      """
+      return Path(__file__).resolve().parent.parent / "skills"
+
+
+  def _default_claude_skills_dir() -> Path:
+      """Resolve the default ``claude_skills_dir`` (``~/.claude/skills``)."""
+      return Path.home() / ".claude" / "skills"
+
+
+  def prepare_host_environment(
+      *,
+      skills_root: Path | None = None,
+      claude_skills_dir: Path | None = None,
+  ) -> Host:
+      """Run the four startup-phase steps in order and return the host.
+
+      Order (the orchestrator's "Host selection architecture" spec):
+
+        1. ``select_host()`` — read and validate ``RALPH_GIT_HOST``.
+        2. ``verify_auth_env(host)`` — check the host's auth env vars.
+        3. ``stage_skills(host, skills_root, claude_skills_dir)`` — copy
+           the chosen ``pr-<host>/`` and ``workitem-fetch-<host>/``
+           directories into the Claude skills location.
+        4. ``verify_staged(claude_skills_dir)`` — sanity check.
+
+      Each step's failure surfaces a clear ``HostSelectionError`` that
+      names the offending env var or path. The earlier the failure, the
+      more useful the error — e.g. a missing auth var aborts BEFORE any
+      filesystem mutation.
+
+      ``skills_root`` and ``claude_skills_dir`` resolve in priority
+      order:
+        1. Explicit kwarg, if non-None.
+        2. ``RALPH_SKILLS_ROOT`` / ``RALPH_CLAUDE_SKILLS_DIR`` env var.
+        3. Source-checkout default / ``~/.claude/skills``.
+
+      Returns the selected host so callers can log it.
+      """
+      effective_skills_root: Path
+      if skills_root is not None:
+          effective_skills_root = skills_root
+      else:
+          env_root = os.environ.get("RALPH_SKILLS_ROOT")
+          if env_root and env_root.strip():
+              effective_skills_root = Path(env_root.strip())
+          else:
+              effective_skills_root = _default_skills_root()
+
+      effective_claude_skills_dir: Path
+      if claude_skills_dir is not None:
+          effective_claude_skills_dir = claude_skills_dir
+      else:
+          env_claude = os.environ.get("RALPH_CLAUDE_SKILLS_DIR")
+          if env_claude and env_claude.strip():
+              effective_claude_skills_dir = Path(env_claude.strip())
+          else:
+              effective_claude_skills_dir = _default_claude_skills_dir()
+
+      host = select_host()
+      log.info("RALPH_GIT_HOST=%s", host)
+      verify_auth_env(host)
+      log.info(
+          "staging skills from %s into %s",
+          effective_skills_root,
+          effective_claude_skills_dir,
+      )
+      stage_skills(host, effective_skills_root, effective_claude_skills_dir)
+      verify_staged(effective_claude_skills_dir)
+      log.info("host environment ready: host=%s", host)
+      return host
+  ```
+
+- [ ] 4. Re-run the test; the full host-select suite must pass:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: every test passes.
+
+- [ ] 5. Run ruff + mypy:
+  ```
+  uv run ruff check ralph_executor/host_select.py tests/executor/test_host_select.py
+  uv run mypy ralph_executor/host_select.py tests/executor/test_host_select.py
+  ```
+  Expected: both report success.
+
+- [ ] 6. Commit:
+  ```
+  git add ralph_executor/host_select.py tests/executor/test_host_select.py
+  git commit -m "feat(executor): add prepare_host_environment orchestrating env/auth/stage/verify"
+  ```
+  Expected: commit succeeds.
+
+---
+
+## Task 13 — CLI entry point (`ralph_executor/cli.py`) + public re-exports
 
 **Files**
 - Create: `tests/executor/test_cli.py`
@@ -2803,7 +3806,18 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
 
   from ralph_executor import cli
   from ralph_executor.config import ExecutorConfig
+  from ralph_executor.host_select import HostSelectionError
   from ralph_executor.loop import IterationResult
+
+
+  @pytest.fixture(autouse=True)
+  def _stub_prepare_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+      """Default: stub host-environment prep so it succeeds silently.
+
+      Tests that exercise host-prep failure modes override this with their
+      own monkeypatch.
+      """
+      monkeypatch.setattr(cli, "prepare_host_environment", lambda: "github")
 
 
   def test_main_runs_one_iteration_with_once_flag(
@@ -2888,6 +3902,65 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
       assert "RALPH_REPO_PATH" in capsys.readouterr().err
 
 
+  def test_main_calls_prepare_host_environment_before_loop(
+      cfg_for_repo: ExecutorConfig, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+      """Startup order: load_config → prepare_host_environment → iterate."""
+      order: list[str] = []
+
+      def _record_load() -> ExecutorConfig:
+          order.append("load_config")
+          return cfg_for_repo
+
+      def _record_prepare() -> str:
+          order.append("prepare_host_environment")
+          return "github"
+
+      def _record_iterate(cfg: ExecutorConfig) -> IterationResult:
+          order.append("iterate_once")
+          return IterationResult(outcome="idle", pbi_id=None)
+
+      monkeypatch.setattr(cli, "load_config", _record_load)
+      monkeypatch.setattr(cli, "prepare_host_environment", _record_prepare)
+      monkeypatch.setattr(cli, "iterate_once", _record_iterate)
+
+      exit_code = cli.main(["--once"])
+      assert exit_code == 0
+      assert order == [
+          "load_config",
+          "prepare_host_environment",
+          "iterate_once",
+      ]
+
+
+  def test_main_exits_2_on_host_selection_error(
+      cfg_for_repo: ExecutorConfig,
+      monkeypatch: pytest.MonkeyPatch,
+      capsys: pytest.CaptureFixture[str],
+  ) -> None:
+      """A HostSelectionError aborts before the loop and prints to stderr."""
+      iterate_calls: list[ExecutorConfig] = []
+
+      def _explode() -> str:
+          raise HostSelectionError(
+              "RALPH_GIT_HOST is required but unset or blank."
+          )
+
+      def _record(cfg: ExecutorConfig) -> IterationResult:
+          iterate_calls.append(cfg)
+          return IterationResult(outcome="idle", pbi_id=None)
+
+      monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+      monkeypatch.setattr(cli, "prepare_host_environment", _explode)
+      monkeypatch.setattr(cli, "iterate_once", _record)
+
+      exit_code = cli.main(["--once"])
+      assert exit_code == 2
+      assert iterate_calls == []  # loop never entered
+      err = capsys.readouterr().err
+      assert "RALPH_GIT_HOST" in err
+
+
   def test_public_reexports_are_stable() -> None:
       """The names listed below are imported by Plans 8, 9, 10."""
       from ralph_executor import (
@@ -2895,8 +3968,9 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
           ExecutorConfig,
           IterationResult,
           iterate_once,
-          run_loop,
           main,
+          prepare_host_environment,
+          run_loop,
       )
 
       assert PBI is not None
@@ -2905,6 +3979,7 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
       assert callable(iterate_once)
       assert callable(run_loop)
       assert callable(main)
+      assert callable(prepare_host_environment)
   ```
 
 - [ ] 2. Run the failing test:
@@ -2913,7 +3988,7 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   ```
   Expected: `ModuleNotFoundError: No module named 'ralph_executor.cli'` and `ImportError` on the re-exports test.
 
-- [ ] 3. Implement `ralph_executor/cli.py` with the exact content below:
+- [ ] 3. Implement `ralph_executor/cli.py` with the exact content below. The startup sequence is fixed: **parse args → load_config → apply overrides → configure logging → `prepare_host_environment` → enter loop**. `prepare_host_environment` MUST run BEFORE any iteration so a malformed host environment fails fast (no PBI is claimed, no skills are invoked):
   ```python
   """Command-line entry point for ``ralph-executor``.
 
@@ -2924,6 +3999,16 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
                        smoke-testing local setups.
   * ``--repo PATH``  — override ``RALPH_REPO_PATH`` for this run.
   * ``--log-level``  — override ``RALPH_LOG_LEVEL`` for this run.
+
+  Startup sequence (BEFORE the iteration loop):
+    1. Parse argv.
+    2. ``load_config()`` — reads RALPH_* env vars, validates the repo.
+    3. Apply CLI overrides to the loaded config.
+    4. Configure logging.
+    5. ``prepare_host_environment()`` — reads RALPH_GIT_HOST, verifies
+       auth env vars, stages the chosen skill directories. Fails fast
+       (exit 2) with a clear error if the environment is malformed.
+    6. Enter the iteration loop.
   """
   from __future__ import annotations
 
@@ -2934,6 +4019,10 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   from collections.abc import Sequence
 
   from ralph_executor.config import ConfigError, ExecutorConfig, load_config
+  from ralph_executor.host_select import (
+      HostSelectionError,
+      prepare_host_environment,
+  )
   from ralph_executor.loop import IterationResult, iterate_once, run_loop
 
   _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -3008,6 +4097,17 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
           cfg.main_branch,
       )
 
+      # Stage host-specific skills BEFORE any iteration. If this fails,
+      # Ralph can't operate against the chosen host — abort immediately
+      # so the operator fixes their env rather than silently running
+      # against missing or stale skill directories.
+      try:
+          host = prepare_host_environment()
+          log.info("host environment ready: host=%s", host)
+      except HostSelectionError as exc:
+          print(f"error: {exc}", file=sys.stderr)
+          return 2
+
       try:
           if args.once:
               result = iterate_once(cfg)
@@ -3037,28 +4137,33 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
       raise SystemExit(main())
   ```
 
-- [ ] 4. Replace `ralph_executor/__init__.py` (currently the Plan 1 one-line stub) with the exact content below. This is the public surface Plans 8, 9, 10 import from:
+- [ ] 4. Replace `ralph_executor/__init__.py` (currently the Plan 1 one-line stub) with the exact content below. This is the public surface Plans 8, 9, 10 import from. `prepare_host_environment` and `HostSelectionError` are re-exported so Plan 11 (`ralph-doctor`) and Plan 13 (smoke test) can import them from the package root:
   ```python
   """Public surface of the Ralph executor package.
 
   Re-exports the stable names that Plans 8 (sweep), 9 (safety controls),
-  and 10 (supervisor skills) import. The orchestrator's
-  "Cross-plan integration points" section is the contract; keep these
-  names stable.
+  10 (supervisor skills), 11 (ralph-doctor), and 13 (smoke test) import.
+  The orchestrator's "Cross-plan integration points" section is the
+  contract; keep these names stable.
   """
+  from ralph_executor.cli import main
   from ralph_executor.config import ConfigError, ExecutorConfig, load_config
+  from ralph_executor.host_select import (
+      HostSelectionError,
+      prepare_host_environment,
+  )
   from ralph_executor.loop import (
       IterationOutcome,
       IterationResult,
       iterate_once,
       run_loop,
   )
-  from ralph_executor.cli import main
   from ralph_executor.types import PBI, PBIStatus, PBIType, Severity
 
   __all__ = [
       "ConfigError",
       "ExecutorConfig",
+      "HostSelectionError",
       "IterationOutcome",
       "IterationResult",
       "PBI",
@@ -3068,6 +4173,7 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
       "iterate_once",
       "load_config",
       "main",
+      "prepare_host_environment",
       "run_loop",
   ]
   ```
@@ -3076,7 +4182,7 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   ```
   uv run pytest tests/executor/test_cli.py -v
   ```
-  Expected: all six tests pass.
+  Expected: all eight tests pass (the six original CLI tests plus the two new host-environment-startup tests).
 
 - [ ] 6. Sanity-check the console script is now wired end-to-end. Run:
   ```
@@ -3094,13 +4200,13 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
 - [ ] 8. Commit:
   ```
   git add ralph_executor/cli.py ralph_executor/__init__.py tests/executor/test_cli.py
-  git commit -m "feat(executor): add CLI entry point and public re-exports for downstream plans"
+  git commit -m "feat(executor): wire prepare_host_environment into CLI startup + add public re-exports"
   ```
   Expected: commit succeeds.
 
 ---
 
-## Task 11 — Full executor suite + toolchain pass
+## Task 14 — Full executor suite + toolchain pass
 
 **Files**
 - (none — toolchain-only step)
@@ -3111,15 +4217,21 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   ```
   uv run pytest tests/executor/ -v
   ```
-  Expected: every test in every executor test module passes. Approximate count: 4 (types) + 9 (config) + 14 (git_ops) + 11 (filesystem queue) + 7 (movements) + 9 (claude_spawn) + 11 (loop) + 6 (cli) = ~71 tests.
+  Expected: every test in every executor test module passes. Approximate count: 4 (types) + 9 (config) + 14 (git_ops) + 11 (filesystem queue) + 7 (movements) + 9 (claude_spawn) + 11 (loop) + ~32 (host_select: ~13 Task-10 + ~10 Task-11 + ~7 Task-12) + 8 (cli) = ~105 tests.
 
-- [ ] 2. Run the full repo suite to confirm nothing earlier in the repo regressed:
+- [ ] 2. Run the host-select selection in isolation — the new module is Phase 1 essential and must be verifiable on its own:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: every host-select test passes; exit 0.
+
+- [ ] 3. Run the full repo suite to confirm nothing earlier in the repo regressed:
   ```
   uv run pytest
   ```
   Expected: all tests pass.
 
-- [ ] 3. Run the full lint + type-check gate:
+- [ ] 4. Run the full lint + type-check gate:
   ```
   uv run ruff check .
   uv run ruff format --check .
@@ -3127,11 +4239,11 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   ```
   Expected: each command exits 0.
 
-- [ ] 4. Confirm the commit history is clean and conventional:
+- [ ] 5. Confirm the commit history is clean and conventional:
   ```
   git log --oneline -20
   ```
-  Expected: ten Plan-7 commits visible (one per task that produced files), each with a conventional-commit prefix:
+  Expected: thirteen Plan-7 commits visible (one per task that produced files), each with a conventional-commit prefix:
   - `chore(executor): scaffold ralph-executor console script + tests/executor package`
   - `feat(executor): add canonical PBI types shared with sweep/safety/supervisor plans`
   - `feat(executor): add ExecutorConfig + load_config env-driven loader`
@@ -3141,7 +4253,10 @@ The tests mirror the package: every module gets a `tests/executor/test_<module>.
   - `feat(executor): add atomic queue movements (inbox->current, current->pending-pr, current->blocked)`
   - `feat(executor): add claude -p spawn + outcome classifier`
   - `feat(executor): add loop driver (iterate_once, run_loop) with Plan 8/9 stub seams`
-  - `feat(executor): add CLI entry point and public re-exports for downstream plans`
+  - `feat(executor): add host_select.select_host + verify_auth_env (Phase 1 essential)`
+  - `feat(executor): add host_select.stage_skills + verify_staged with cross-platform copytree`
+  - `feat(executor): add prepare_host_environment orchestrating env/auth/stage/verify`
+  - `feat(executor): wire prepare_host_environment into CLI startup + add public re-exports`
 
 ---
 
@@ -3155,19 +4270,25 @@ This is the orchestrator's Plan 7 verification gate. Plans 8 (sweep) and 9 (safe
   ```
   Expected: every test passes; exit 0.
 
-- [ ] 2. Run mypy strict against the executor package — the orchestrator's gate explicitly calls this out:
+- [ ] 2. Run the host-select selection in isolation — `host_select.py` is Phase 1 essential and the gate runs it explicitly:
+  ```
+  uv run pytest tests/executor/test_host_select.py -v
+  ```
+  Expected: every host-select test passes; exit 0.
+
+- [ ] 3. Run mypy strict against the executor package — the orchestrator's gate explicitly calls this out:
   ```
   uv run mypy ralph_executor
   ```
   Expected: `Success: no issues found in N source files`.
 
-- [ ] 3. Confirm the public surface used by downstream plans imports cleanly without invoking any other module. Run:
+- [ ] 4. Confirm the public surface used by downstream plans imports cleanly without invoking any other module. Run:
   ```
-  uv run python -c "from ralph_executor import PBI, ExecutorConfig, IterationResult, iterate_once, run_loop, main; print('ok')"
+  uv run python -c "from ralph_executor import PBI, ExecutorConfig, IterationResult, iterate_once, run_loop, main, prepare_host_environment, HostSelectionError; print('ok')"
   ```
   Expected: `ok`.
 
-- [ ] 4. Confirm both the Plan-8 and Plan-9 stub seams are present and importable, so downstream plans have well-defined attachment points. Run:
+- [ ] 5. Confirm both the Plan-8 and Plan-9 stub seams are present and importable, so downstream plans have well-defined attachment points. Run:
   ```
   uv run python -c "from ralph_executor.loop import _run_sweep, _check_cycle_detector; print('plan8_stub', _run_sweep.__doc__ is not None); print('plan9_stub', _check_cycle_detector.__doc__ is not None)"
   ```
@@ -3178,7 +4299,7 @@ This is the orchestrator's Plan 7 verification gate. Plans 8 (sweep) and 9 (safe
   ```
   Both stubs MUST carry docstrings explicitly tagged "Plan 8 fills this in" / "Plan 9 fills this in" (asserted by reading the docstring strings during Plan 8/9 development).
 
-- [ ] 5. Smoke-test the CLI end-to-end against the conftest's `fake_repo` shape. From the repo root:
+- [ ] 6. Smoke-test the CLI end-to-end against the conftest's `fake_repo` shape, with `RALPH_GIT_HOST=github` and a synthetic `skills/` tree so `prepare_host_environment` succeeds. From the repo root:
   ```
   uv run python -c "
   import subprocess, tempfile, os, stat
@@ -3198,11 +4319,28 @@ This is the orchestrator's Plan 7 verification gate. Plans 8 (sweep) and 9 (safe
   fake.parent.mkdir()
   fake.write_text('#!/usr/bin/env python3\nimport sys; sys.exit(0)\n')
   fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+  # Synthetic per-host skill source tree (mirrors what Plans 3 and 5 will
+  # ship). Only the script entry points required by verify_staged need to
+  # exist; the smoke test is about CLI startup ordering, not skill content.
+  skills_root = tmp / 'skills'
+  for host in ('github',):
+      (skills_root / f'pr-{host}' / 'scripts').mkdir(parents=True)
+      (skills_root / f'pr-{host}' / 'scripts' / 'create-pr.py').write_text('# stub\n')
+      (skills_root / f'pr-{host}' / 'SKILL.md').write_text('# stub\n')
+      (skills_root / f'workitem-fetch-{host}' / 'scripts').mkdir(parents=True)
+      (skills_root / f'workitem-fetch-{host}' / 'scripts' / 'fetch.py').write_text('# stub\n')
+      (skills_root / f'workitem-fetch-{host}' / 'SKILL.md').write_text('# stub\n')
+  claude_skills = tmp / 'claude_skills'
   env = dict(os.environ)
   env['RALPH_REPO_PATH'] = str(work)
   env['ANTHROPIC_API_KEY'] = 'fake'
   env['RALPH_CLAUDE_BINARY'] = str(fake)
   env['RALPH_ITERATION_SLEEP_SECONDS'] = '0'
+  env['RALPH_GIT_HOST'] = 'github'
+  env['GH_TOKEN'] = 'ghp_smoke'
+  env['GH_OWNER'] = 'emp3thy'
+  env['RALPH_SKILLS_ROOT'] = str(skills_root)
+  env['RALPH_CLAUDE_SKILLS_DIR'] = str(claude_skills)
   env['PATH'] = str(fake.parent) + os.pathsep + env.get('PATH', '')
   rc = subprocess.run(['uv', 'run', 'ralph-executor', '--once', '--log-level', 'WARNING'],
                       env=env, capture_output=True, text=True)
@@ -3210,11 +4348,38 @@ This is the orchestrator's Plan 7 verification gate. Plans 8 (sweep) and 9 (safe
   print('stdout', rc.stdout[-200:])
   print('stderr', rc.stderr[-200:])
   assert rc.returncode == 0
+  # Verify the smoke test actually exercised host staging.
+  assert (claude_skills / 'pr' / 'scripts' / 'create-pr.py').is_file()
+  assert (claude_skills / 'workitem-fetch' / 'scripts' / 'fetch.py').is_file()
   "
   ```
-  Expected: exit code 0 from the `ralph-executor --once` invocation. The script tears down its own tempfile tree on exit.
+  Expected: exit code 0 from the `ralph-executor --once` invocation, and the staged `pr/scripts/create-pr.py` + `workitem-fetch/scripts/fetch.py` files exist under the test's `RALPH_CLAUDE_SKILLS_DIR`. The script tears down its own tempfile tree on exit.
 
-If steps 1-5 all pass, Plan 7 is complete. Plans 8 (sweep) and 9 (safety controls) can be dispatched.
+- [ ] 7. Smoke-test the failure path: confirm `ralph-executor --once` exits 2 with a clear message when `RALPH_GIT_HOST` is unset:
+  ```
+  uv run python -c "
+  import subprocess, tempfile, os
+  from pathlib import Path
+  tmp = Path(tempfile.mkdtemp())
+  env = dict(os.environ)
+  # Minimal env that lets load_config succeed but host_select fails.
+  env['RALPH_REPO_PATH'] = str(tmp)
+  env['ANTHROPIC_API_KEY'] = 'fake'
+  # The validator needs a .git dir even before host_select runs.
+  (tmp / '.git').mkdir()
+  for k in ('RALPH_GIT_HOST', 'GH_TOKEN', 'GH_OWNER', 'ADO_PAT', 'ADO_ORG_URL', 'ADO_PROJECT'):
+      env.pop(k, None)
+  rc = subprocess.run(['uv', 'run', 'ralph-executor', '--once', '--log-level', 'WARNING'],
+                      env=env, capture_output=True, text=True)
+  print('exit', rc.returncode)
+  print('stderr', rc.stderr[-300:])
+  assert rc.returncode == 2, f'expected exit 2, got {rc.returncode}'
+  assert 'RALPH_GIT_HOST' in rc.stderr, 'error must name the missing var'
+  "
+  ```
+  Expected: exit code 2 and the stderr message names `RALPH_GIT_HOST`.
+
+If steps 1-7 all pass, Plan 7 is complete. Plans 8 (sweep) and 9 (safety controls) can be dispatched.
 
 ### Plan-7 invariants downstream plans rely on
 
@@ -3226,3 +4391,4 @@ Document — and do not violate — these contracts in any follow-up work:
 4. **Stubs are import-overridable, not call-graph-rewritable.** Plans 8 and 9 replace `_run_sweep` and `_check_cycle_detector` by module-attribute override (or by explicit replacement of the stub function body) — they do NOT rewrite `iterate_once`. The seams are the contract.
 5. **PBI type and PBIStatus literal aliases are frozen.** Plans 8, 9, 10 import `PBIType`, `PBIStatus`, `Severity` from `ralph_executor.types`. Adding values requires a coordinated update across all plans + a migration of existing queue PBIs.
 6. **`PR created: <url>` is the agreed PR-creation marker on stdout.** Plan 6 (PROMPT.md) must instruct Ralph to emit exactly this string after a successful `ado-pr create-pr`. Plan 5 (`ado-pr` skill) already prints the PR URL on success; the prompt is responsible for prefixing it with the marker.
+7. **Host environment is prepared exactly once, BEFORE the iteration loop.** `cli.main` calls `prepare_host_environment()` after `load_config`/logging setup and before `iterate_once` / `run_loop`. The order is fixed: env check (`select_host`) → auth check (`verify_auth_env`) → stage (`stage_skills`) → verify (`verify_staged`). Plans 11 (`ralph-doctor`) and 12 (Dockerfile) reuse the same primitives — they MUST NOT re-implement the staging logic; if Plan 12 stages at image-build time, Plan 7's runtime `prepare_host_environment` becomes a no-op verifier (the `verify_staged` step still runs at startup as a sanity check).
