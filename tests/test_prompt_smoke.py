@@ -170,7 +170,14 @@ def test_prompt_smoke_feature_iteration(tmp_ralph_workspace: Path) -> None:
     history_path = workspace / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
     history_before = history_path.read_text(encoding="utf-8")
 
-    result = _run_claude(workspace)
+    try:
+        result = _run_claude(workspace)
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f"claude -p exceeded {CLAUDE_TIMEOUT_SECONDS}s timeout. "
+            f"Partial stdout: {exc.stdout!r}\n"
+            f"Partial stderr: {exc.stderr!r}"
+        )
 
     # 1. Subprocess exits cleanly.
     assert result.returncode == 0, (
@@ -203,6 +210,7 @@ def test_prompt_smoke_feature_iteration(tmp_ralph_workspace: Path) -> None:
     # 5. At least one PLAN.md checkbox should be marked done OR a
     # new test file should exist (depending on which step Ralph picked
     # up -- both are valid first steps).
+    assert plan.is_file(), "PLAN.md was deleted or moved during the iteration"
     plan_text = plan.read_text(encoding="utf-8")
     step_one_done = "- [x] 1." in plan_text or "- [X] 1." in plan_text
     test_file_created = (workspace / "tests" / "test_health.py").is_file()
@@ -230,12 +238,19 @@ def test_prompt_smoke_respects_one_step_discipline(
     a duplicate run.
     """
     workspace = tmp_ralph_workspace
-    result = _run_claude(workspace)
+    try:
+        result = _run_claude(workspace)
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f"claude -p exceeded {CLAUDE_TIMEOUT_SECONDS}s timeout. "
+            f"Partial stdout: {exc.stdout!r}\n"
+            f"Partial stderr: {exc.stderr!r}"
+        )
     assert result.returncode == 0
 
-    plan_text = (workspace / ".ralph" / "current" / "WI-1234" / "PLAN.md").read_text(
-        encoding="utf-8"
-    )
+    plan_path = workspace / ".ralph" / "current" / "WI-1234" / "PLAN.md"
+    assert plan_path.is_file(), "PLAN.md was deleted or moved during the iteration"
+    plan_text = plan_path.read_text(encoding="utf-8")
 
     done_count = plan_text.count("- [x]") + plan_text.count("- [X]")
     # Single-step discipline: at most one box should be checked off
