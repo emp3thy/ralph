@@ -224,6 +224,99 @@ Plan 1 → Plan 6 → Plan 7 → Plan 9 → Plan 12 → Plan 13. About six seque
 
 ---
 
+## Bootstrap stages — when humans build vs when Ralph builds
+
+The execution order above describes plan-level dependencies. This section describes the meta-level bootstrap: who (human vs Ralph) builds which plans, and the explicit gates between stages.
+
+### Stage A — Humans build the MVR (Minimum Viable Ralph)
+
+Until Stage A completes, Ralph cannot run. Humans must build this.
+
+**Deliverables:**
+- Plan 01 (workspace + samples)
+- Plan 02 Phase 1 (`gh_client.py` + `setup_ralph_queue_github.py`)
+- Plan 05 Phase 1 (`pr-github` skill — all 5 operations)
+- Plan 06 (PROMPT.md)
+- Plan 07 (executor core + `host_select.py`)
+- Plan 09 (safety controls — at minimum STUCK.md handling)
+
+**Stage A exit gate:** run the Plan 07 verification gate. If the executor can complete a single iteration against a hand-crafted feature PBI in `.ralph/inbox/` (spawn Claude, do trivial work, push a feature branch via Plan 02's gh_client, create a PR via the staged `pr-github` skill), Stage A is done.
+
+**Typical effort:** ~1 week of focused work by one engineer + Claude using `superpowers:executing-plans` against each plan in sequence.
+
+### Stage B — Ralph builds the rest of Phase 1
+
+With the MVR running, Ralph picks up the remaining Phase 1 plans as PBIs. Each plan file in `docs/superpowers/plans/` is dropped into Ralph's queue with a thin wrapper PBI ("implement this plan: …").
+
+**Deliverables (recommended order):**
+1. Plan 04 (`ralph-status`) — read-only, easy first PBI to validate the bootstrap loop
+2. Plan 03 Phase 1 (`ralph-add` orchestrator + `workitem-fetch-github`)
+3. Plan 10 (`ralph-cancel`, `ralph-promote`, `ralph-triage` skills)
+4. Plan 11 Phase 1 (`ralph-doctor` with github_auth + host_staging)
+5. Plan 08 (sweep logic) — first plan that modifies the executor's hot path; review carefully
+6. Plan 12 Phase 1 (GitHub container image)
+7. Plan 13 (end-to-end smoke harness + the five smoke scenarios)
+
+**Bootstrap quirk:** until Plan 03 ships, hand-craft PBI directories directly into `.ralph/inbox/`. Until Plan 04 ships, inspect queue state with `ls .ralph/`. Until Plan 11 ships, run preflight checks manually. Classic bootstrap-compiler pattern: each tool ships, then humans switch from manual to tool-driven.
+
+**Stage B exit gate — green smoke run (NEW, concrete step):**
+
+After Plan 13 lands (the smoke harness is built and committed), execute the smoke suite against the as-built Phase 1 stack:
+
+```bash
+cd ~/source/ralph
+export RALPH_GIT_HOST=github
+export GH_TOKEN=<your-PAT>
+export GH_OWNER=<your-github-org-or-user>
+uv run pytest tests/e2e/test_smoke.py -v
+```
+
+**All five smoke scenarios must pass green:**
+1. Happy-path feature
+2. Bug path
+3. STUCK path
+4. PR-feedback round trip
+5. Cycle-detection trip
+
+If any scenario fails, fix forward INSIDE Stage B — do not start Stage C work until all five are green. The smoke is your baseline. Any regression Ralph introduces during Stage C will surface here immediately.
+
+**Why this is a hard gate, not advisory:** Stage C work modifies the same executor + skills that Stage B has tested. Without a green smoke baseline, you can't tell whether a Stage C change broke something. With a green baseline, every Stage C failure points at exactly one variable.
+
+### Stage C — Ralph at home builds Ralph for work (Phase 2 / ADO)
+
+With Phase 1 green-smoke-verified, Ralph picks up Phase 2 plans as PBIs. Ralph still runs on GitHub at home; the Phase 2 artefacts are FOR work deployment but built FROM home.
+
+**Deliverables:**
+- Plan 02 Phase 2 (`ado_client.py` + `setup_ralph_queue_ado.py`)
+- Plan 03 Phase 2 (`workitem-fetch-ado` skill)
+- Plan 05 Phase 2 (`pr-ado` skill — all 5 operations)
+- Plan 11 Phase 2 (`ado_auth` check, wired into doctor's dispatcher)
+- Plan 12 Phase 2 (ADO image build — Dockerfile already supports `--host ado`; this verifies it builds end-to-end)
+
+**Stage C exit gate:**
+1. The full GitHub smoke suite still passes (regression check on Phase 1).
+2. `bash scripts/build_image.sh --host ado` produces a valid image.
+3. `docker run --rm ralph:latest-ado ralph-doctor` reports all checks green when `RALPH_GIT_HOST=ado` is set with valid `ADO_PAT` / `ADO_ORG_URL` / `ADO_PROJECT` (a manual rehearsal against a sandbox ADO repo).
+
+**Stage C completes** when an ADO-built image runs locally end-to-end (via `docker run`) against a sandbox ADO repo, executing a trivial PBI through `pr-ado`.
+
+### Stage D — Deploy at work
+
+Once Stage C completes, push the ADO image to the work registry, apply the manifests on ROSA, and watch Ralph pick up real PBIs against real ADO repos. This stage isn't a build stage — it's the deployment of what Stage C produced.
+
+### Summary of work distribution
+
+```
+Stage A (human):       6 plan-units  →  ~1 week
+Stage B (Ralph @home): 7 plan-units  →  Plus green smoke gate
+Stage C (Ralph @home): 5 plan-units  →  Plus ADO image gate
+Stage D (operator):    Deploy        →  Standard k8s deploy
+```
+
+The "Ralph builds Ralph" property of the architecture turns into concrete capacity: of 18 plan-units total, humans build 6, Ralph builds 12.
+
+---
+
 ## Verification gates
 
 After each plan completes (its tests pass, its PR is ready), run the corresponding verification gate before starting any dependent plan.
