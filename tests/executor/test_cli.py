@@ -220,12 +220,16 @@ def test_main_workspace_rejects_absolute_name(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An absolute --workspace name would silently escape RALPH_HOME
-    (Path('home') / '/etc' yields Path('/etc')). Must be rejected."""
-    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
-    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+    (Path('home') / '/etc' yields Path('/etc')). Must be rejected.
 
-    # Use a Windows-style absolute path that argparse won't try to expand.
-    exit_code = cli.main(["--once", "--workspace", "C:\\etc"])
+    Uses a POSIX-style absolute path because Path('/etc').is_absolute()
+    is True on both Windows and POSIX, whereas 'C:\\\\etc' only registers
+    as absolute on Windows.
+    """
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "/etc"])
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "plain directory name" in err
@@ -236,11 +240,16 @@ def test_main_workspace_rejects_parent_traversal(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A `..` segment would resolve outside RALPH_HOME. Must be rejected."""
-    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
-    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+    """A `..` segment would resolve outside RALPH_HOME. Must be rejected.
 
-    exit_code = cli.main(["--once", "--workspace", "..\\sibling"])
+    Uses '/'-separated input so Path treats '..' as a separate component
+    on both Windows and POSIX (backslash is a regular filename character
+    on POSIX, so '..\\\\sibling' would slip past the parts check there).
+    """
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "../sibling"])
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "plain directory name" in err
