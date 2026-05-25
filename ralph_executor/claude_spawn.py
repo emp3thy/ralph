@@ -3,29 +3,36 @@
 The spawner sets ``RALPH_PBI_DIR`` in the subprocess environment so the
 spawned Claude session can locate its working PBI without having to
 parse argv. ``classify_outcome`` then maps the (stdout, stderr,
-exit_code, on-disk effects) tuple to one of four typed outcomes:
+exit_code, on-disk effects, pr-lookup) tuple to one of four typed
+outcomes:
 
-  * ``pr_created`` — stdout contains the ``PR created: <url>`` marker.
+  * ``pr_created`` — an OPEN PR exists for the PBI's feature branch
+                     (``ralph/<PBI-ID>``). Source of truth is the git
+                     host, not Claude's stdout — Claude's stdout is
+                     unreliable because PROMPT.md doesn't mandate a
+                     specific marker line and the pr-skill returns its
+                     own JSON, not a plain "PR created" message.
   * ``stuck``      — Ralph wrote STUCK.md into the PBI directory.
-  * ``partial``    — Ralph exited zero with neither marker (multi-step
-                     PBI: stay in current/, run again next iteration).
+  * ``partial``    — Ralph exited zero with no STUCK.md and no PR
+                     (multi-step PBI: stay in current/, run again).
   * ``error``      — Non-zero exit code with no STUCK.md (transient
                      failure; loop driver currently treats this the
                      same as ``partial`` but the explicit kind makes
                      Plan 9's safety controls easier to wire later).
 
-STUCK.md takes precedence over a PR-created marker because Ralph may
-have produced a stale stdout line from an earlier step before writing
-STUCK.md just before exit.
+STUCK.md takes precedence over a PR-created signal because Ralph may
+have written STUCK.md after pushing the feature branch (e.g. PR was
+opened but a later step failed).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -37,8 +44,8 @@ log = logging.getLogger(__name__)
 
 OutcomeKind = Literal["pr_created", "stuck", "partial", "error"]
 
-_PR_URL_RE = re.compile(r"PR created:\s*(\S+)", re.IGNORECASE)
 _STUCK_FILENAME = "STUCK.md"
+_GH_BINARY = "gh"
 
 
 @dataclass(frozen=True)
@@ -72,6 +79,65 @@ def _build_argv(cfg: ExecutorConfig, pbi: PBI) -> list[str]:
     return argv
 
 
+def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
+    """Ask the GitHub CLI whether an OPEN PR exists for ``branch``.
+
+    Returns the PR URL or ``None`` if no open PR is found. Returns
+    ``None`` on any subprocess / parse failure too — classifier callers
+    treat "couldn't check" the same as "no PR" so a transient gh outage
+    doesn't make the executor mis-classify a partial iteration as
+    pr_created. The real PR state is reconciled by sweep (Plan 8).
+    """
+    try:
+        result = subprocess.run(
+            [
+                _GH_BINARY,
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--state",
+                "open",
+                "--json",
+                "url",
+                "--limit",
+                "1",
+            ],
+            cwd=str(repo_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # OSError catches FileNotFoundError (gh not installed),
+        # PermissionError (gh present but not executable in this
+        # container/CI), and any other transient OS-level failure.
+        # All map to "no PR detected" — sweep (Plan 8) will reconcile.
+        log.warning("gh pr list failed for %s: %s", branch, exc)
+        return None
+    if result.returncode != 0:
+        log.warning(
+            "gh pr list returned %d for %s: %s",
+            result.returncode,
+            branch,
+            result.stderr.strip()[:200],
+        )
+        return None
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        log.warning("gh pr list returned non-JSON for %s: %s", branch, exc)
+        return None
+    if not isinstance(payload, list) or not payload:
+        return None
+    first = payload[0]
+    if not isinstance(first, dict):
+        return None
+    url = first.get("url")
+    return str(url) if isinstance(url, str) and url else None
+
+
 def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     """Run ``claude -p`` against the PBI and return a classified outcome."""
     argv = _build_argv(cfg, pbi)
@@ -93,12 +159,19 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
         text=True,
     )
     duration = time.monotonic() - start
+    # Resolve PR state via gh AFTER Claude exits — this is the source of
+    # truth for the "did Claude create a PR?" decision. stdout parsing
+    # would be unreliable (PROMPT.md doesn't mandate a marker line and
+    # the pr-skill emits its own JSON envelope).
+    feature_branch = f"ralph/{pbi.id}"
+    pr_url = _query_open_pr_via_gh(cfg.repo_path, feature_branch)
     return classify_outcome(
         pbi_dir=pbi.path,
         stdout=result.stdout,
         stderr=result.stderr,
         exit_code=result.returncode,
         duration_seconds=duration,
+        pr_url=pr_url,
     )
 
 
@@ -109,17 +182,25 @@ def classify_outcome(
     stderr: str,
     exit_code: int,
     duration_seconds: float,
+    pr_url: str | None = None,
+    pr_lookup: Callable[[], str | None] | None = None,
 ) -> ClaudeOutcome:
-    """Map the raw (stdout, stderr, exit, on-disk) tuple to a typed outcome.
+    """Map the raw (stdout, stderr, exit, on-disk, pr-state) tuple to a
+    typed outcome.
 
     Precedence (highest first):
       1. STUCK.md present on disk → ``stuck``
       2. Exit code non-zero       → ``error``
-      3. stdout matches PR-created marker → ``pr_created``
+      3. open PR exists for the feature branch → ``pr_created``
+         (``pr_url`` is taken directly; if not provided, ``pr_lookup``
+         is called once and its return value is used)
       4. Otherwise                → ``partial``
+
+    ``pr_url`` and ``pr_lookup`` exist so tests can inject the PR-state
+    answer without monkeypatching subprocess. Production callers pass
+    ``pr_url`` (already resolved by ``_query_open_pr_via_gh``).
     """
     stuck_present = (pbi_dir / _STUCK_FILENAME).is_file()
-    pr_match = _PR_URL_RE.search(stdout)
 
     if stuck_present:
         return ClaudeOutcome(
@@ -139,10 +220,12 @@ def classify_outcome(
             exit_code=exit_code,
             duration_seconds=duration_seconds,
         )
-    if pr_match:
+    if pr_url is None and pr_lookup is not None:
+        pr_url = pr_lookup()
+    if pr_url:
         return ClaudeOutcome(
             kind="pr_created",
-            pr_url=pr_match.group(1).strip(),
+            pr_url=pr_url,
             stdout=stdout,
             stderr=stderr,
             exit_code=exit_code,

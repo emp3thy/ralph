@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from ralph_executor.claude_spawn import (
     classify_outcome,
     spawn_claude_p,
@@ -50,20 +52,56 @@ def test_spawn_invokes_claude_with_pbi_context(
     assert "-p" in outcome.stdout
 
 
-def test_classify_pr_created_when_stdout_contains_marker(tmp_path: Path) -> None:
+def test_classify_pr_created_when_pr_url_provided(tmp_path: Path) -> None:
+    """pr_url is the source of truth — set by spawn_claude_p via the
+    real gh CLI call. classify_outcome itself just maps the answer."""
     pbi_dir = tmp_path / "WI-1"
     pbi_dir.mkdir()
     outcome = classify_outcome(
         pbi_dir=pbi_dir,
-        stdout=(
-            "Did the work.\nPR created: https://dev.azure.com/example/_git/repo/pullrequest/4711\n"
-        ),
+        stdout="Did the work.\n",
         stderr="",
         exit_code=0,
         duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/4711",
     )
     assert outcome.kind == "pr_created"
-    assert outcome.pr_url == ("https://dev.azure.com/example/_git/repo/pullrequest/4711")
+    assert outcome.pr_url == "https://github.com/example/repo/pull/4711"
+
+
+def test_classify_pr_created_via_pr_lookup_callback(tmp_path: Path) -> None:
+    """pr_lookup is the deferred form — called only when pr_url not given.
+    Lets sweep/tests inject a different resolution strategy."""
+    pbi_dir = tmp_path / "WI-1"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_lookup=lambda: "https://github.com/example/repo/pull/777",
+    )
+    assert outcome.kind == "pr_created"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/777"
+
+
+def test_classify_partial_when_stdout_marker_but_no_real_pr(tmp_path: Path) -> None:
+    """Source of truth is now the git host (gh CLI), not Claude's stdout.
+    A run that exits zero with a marker-looking line but no actual open
+    PR is classified `partial`."""
+    pbi_dir = tmp_path / "WI-1"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="PR created: https://made-up/url\n",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url=None,
+    )
+    assert outcome.kind == "partial"
+    assert outcome.pr_url is None
 
 
 def test_classify_stuck_when_stuck_md_present(tmp_path: Path) -> None:
@@ -147,15 +185,25 @@ def test_spawn_simulates_pr_creation(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     fake_claude_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """spawn_claude_p resolves PR state via _query_open_pr_via_gh AFTER
+    the claude subprocess exits. Stub the helper to return a fake PR
+    URL — no real gh CLI call needed."""
     pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
     write_claude_script(
         fake_claude_binary,
-        "print('PR created: https://example/pullrequest/9999')\n",
+        "print('done')\n",
     )
+
+    def _fake_gh_lookup(repo_path: Path, branch: str) -> str | None:
+        assert branch == f"ralph/{pbi.id}"
+        return "https://github.com/example/repo/pull/9999"
+
+    monkeypatch.setattr("ralph_executor.claude_spawn._query_open_pr_via_gh", _fake_gh_lookup)
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "pr_created"
-    assert outcome.pr_url == "https://example/pullrequest/9999"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/9999"
 
 
 def test_spawn_simulates_stuck(
