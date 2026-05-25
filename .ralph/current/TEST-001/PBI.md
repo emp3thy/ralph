@@ -1,11 +1,11 @@
 ---
 id: TEST-001
 type: feature
-status: inbox
+status: current
 severity: normal
 attempts: 0
 created_at: 2026-05-25T17:15:00+00:00
-updated_at: 2026-05-25T17:15:00+00:00
+updated_at: 2026-05-25T17:33:21+00:00
 ---
 
 # Smoke test — add a marker comment to README

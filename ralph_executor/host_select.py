@@ -160,25 +160,28 @@ def stage_skills(host: str, skills_root: Path, claude_skills_dir: Path) -> None:
             f"the per-host skill folders, or ensure the {pr_dirname}/ "
             f"directory has been built (Plans 3 and 5)."
         )
-    if not wi_src.is_dir():
-        raise HostSelectionError(
-            f"host={host}: source skill directory {wi_dirname}/ "
-            f"not found under {skills_root}. "
-            f"Expected path: {wi_src}. "
-            f"Set RALPH_SKILLS_ROOT to the directory containing "
-            f"the per-host skill folders, or ensure the {wi_dirname}/ "
-            f"directory has been built (Plans 3 and 5)."
-        )
+    # workitem-fetch-<host>/ is OPTIONAL — it ships in Plan 3 (deferred)
+    # for the supervisor-side ralph-add skill. The executor itself doesn't
+    # invoke it; only PROMPT.md-driven Claude sessions might. Tolerate
+    # absence with a warning so MVR runs before Plan 3 lands.
     claude_skills_dir.mkdir(parents=True, exist_ok=True)
-    log.info(
-        "staging skills: %s -> %s, %s -> %s",
-        pr_src,
-        claude_skills_dir / "pr",
-        wi_src,
-        claude_skills_dir / "workitem-fetch",
-    )
+    log.info("staging pr skill: %s -> %s", pr_src, claude_skills_dir / "pr")
     _copy_skill_tree(pr_src, claude_skills_dir / "pr")
-    _copy_skill_tree(wi_src, claude_skills_dir / "workitem-fetch")
+    if wi_src.is_dir():
+        log.info(
+            "staging workitem-fetch skill: %s -> %s",
+            wi_src,
+            claude_skills_dir / "workitem-fetch",
+        )
+        _copy_skill_tree(wi_src, claude_skills_dir / "workitem-fetch")
+    else:
+        log.warning(
+            "host=%s: workitem-fetch-%s/ not under %s -- skipping (Plan 3 "
+            "deferred; executor doesn't need it, supervisor skills do).",
+            host,
+            host,
+            skills_root,
+        )
 
 
 def verify_staged(claude_skills_dir: Path) -> None:
@@ -190,10 +193,10 @@ def verify_staged(claude_skills_dir: Path) -> None:
 
     Raises ``HostSelectionError`` listing every missing file.
     """
-    expected = [
-        claude_skills_dir / "pr" / "scripts" / "create-pr.py",
-        claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py",
-    ]
+    # pr/ is required; workitem-fetch/ is optional (Plan 3 deferred).
+    # Verify only the entry points that should exist for the executor path.
+    # Real script name is create_pr.py (underscore — see skills/pr-github/scripts/).
+    expected = [claude_skills_dir / "pr" / "scripts" / "create_pr.py"]
     missing = [
         path.relative_to(claude_skills_dir).as_posix() for path in expected if not path.is_file()
     ]
