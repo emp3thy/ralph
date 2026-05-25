@@ -202,3 +202,147 @@ def test_inbox_pbis_age_tiebreak_within_same_lane(
     source = FilesystemQueueSource(cfg_for_repo)
     pbis = source.inbox_pbis()
     assert [p.id for p in pbis] == ["WI-older", "WI-younger"]
+
+
+# ----------------------------------------------------------------------
+# depends_on field — eligibility filter on pick_next
+# ----------------------------------------------------------------------
+
+
+def _write_pbi_with_depends_on(
+    repo: Path,
+    *,
+    pbi_id: str,
+    depends_on: list[str] | None,
+    where: str = "inbox",
+) -> Path:
+    """Write a minimal feature PBI with an explicit depends_on field."""
+    pbi_dir = repo / ".ralph" / where / pbi_id
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    fm_lines = [
+        "---",
+        f"id: {pbi_id}",
+        "type: feature",
+        f"status: {where}",
+        "severity: normal",
+        "attempts: 0",
+        "created_at: 2026-05-25T00:00:00+00:00",
+        "updated_at: 2026-05-25T00:00:00+00:00",
+    ]
+    if depends_on is not None:
+        if depends_on:
+            fm_lines.append("depends_on: [" + ", ".join(f'"{d}"' for d in depends_on) + "]")
+        else:
+            fm_lines.append("depends_on: []")
+    fm_lines.extend(["---", "", f"# {pbi_id}", ""])
+    (pbi_dir / "PBI.md").write_text("\n".join(fm_lines), encoding="utf-8")
+    (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    return pbi_dir
+
+
+def test_parse_pbi_directory_defaults_depends_on_to_empty_tuple(
+    fake_repo: Path,
+) -> None:
+    """A PBI with no depends_on field gets the empty tuple — backward-compatible."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-no-deps")
+    pbi = parse_pbi_directory(pbi_dir, status="inbox")
+    assert pbi.depends_on == ()
+
+
+def test_parse_pbi_directory_reads_depends_on_list(fake_repo: Path) -> None:
+    _git(fake_repo, "checkout", "ralph-queue")
+    pbi_dir = _write_pbi_with_depends_on(
+        fake_repo,
+        pbi_id="WI-child",
+        depends_on=["WI-parent-1", "WI-parent-2"],
+    )
+    pbi = parse_pbi_directory(pbi_dir, status="inbox")
+    assert pbi.depends_on == ("WI-parent-1", "WI-parent-2")
+
+
+def test_parse_pbi_directory_rejects_depends_on_with_non_string(
+    fake_repo: Path,
+) -> None:
+    _git(fake_repo, "checkout", "ralph-queue")
+    pbi_dir = fake_repo / ".ralph" / "inbox" / "WI-bad-deps"
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        "id: WI-bad-deps\n"
+        "type: feature\n"
+        "status: inbox\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "created_at: 2026-05-25T00:00:00+00:00\n"
+        "updated_at: 2026-05-25T00:00:00+00:00\n"
+        "depends_on: [42, WI-parent]\n"  # 42 is an int, not a string
+        "---\n\n# body\n",
+        encoding="utf-8",
+    )
+    (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    with pytest.raises(QueueError, match="depends_on must be a list of PBI-id strings"):
+        parse_pbi_directory(pbi_dir, status="inbox")
+
+
+def test_pick_next_skips_pbi_with_unsatisfied_dep(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """A PBI whose depends_on names an unsatisfied dep is skipped in favour
+    of a sibling whose deps are all done (or empty)."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    _write_pbi_with_depends_on(
+        fake_repo,
+        pbi_id="WI-blocked",
+        depends_on=["WI-parent"],
+    )
+    _write_pbi_with_depends_on(
+        fake_repo,
+        pbi_id="WI-ready",
+        depends_on=[],
+    )
+    _git(fake_repo, "add", ".ralph/inbox")
+    _git(fake_repo, "commit", "-m", "deps test")
+    source = FilesystemQueueSource(cfg_for_repo)
+    picked = source.pick_next()
+    assert picked is not None
+    assert picked.id == "WI-ready"
+
+
+def test_pick_next_returns_pbi_when_dep_is_in_done(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """Once a dep is in done/, the dependent PBI becomes eligible."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    _write_pbi_with_depends_on(
+        fake_repo,
+        pbi_id="WI-child",
+        depends_on=["WI-parent"],
+    )
+    _write_pbi_with_depends_on(
+        fake_repo,
+        pbi_id="WI-parent",
+        depends_on=[],
+        where="done",
+    )
+    _git(fake_repo, "add", ".ralph")
+    _git(fake_repo, "commit", "-m", "parent in done")
+    source = FilesystemQueueSource(cfg_for_repo)
+    picked = source.pick_next()
+    assert picked is not None
+    assert picked.id == "WI-child"
+
+
+def test_pick_next_returns_none_when_all_inbox_blocked_by_deps(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """If every inbox PBI has an unsatisfied dep, pick_next returns None."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    _write_pbi_with_depends_on(fake_repo, pbi_id="WI-a", depends_on=["MISSING-1"])
+    _write_pbi_with_depends_on(fake_repo, pbi_id="WI-b", depends_on=["MISSING-2"])
+    _git(fake_repo, "add", ".ralph/inbox")
+    _git(fake_repo, "commit", "-m", "all blocked")
+    source = FilesystemQueueSource(cfg_for_repo)
+    assert source.pick_next() is None

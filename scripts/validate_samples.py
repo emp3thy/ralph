@@ -136,6 +136,21 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
                 f"{field} must be a datetime or ISO-8601 string, got {type(value).__name__}"
             )
 
+    # depends_on is OPTIONAL — list of PBI-id strings.
+    raw_deps = frontmatter.get("depends_on")
+    if raw_deps is not None:
+        if not isinstance(raw_deps, list):
+            errors.append(
+                f"depends_on must be a list of PBI-id strings, got {type(raw_deps).__name__}"
+            )
+        else:
+            for i, dep in enumerate(raw_deps):
+                if not isinstance(dep, str) or not dep.strip():
+                    errors.append(
+                        f"depends_on[{i}] must be a non-empty string, "
+                        f"got {type(dep).__name__}={dep!r}"
+                    )
+
     pbi_id = frontmatter.get("id")
     if pbi_id is not None and not isinstance(pbi_id, str):
         errors.append(f"id must be a string, got {type(pbi_id).__name__}")
