@@ -254,12 +254,18 @@ def test_iterate_once_pulls_main_only_on_fresh_claim(
     assert "ralph-queue" in pull_calls
 
 
-def test_run_loop_terminates_when_iterate_returns_halt(
+def test_run_loop_terminates_when_cycle_detector_trips(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``run_loop`` honours a halt signal from the cycle-detector stub."""
+    """``run_loop`` raises ``HaltedError`` when the cycle detector trips.
+
+    Plan 9 changed the contract: ``_check_cycle_detector`` returning ``True``
+    now causes ``iterate_once`` to raise ``HaltedError`` (after writing the
+    META-BUG + sentinel), which ``run_loop`` re-raises immediately.
+    """
+    from ralph_executor.safety import HaltedError
 
     def _trip(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
         return True
@@ -269,7 +275,7 @@ def test_run_loop_terminates_when_iterate_returns_halt(
         "ralph_executor.loop.spawn_claude_p",
         _stub_spawn("partial"),
     )
-    results = list(run_loop(cfg_for_repo, max_iterations=5))
-    assert any(r.outcome == "halted" for r in results)
-    # The halt must terminate run_loop early.
-    assert len(results) < 5
+    # run_loop raises HaltedError on the first iteration where the
+    # cycle detector trips -- it never returns normally.
+    with pytest.raises(HaltedError):
+        list(run_loop(cfg_for_repo, max_iterations=5))

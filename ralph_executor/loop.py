@@ -2,33 +2,36 @@
 
 Algorithm (matches the spec's "Iteration model"):
 
-  1. ``git pull ralph-queue`` (every iteration, cheap, keeps the queue
+  1. Check the halt sentinel — refuse to iterate while the executor is
+     halted (Plan 9 Layer 3).
+  2. ``git pull ralph-queue`` (every iteration, cheap, keeps the queue
      in sync).
-  2. Check ``current/``.
-     a. If occupied: spawn ``claude -p`` against that PBI.
+  3. Check ``current/``.
+     a. If occupied: increment the attempt counter (Plan 9), then spawn
+        ``claude -p`` against that PBI.
         * pr_created → move PBI to pending-pr/.
-        * stuck      → move PBI to blocked/.
+        * stuck      → handle_stuck (Plan 9 Layer 1) → blocked/.
         * partial / error → PBI stays in current/ (multi-step).
      b. If empty: run the sweep stub (Plan 8 fills in), then pick the
         highest-priority inbox PBI. If picked, ``git pull main``, claim
         the PBI into current/, and create the per-PBI feature branch
         ``ralph/<PBI-ID>`` off main.
-  3. Invoke the cycle-detector stub (Plan 9 fills in). If it returns
-     True, ``run_loop`` halts.
+  4. Evaluate cycle-detector rules (Plan 9 Layer 3). If any trip, write
+     the META-BUG + sentinel and raise ``HaltedError``.
 
 Plan 8 will replace ``_run_sweep`` with the real sweep implementation.
-Plan 9 will replace ``_check_cycle_detector`` with the real detector
-and add STUCK.md attempt-counter handling. Both replacements happen via
-``monkeypatch`` in tests and via plain import overrides in production;
-the loop itself stays untouched.
+Both replacements happen via ``monkeypatch`` in tests and via plain
+import overrides in production; the loop itself stays untouched.
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from ralph_executor import git_ops
@@ -36,9 +39,21 @@ from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
-    move_current_to_blocked,
     move_current_to_pending_pr,
     move_inbox_to_current,
+)
+from ralph_executor.safety import (
+    AttemptCounter,
+    AttemptsExceeded,
+    Event,
+    EventType,
+    HaltedError,
+    HaltStatus,
+    check_halt_sentinel,
+    evaluate_all,
+    halt_and_acknowledge,
+    handle_stuck,
+    open_log,
 )
 from ralph_executor.types import PBI
 
@@ -81,15 +96,30 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
 
 
 def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
-    """Stub — Plan 9 fills this in.
+    """Evaluate all cycle-detector rules against the recent event log.
 
-    Returns ``True`` if a global cycle has tripped and the loop should
-    halt. Plan 9 will replace this with the real detector (signature
-    recurrence, whack-a-mole rate, same-file thrashing, etc.). In v1
-    the stub always returns ``False``.
+    Returns ``True`` if any signal tripped (and the loop should halt after
+    this call completes the META-BUG + sentinel write). Returns ``False``
+    when no signals fire.
+
+    The function is kept as a module-level callable so tests can monkeypatch
+    it without dependency-injection (reconciliation #9).
     """
-    log.debug("cycle-detector stub invoked (Plan 9 will replace this)")
-    return False
+    now = datetime.now(tz=UTC)
+    event_log = open_log(cfg.repo_path)
+    try:
+        events = event_log.recent(window=timedelta(hours=72), now=now)
+    finally:
+        event_log.close()
+    signals = evaluate_all(events, now)
+    if not signals:
+        return False
+    log.warning(
+        "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
+        len(signals),
+    )
+    halt_and_acknowledge(repo=cfg.repo_path, signals=signals, now=now)
+    return True
 
 
 # ----------------------------------------------------------------------
@@ -155,7 +185,13 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
 
     Multi-step PBI discipline: ``partial`` and ``error`` outcomes leave
     the PBI in ``current/``; ``pr_created`` promotes to ``pending-pr/``;
-    ``stuck`` demotes to ``blocked/``.
+    ``stuck`` triggers ``handle_stuck`` (Layer 1) which moves the PBI to
+    ``blocked/`` and returns a ``StuckOutcome`` carrying a ``pbi.blocked``
+    event the caller appends to the event log.
+
+    Also increments the attempt counter before spawning (Plan 9 Layer 1).
+    If the counter exceeds the configured maximum, the PBI is moved to
+    ``blocked/`` without spawning Claude.
 
     KNOWN ISSUE: the working tree is currently left on ``cfg.queue_branch``
     when spawning so that ``.ralph/current/<PBI-ID>/`` is visible on disk
@@ -168,23 +204,91 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
 
     The trade-off: the spec's "Branch dance" expected the EXECUTOR to do
     the feature-branch checkout before spawning, but ``.ralph/`` only
-    lives on ``ralph-queue``. Plan 7 defers the full reconciliation —
-    likely needing a git-worktree or .ralph-merge-into-feature scheme —
+    lives on ``ralph-queue``. Plan 7 defers the full reconciliation --
+    likely needing a git-worktree or .ralph-merge-into-feature scheme --
     to Plan 9 / a follow-up. See PR #5 review thread for context.
     """
-    outcome = spawn_claude_p(cfg, pbi)
-    log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
-    if outcome.kind == "pr_created":
-        move_current_to_pending_pr(cfg, pbi)
-        return outcome, IterationResult(
-            outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
+    now = datetime.now(tz=UTC)
+    event_log = open_log(cfg.repo_path)
+    try:
+        # --- Plan 9: increment attempt counter before spawning -----------
+        counter = AttemptCounter(pbi_dir=pbi.path)
+        try:
+            new_attempts = counter.increment()
+        except AttemptsExceeded as exc:
+            log.warning(
+                "PBI %s exceeded max attempts (%d/%d); moving to blocked/",
+                pbi.id,
+                exc.attempts,
+                exc.limit,
+            )
+            event_log.append(
+                Event(
+                    kind=EventType.PBI_BLOCKED,
+                    recorded_at=now,
+                    pbi_id=pbi.id,
+                    payload={"reason": str(exc), "source": "max-attempts"},
+                )
+            )
+            target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                # shutil.move would silently move pbi.path INSIDE the existing
+                # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
+                # the queue scanner. Mirrors the same guard in
+                # ralph_executor/safety/stuck.py::move_to_blocked.
+                raise FileExistsError(
+                    f"cannot move {pbi.path} to {target}: target already exists"
+                ) from exc
+            shutil.move(str(pbi.path), str(target))
+            dummy = ClaudeOutcome(
+                kind="error",
+                pr_url=None,
+                stdout="",
+                stderr=str(exc),
+                exit_code=1,
+                duration_seconds=0.0,
+            )
+            return dummy, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+
+        event_log.append(
+            Event(
+                kind=EventType.ATTEMPT_INCREMENTED,
+                recorded_at=now,
+                pbi_id=pbi.id,
+                payload={"attempts": new_attempts},
+            )
         )
-    if outcome.kind == "stuck":
-        move_current_to_blocked(cfg, pbi)
-        return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
-    if outcome.kind == "error":
-        return outcome, IterationResult(outcome="ran_error", pbi_id=pbi.id)
-    return outcome, IterationResult(outcome="ran_partial", pbi_id=pbi.id)
+
+        # --- Spawn Claude ------------------------------------------------
+        outcome = spawn_claude_p(cfg, pbi)
+        log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
+
+        if outcome.kind == "pr_created":
+            move_current_to_pending_pr(cfg, pbi)
+            return outcome, IterationResult(
+                outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
+            )
+
+        if outcome.kind == "stuck":
+            # --- Plan 9 Layer 1: STUCK.md detection ----------------------
+            stuck_outcome = handle_stuck(
+                repo=cfg.repo_path,
+                pbi_dir=pbi.path,
+                now=datetime.now(tz=UTC),
+            )
+            if stuck_outcome is not None:
+                event_log.append(stuck_outcome.event)
+                log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
+                return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+            # Claude reported stuck but no STUCK.md present -- fall through
+            # to partial (the PBI stays in current/ for the next iteration).
+
+        if outcome.kind == "error":
+            return outcome, IterationResult(outcome="ran_error", pbi_id=pbi.id)
+        return outcome, IterationResult(outcome="ran_partial", pbi_id=pbi.id)
+    finally:
+        event_log.close()
 
 
 def iterate_once(cfg: ExecutorConfig) -> IterationResult:
@@ -196,18 +300,35 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     The working tree is guaranteed to be on ``cfg.queue_branch`` when
     this function returns, regardless of the outcome, so that callers
     can inspect ``.ralph/`` on disk immediately after the call.
+
+    Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
     """
+    # --- Plan 9 Layer 3: refuse to start while sentinel is active --------
+    status = check_halt_sentinel(cfg.repo_path)
+    if status == HaltStatus.HALTED:
+        raise HaltedError(
+            meta_bug_id="(see .ralph/state/halted)",
+            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
+            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+        )
+
     _pull_queue(cfg)
     source = FilesystemQueueSource(cfg)
 
     current = source.current_pbi()
     if current is not None:
-        # Current occupied → just run Ralph on it.
+        # Current occupied → run Ralph on it (attempt counter + spawn).
         _outcome, result = _run_ralph(cfg, current)
         # Restore queue branch so .ralph/ is visible on disk after the call.
         _ensure_on_queue_branch(cfg)
         if _check_cycle_detector(cfg, source):
-            return IterationResult(outcome="halted", pbi_id=current.id)
+            # META-BUG + sentinel already written by _check_cycle_detector;
+            # raise HaltedError so the caller knows the loop is frozen.
+            raise HaltedError(
+                meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
+                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
+                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            )
         return result
 
     # Current empty → sweep (Plan 8 stub), pick next, claim if any.
@@ -218,7 +339,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # Nothing to do; run the cycle-detector check anyway so a
         # globally-tripped cycle can halt the loop.
         if _check_cycle_detector(cfg, source):
-            return IterationResult(outcome="halted", pbi_id=None)
+            raise HaltedError(
+                meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
+                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
+                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            )
         return IterationResult(outcome="idle", pbi_id=None)
 
     log.info("claiming PBI %s", picked.id)
@@ -226,7 +351,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     # _claim_pbi already returns to queue branch; re-assert for clarity.
     _ensure_on_queue_branch(cfg)
     if _check_cycle_detector(cfg, source):
-        return IterationResult(outcome="halted", pbi_id=claimed.id)
+        raise HaltedError(
+            meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
+            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
+            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+        )
     return IterationResult(outcome="claimed", pbi_id=claimed.id)
 
 
@@ -243,6 +372,10 @@ def run_loop(
     Yields each ``IterationResult`` so callers (and tests) can observe
     progress. ``max_iterations`` is primarily for tests; in production
     callers pass ``None`` and the loop runs until KeyboardInterrupt.
+
+    Raises ``HaltedError`` if the halt sentinel blocks the loop on entry
+    (Plan 9 Layer 3). Callers that want a gentle drain should catch
+    ``HaltedError`` and surface it to the operator.
     """
     count = 0
     while True:
@@ -251,9 +384,12 @@ def run_loop(
         except KeyboardInterrupt:
             log.info("interrupted")
             return
+        except HaltedError:
+            log.warning("halt sentinel is active -- exiting run_loop")
+            raise
         yield result
         if result.outcome == "halted":
-            log.warning("halt signalled — exiting run_loop")
+            log.warning("halt signalled -- exiting run_loop")
             return
         count += 1
         if max_iterations is not None and count >= max_iterations:
