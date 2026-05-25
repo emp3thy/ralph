@@ -106,6 +106,20 @@ def commit_all(repo: Path, message: str) -> str:
     return rev_parse_head(repo)
 
 
+def commit_index(repo: Path, message: str) -> str:
+    """Commit whatever is currently staged. Returns new HEAD sha.
+
+    Unlike ``commit_all``, this does NOT run ``git add -A`` first —
+    callers stage the exact paths they want via ``add()``. No-ops
+    (returns current HEAD) when the index is empty.
+    """
+    diff = _run_git(repo, "diff", "--cached", "--quiet", check=False)
+    if diff.returncode == 0:
+        return rev_parse_head(repo)
+    _run_git(repo, "commit", "-m", message)
+    return rev_parse_head(repo)
+
+
 def push(repo: Path, branch: str, remote: str = "origin") -> None:
     """Run ``git push <remote> <branch>``."""
     _run_git(repo, "push", remote, branch)

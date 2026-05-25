@@ -279,3 +279,91 @@ def test_run_loop_terminates_when_cycle_detector_trips(
     # cycle detector trips -- it never returns normally.
     with pytest.raises(HaltedError):
         list(run_loop(cfg_for_repo, max_iterations=5))
+
+
+def test_iterate_once_persists_claude_history_writes_on_partial(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: when Claude appends to HISTORY.md during a partial-
+    outcome iteration, the executor must commit + push that change on
+    ralph-queue. Without _persist_iteration_writes, Claude's edits sit
+    dirty in the working tree and get lost on the next iteration's
+    branch checkout. Caught by first end-to-end self-host smoke
+    (Ralph PR #7 — TEST-001 left HISTORY.md uncommitted on ralph-queue).
+    """
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim TEST-001 → current/
+
+    history_path = fake_repo / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
+    history_before = history_path.read_text(encoding="utf-8")
+
+    def _appending_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+        # Claude appends an iteration record to HISTORY.md, then exits
+        # with partial (multi-step PBI, no PR yet).
+        history_path.write_text(
+            history_before + "\n## Iteration 1 — partial — picked step 1\n",
+            encoding="utf-8",
+        )
+        return ClaudeOutcome(
+            kind="partial",
+            pr_url=None,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
+
+    head_before_iter = _git(fake_repo, "rev-parse", "HEAD").strip()
+    result = iterate_once(cfg_for_repo)
+    head_after_iter = _git(fake_repo, "rev-parse", "HEAD").strip()
+
+    assert result.outcome == "ran_partial"
+    # The persistence step must have produced a new commit on ralph-queue.
+    assert head_after_iter != head_before_iter, (
+        "expected _persist_iteration_writes to commit HISTORY.md edits"
+    )
+    # The PBI directory has no uncommitted changes after persist — local
+    # per-checkout state like .ralph/state/events.db (Plan 9 event log)
+    # is intentionally NOT staged, so untracked state/ may remain.
+    pbi_status = _git(fake_repo, "status", "--porcelain", ".ralph/current/WI-1234").strip()
+    assert pbi_status == "", f"PBI dir dirty after persist: {pbi_status!r}"
+    # HISTORY.md on disk contains the appended iteration record.
+    assert "## Iteration 1" in history_path.read_text(encoding="utf-8")
+    # Commit message names the PBI.
+    last_msg = _git(fake_repo, "log", "-1", "--pretty=%s").strip()
+    assert "WI-1234" in last_msg
+
+
+def test_persist_iteration_writes_excludes_state_dir(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_persist_iteration_writes must stage ONLY the PBI dir, never the
+    .ralph/state/ tree (events.db, halt sentinel, etc. are per-checkout
+    local state — committing them would produce a noisy commit every
+    iteration even when Claude wrote nothing).
+    """
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
+
+    # Drop a sentinel file under .ralph/state/ — it must NOT end up in
+    # any commit the persist helper creates.
+    state_marker = fake_repo / ".ralph" / "state" / "marker.txt"
+    state_marker.parent.mkdir(parents=True, exist_ok=True)
+    state_marker.write_text("local-only", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),  # attempts increment still dirties PBI.md
+    )
+    iterate_once(cfg_for_repo)
+
+    # The marker is still untracked — never committed.
+    tracked = _git(fake_repo, "ls-files", ".ralph/state/marker.txt").strip()
+    assert tracked == "", "state/marker.txt was incorrectly tracked"
+    assert state_marker.read_text(encoding="utf-8") == "local-only"

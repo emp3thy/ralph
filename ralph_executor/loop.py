@@ -132,6 +132,36 @@ def _ensure_on_queue_branch(cfg: ExecutorConfig) -> None:
         git_ops.checkout(cfg.repo_path, cfg.queue_branch)
 
 
+def _persist_iteration_writes(cfg: ExecutorConfig, pbi_id: str) -> None:
+    """Commit + push any HISTORY.md/STUCK.md/PLAN.md edits Claude wrote
+    inside the current PBI dir during this iteration.
+
+    When the iteration outcome leaves the PBI in current/ (partial /
+    error), nothing else moves the directory, so those edits would sit
+    uncommitted in the working tree and be lost on the next iteration's
+    checkout.
+
+    Stages ONLY the PBI's directory under .ralph/current/<id>/ — not the
+    whole .ralph/ tree — so local-state artefacts (e.g.
+    .ralph/state/events.db) aren't accidentally committed every
+    iteration. No-ops cleanly when the index ends up empty and when the
+    PBI was already moved out of current/ by a sibling code path.
+    """
+    _ensure_on_queue_branch(cfg)
+    pbi_dir = cfg.repo_path / ".ralph" / "current" / pbi_id
+    if not pbi_dir.is_dir():
+        # PBI was moved out of current/ by handle_stuck or
+        # move_current_to_pending_pr — nothing to persist here.
+        return
+    git_ops.add(cfg.repo_path, pbi_dir)
+    head_before = git_ops.rev_parse_head(cfg.repo_path)
+    message = f"chore(queue): persist iteration writes for {pbi_id}"
+    head_after = git_ops.commit_index(cfg.repo_path, message)
+    if head_after != head_before:
+        log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
+        git_ops.push(cfg.repo_path, cfg.queue_branch)
+
+
 def _pull_queue(cfg: ExecutorConfig) -> None:
     log.debug("pulling %s", cfg.queue_branch)
     _ensure_on_queue_branch(cfg)
@@ -321,6 +351,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         _outcome, result = _run_ralph(cfg, current)
         # Restore queue branch so .ralph/ is visible on disk after the call.
         _ensure_on_queue_branch(cfg)
+        # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
+        # inside the PBI dir. The move_current_to_* paths handle their
+        # own commits via git mv, but partial/error outcomes leave the
+        # PBI in current/ with dirty files that would otherwise be lost.
+        _persist_iteration_writes(cfg, current.id)
         if _check_cycle_detector(cfg, source):
             # META-BUG + sentinel already written by _check_cycle_detector;
             # raise HaltedError so the caller knows the loop is frozen.
