@@ -157,9 +157,20 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     the PBI in ``current/``; ``pr_created`` promotes to ``pending-pr/``;
     ``stuck`` demotes to ``blocked/``.
 
-    The working tree remains on ``cfg.queue_branch`` when spawning so
-    that ``.ralph/current/<PBI-ID>/`` is visible on disk.  The spawned
-    Claude session manages its own branch checkouts via the pr-skill.
+    KNOWN ISSUE: the working tree is currently left on ``cfg.queue_branch``
+    when spawning so that ``.ralph/current/<PBI-ID>/`` is visible on disk
+    for Claude to read PROMPT.md / HISTORY.md / PBI.md and write
+    STUCK.md / HISTORY.md per its instructions. The spawned Claude session
+    is expected to ``git checkout ralph/<PBI-ID>`` itself before making
+    code edits (PROMPT.md instructs this explicitly), then return to
+    ``ralph-queue`` for queue-state writes. The ``_switch_to_feature_branch``
+    helper is present as the executor-driven alternative.
+
+    The trade-off: the spec's "Branch dance" expected the EXECUTOR to do
+    the feature-branch checkout before spawning, but ``.ralph/`` only
+    lives on ``ralph-queue``. Plan 7 defers the full reconciliation —
+    likely needing a git-worktree or .ralph-merge-into-feature scheme —
+    to Plan 9 / a follow-up. See PR #5 review thread for context.
     """
     outcome = spawn_claude_p(cfg, pbi)
     log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
