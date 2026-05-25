@@ -12,3 +12,5 @@ uv run pytest
 uv run ruff check .
 uv run mypy ralph_executor scripts tests
 ```
+
+<!-- ralph smoke test passed on 2026-05-25 -->
