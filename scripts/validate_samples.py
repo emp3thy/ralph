@@ -20,6 +20,12 @@ from typing import Any
 
 import yaml
 
+# NOTE: these schema constants mirror the canonical definitions in
+# docs/superpowers/plans/2026-05-24-00-orchestrator.md (Cross-plan integration
+# points). When Plan 7 lands ralph_executor/types.py with the PBIType /
+# PBIStatus / Severity Literals, replace the frozensets here with
+# `set(get_args(<Literal>))` imports so the validator and the rest of the
+# executor share one source of truth.
 REQUIRED_FRONTMATTER_FIELDS: tuple[str, ...] = (
     "id",
     "type",
@@ -57,10 +63,11 @@ _ALL_ENTRY_FILES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
 _TYPE_BY_ENTRY_FILE: dict[str, str] = {v: k for k, v in ENTRY_FILE_BY_TYPE.items()}
 
 
-def _split_frontmatter(text: str) -> tuple[str, str] | None:
-    """Return ``(frontmatter_yaml, body)`` if the file starts with a YAML block.
+def _split_frontmatter(text: str) -> str | None:
+    """Return the frontmatter YAML string if the file starts with a YAML block.
 
-    Returns ``None`` if no leading ``---`` fence is present.
+    Returns ``None`` if no leading ``---`` fence is present.  The body after
+    the closing fence is not returned; it is never consumed by callers.
     """
     if not text.startswith("---"):
         return None
@@ -69,9 +76,7 @@ def _split_frontmatter(text: str) -> tuple[str, str] | None:
         return None
     for idx in range(1, len(lines)):
         if lines[idx].strip() == "---":
-            frontmatter = "\n".join(lines[1:idx])
-            body = "\n".join(lines[idx + 1 :])
-            return frontmatter, body
+            return "\n".join(lines[1:idx])
     return None
 
 
@@ -174,7 +179,7 @@ def validate_sample(sample_dir: Path) -> list[str]:
             f"(expected leading '---' fence)"
         ]
 
-    frontmatter_yaml, _body = split
+    frontmatter_yaml = split
 
     # Step 4: parse YAML.
     try:
@@ -195,9 +200,12 @@ def validate_sample(sample_dir: Path) -> list[str]:
 
     # Step 6: cross-check frontmatter type against entry filename.
     # E.g. BUG.md requires type=bug; PBI.md requires type=feature, etc.
+    # Guard: only run when type is present — _validate_frontmatter already
+    # emits a missing-field error for absent type (step 5); emitting a
+    # second "type=None does not match …" error would be redundant.
     fm_type = parsed.get("type")
     expected_type_for_entry = _TYPE_BY_ENTRY_FILE[entry_file_name]
-    if fm_type != expected_type_for_entry:
+    if fm_type is not None and fm_type != expected_type_for_entry:
         errors.append(
             f"type={fm_type!r} does not match entry file {entry_file_name!r} "
             f"(expected type={expected_type_for_entry!r})"
