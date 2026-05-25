@@ -1,4 +1,5 @@
 """Tests for ``ralph_executor.config``."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -22,9 +23,7 @@ def git_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def env_minimal(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
-) -> Path:
+def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
     for var in (
@@ -51,9 +50,7 @@ def test_load_config_uses_defaults(env_minimal: Path) -> None:
     assert cfg.anthropic_api_key == "fake-key"
 
 
-def test_load_config_overrides_via_env(
-    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
-) -> None:
+def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_minimal: Path) -> None:
     monkeypatch.setenv("RALPH_QUEUE_BRANCH", "custom-queue")
     monkeypatch.setenv("RALPH_MAIN_BRANCH", "trunk")
     monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "5")
@@ -78,9 +75,7 @@ def test_load_config_missing_repo_path(
         load_config()
 
 
-def test_load_config_missing_anthropic_key(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
-) -> None:
+def test_load_config_missing_anthropic_key(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> None:
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
@@ -116,9 +111,7 @@ def test_load_config_invalid_max_attempts(
         load_config()
 
 
-def test_load_config_invalid_log_level(
-    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
-) -> None:
+def test_load_config_invalid_log_level(monkeypatch: pytest.MonkeyPatch, env_minimal: Path) -> None:
     monkeypatch.setenv("RALPH_LOG_LEVEL", "VERBOSE")
     with pytest.raises(ConfigError, match="RALPH_LOG_LEVEL"):
         load_config()

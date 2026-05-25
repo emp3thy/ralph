@@ -3,6 +3,7 @@
 The types are the shared cross-plan contract -- Plans 8, 9, and 10 import
 the same module. These tests pin the spelling and the immutability.
 """
+
 from __future__ import annotations
 
 import dataclasses

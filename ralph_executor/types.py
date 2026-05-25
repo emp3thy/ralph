@@ -5,6 +5,7 @@ Plans 8 (sweep), 9 (safety controls), and 10 (supervisor skills) import
 aliases mirror the canonical schema in
 ``docs/superpowers/plans/2026-05-24-00-orchestrator.md``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
