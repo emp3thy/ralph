@@ -103,9 +103,12 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
         errors.append(f"severity={severity!r} not in allowed set {sorted(ALLOWED_SEVERITIES)}")
 
     attempts = frontmatter.get("attempts")
-    if attempts is not None and not isinstance(attempts, int):
+    # bool is a subclass of int in Python; YAML `attempts: true` would parse to
+    # True and pass an isinstance(..., int) check. Exclude bools explicitly so
+    # `attempts: true` is rejected as the wrong type.
+    if attempts is not None and (isinstance(attempts, bool) or not isinstance(attempts, int)):
         errors.append(f"attempts must be int, got {type(attempts).__name__}")
-    elif isinstance(attempts, int) and attempts < 0:
+    elif isinstance(attempts, int) and not isinstance(attempts, bool) and attempts < 0:
         errors.append(f"attempts must be >= 0, got {attempts}")
 
     for field in ("created_at", "updated_at"):
