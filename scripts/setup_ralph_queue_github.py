@@ -71,7 +71,8 @@ class _MissingEnv(Exception):
 
 
 def _lookup_repo(client: GhClient, owner: str, repo: str) -> dict[str, Any]:
-    return client.get(f"/repos/{owner}/{repo}")
+    data: dict[str, Any] = client.get(f"/repos/{owner}/{repo}")
+    return data
 
 
 def _read_branch_tip(client: GhClient, owner: str, repo: str, branch: str) -> str | None:
