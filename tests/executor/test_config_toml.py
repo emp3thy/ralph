@@ -131,10 +131,14 @@ def test_toml_invalid_log_level_raises(clean_env: Path) -> None:
         load_config()
 
 
-def test_toml_top_level_not_a_table_raises(clean_env: Path) -> None:
-    """TOML allows arrays at the document root via [[...]]; we require a
-    plain key=value mapping at the top level."""
+def test_toml_array_of_tables_treated_as_unknown_key(
+    clean_env: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`[[entries]]` produces ``{'entries': [...]}`` — a dict at the top
+    level whose ``entries`` key is unknown. Confirms we surface this via
+    the unknown-key warning rather than a confusing parse error."""
     _write_toml(clean_env, '[[entries]]\nname = "x"\n')
-    cfg = load_config()
-    # `entries` is an unknown key; it's warned and ignored, defaults kept.
+    with caplog.at_level(logging.WARNING, logger="ralph_executor.config"):
+        cfg = load_config()
     assert cfg.queue_branch == "ralph-queue"
+    assert any("entries" in rec.message for rec in caplog.records)

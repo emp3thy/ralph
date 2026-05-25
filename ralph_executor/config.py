@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+# tomllib.load returns dict[str, Any] for any parseable TOML document.
+
 DEFAULT_QUEUE_BRANCH = "ralph-queue"
 DEFAULT_MAIN_BRANCH = "main"
 # Counts only FAILED iterations (stuck / error) — partial is multi-step
@@ -107,11 +109,11 @@ def _load_toml_overrides(repo_path: Path) -> Mapping[str, Any]:
         return {}
     try:
         with cfg_file.open("rb") as fh:
-            data: Any = tomllib.load(fh)
+            # tomllib.load always returns a dict for any parseable TOML
+            # document; invalid TOML raises TOMLDecodeError above.
+            data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{cfg_file}: invalid TOML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ConfigError(f"{cfg_file}: top level must be a TOML table")
     unknown = sorted(k for k in data if k not in _TOML_KNOWN_KEYS)
     for key in unknown:
         log.warning("%s: unknown key %r (ignored)", cfg_file, key)
