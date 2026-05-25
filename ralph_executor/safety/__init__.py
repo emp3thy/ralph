@@ -15,6 +15,13 @@ spec acknowledges the team's existing auto code review fills the role.
 
 from __future__ import annotations
 
+from ralph_executor.safety.attempts import (
+    AttemptCounter,
+    AttemptsExceeded,
+    max_attempts,
+    read_attempts,
+    write_attempts,
+)
 from ralph_executor.safety.cycle_detector import (
     CycleSignal,
     SignalKind,
@@ -48,6 +55,8 @@ from ralph_executor.safety.stuck import (
 )
 
 __all__ = [
+    "AttemptCounter",
+    "AttemptsExceeded",
     "CycleSignal",
     "Event",
     "EventLog",
@@ -69,11 +78,14 @@ __all__ = [
     "evaluate_whack_a_mole",
     "halt_and_acknowledge",
     "handle_stuck",
+    "max_attempts",
     "move_to_blocked",
     "notify_halt",
     "open_log",
+    "read_attempts",
     "read_stuck_reason",
     "snapshot_state",
+    "write_attempts",
     "write_halt_sentinel",
     "write_meta_bug",
 ]
