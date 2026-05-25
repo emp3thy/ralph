@@ -101,6 +101,25 @@ def test_init_overwrites_when_ralph_home_explicit(fake_home: Path) -> None:
     assert read_ralph_home() == (fake_home / "second").resolve()
 
 
+def test_init_handles_closed_stdin_when_not_assume_yes(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ralph-executor init` with no --yes and no --ralph-home, run with
+    a closed/piped stdin (CI, non-tty), must accept the default rather
+    than crash with an unhandled EOFError."""
+    import builtins
+
+    def closed_stdin_input(prompt: str = "") -> str:  # noqa: ARG001
+        raise EOFError("simulated closed stdin")
+
+    monkeypatch.setattr(builtins, "input", closed_stdin_input)
+    exit_code = cmd_init(ralph_home=None, assume_yes=False)
+    assert exit_code == 0
+    home = read_ralph_home()
+    assert home is not None  # default was used
+
+
 def test_init_handles_oserror_from_disk_write(
     fake_home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,22 +322,40 @@ def test_scaffold_handles_oserror_from_file_creation(
 ) -> None:
     """Disk-full / permission-denied during mkdir or write_text inside the
     scaffold body must surface as a clean error + cleanup, not a raw
-    traceback that strands the operator on ralph-queue."""
-    real_mkdir = Path.mkdir
+    traceback that strands the operator on ralph-queue.
 
-    def faulty_mkdir(self: Path, *args: object, **kwargs: object) -> None:
-        if ".ralph" in str(self):
+    Also exercises the untracked-cleanup path: the OSError fires AFTER
+    a partial .ralph/ subdir was created (write_text on .gitkeep fails)
+    and BEFORE `git add .ralph` runs, so the partial files are
+    untracked. `git reset --hard` wouldn't touch them — the explicit
+    `git clean -fd .ralph` step must remove them before the branch
+    switch, otherwise they cross to main silently.
+    """
+    real_write_text = Path.write_text
+
+    def faulty_write_text(self: Path, *args: object, **kwargs: object) -> int:
+        if str(self).endswith(".gitkeep"):
             raise OSError("simulated disk full")
-        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "mkdir", faulty_mkdir)
+    monkeypatch.setattr(Path, "write_text", faulty_write_text)
 
     exit_code = cmd_scaffold(repo_path=fresh_repo, force=False, with_config_toml=True)
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "simulated disk full" in err
-    # Operator restored to main, not stranded on ralph-queue.
+    # Operator restored to main.
     assert _current_branch(fresh_repo) == "main"
+    # Untracked partial scaffold must have been cleaned up — main is
+    # untouched, .ralph/ absent, working tree clean.
+    assert not (fresh_repo / ".ralph").exists(), ".ralph/ untracked leak"
+    porcelain = subprocess.run(
+        ["git", "-C", str(fresh_repo), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert porcelain == "", f"working tree should be clean, got: {porcelain!r}"
 
 
 def test_scaffold_fails_on_non_git_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -50,9 +50,18 @@ CONFIG_TOML_STUB = """\
 
 def _prompt_ralph_home(default: Path) -> Path:
     """Interactive prompt with a sensible default. ``input()`` is used so
-    tests can monkeypatch it (and so the loop runs against stdin/tty)."""
+    tests can monkeypatch it (and so the loop runs against stdin/tty).
+
+    Catches ``EOFError`` so a piped / closed stdin (CI, non-tty) behaves
+    as "accept default" rather than crashing with an unhandled traceback
+    — the dispatch in cli.py only catches ConfigError.
+    """
     print(f"Where should ralph workspaces live? [{default}]: ", end="", flush=True)
-    raw = input().strip()
+    try:
+        raw = input().strip()
+    except EOFError:
+        print("")  # newline so the next message doesn't overlap the prompt
+        raw = ""
     return Path(raw).expanduser() if raw else default
 
 
@@ -340,6 +349,19 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
                     f"Leaving you on {QUEUE_BRANCH!r}; clean up with "
                     f"`git -C {repo} reset --hard HEAD` then "
                     f"`git -C {repo} switch {original_branch}`.",
+                    file=sys.stderr,
+                )
+            # `git reset --hard` does NOT touch untracked files. If the
+            # error fired during the mkdir / write_text loop BEFORE the
+            # `git add .ralph` call, the partial scaffold is untracked
+            # and would silently cross the upcoming branch switch. Use
+            # `git clean -fd .ralph` to remove the untracked entries
+            # (best-effort, scoped to .ralph/).
+            try:
+                _git(repo, "clean", "-fd", ".ralph")
+            except ScaffoldError as clean_exc:
+                print(
+                    f"warning: could not clean untracked .ralph/ entries: {clean_exc}",
                     file=sys.stderr,
                 )
             # Skip the switch when reset failed: switching with staged
