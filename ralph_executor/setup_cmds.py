@@ -97,8 +97,16 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
         chosen = _prompt_ralph_home(_default_ralph_home())
     chosen = chosen.resolve()
 
-    chosen.mkdir(parents=True, exist_ok=True)
-    written = write_ralph_home(chosen)
+    # Disk-full / permission-denied / etc. on either the ralph_home
+    # directory creation or the user-config write would otherwise
+    # surface as a raw traceback. cli.py only catches ConfigError for
+    # the init dispatch arm, so convert here.
+    try:
+        chosen.mkdir(parents=True, exist_ok=True)
+        written = write_ralph_home(chosen)
+    except OSError as exc:
+        print(f"error: cannot write user config: {exc}", file=sys.stderr)
+        return 2
     print(f"wrote {written}")
     print(f"ralph_home = {chosen}")
 

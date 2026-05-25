@@ -101,6 +101,28 @@ def test_init_overwrites_when_ralph_home_explicit(fake_home: Path) -> None:
     assert read_ralph_home() == (fake_home / "second").resolve()
 
 
+def test_init_handles_oserror_from_disk_write(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Disk-full / permission-denied on ralph_home mkdir or user-config
+    write must produce a clean error + exit 2, not a raw traceback."""
+    real_mkdir = Path.mkdir
+
+    def faulty_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if str(self).endswith("oops"):
+            raise OSError("simulated disk full")
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", faulty_mkdir)
+    exit_code = cmd_init(ralph_home=fake_home / "oops", assume_yes=False)
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "cannot write user config" in err
+    assert "simulated disk full" in err
+
+
 def test_init_warns_when_gh_missing(
     fake_home: Path,
     monkeypatch: pytest.MonkeyPatch,
