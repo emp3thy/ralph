@@ -188,8 +188,9 @@ def test_scaffold_restores_original_branch_on_commit_failure(
     fresh_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """If `git commit` fails after the queue switch + stage, scaffold
-    must switch back to the original branch so the operator isn't left
-    on ralph-queue with .ralph/ files staged but uncommitted."""
+    must (a) switch back to the original branch and (b) leave NO
+    .ralph/ files staged or on disk — without the hard-reset step,
+    git carries new staged files silently across the branch switch."""
     # Install a pre-commit hook that always rejects.
     hooks_dir = fresh_repo / ".git" / "hooks"
     hook = hooks_dir / "pre-commit"
@@ -200,8 +201,17 @@ def test_scaffold_restores_original_branch_on_commit_failure(
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "git commit failed" in err
-    # Critical: we're back on main, not parked on ralph-queue.
+    # Back on main.
     assert _current_branch(fresh_repo) == "main"
+    # And nothing left over: no staged entries, no .ralph/ on disk.
+    porcelain = subprocess.run(
+        ["git", "-C", str(fresh_repo), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert porcelain == "", f"working tree should be clean, got: {porcelain!r}"
+    assert not (fresh_repo / ".ralph").exists(), ".ralph/ should be cleaned up"
 
 
 def test_scaffold_fails_on_non_git_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -262,13 +262,40 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
             )
     except ScaffoldError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        # Best-effort: if we switched into the queue branch before the
-        # error fired, switch back so the operator's working tree isn't
-        # silently parked on ralph-queue with .ralph/ files staged but
-        # uncommitted. The restore itself may fail (e.g. dirty index
-        # from the partial scaffold); swallow that and tell the operator
-        # to clean up manually.
+        # Best-effort cleanup: if we switched into the queue branch
+        # before the error fired, restore the operator to where they
+        # were AND clean up the partial scaffold.
+        #
+        # Two-step is required because `git switch` carries staged-but-
+        # new files (untracked on both source and target branches) to
+        # the target silently. Without the hard reset, the operator
+        # would end up on the original branch with `.ralph/` files
+        # staged and on disk, needing manual `git reset && rm -rf`.
+        #
+        #   1. `git reset --hard HEAD` on the queue branch:
+        #      - new-branch path: HEAD == base branch's tip, no .ralph/
+        #        committed, so this reverts our writes (index AND
+        #        working tree).
+        #      - --force path: HEAD == queue's prior tip which has
+        #        .ralph/ committed, so this restores .ralph/ to its
+        #        last-committed state. Either way we're left with a
+        #        clean index + working tree relative to the queue
+        #        branch's HEAD.
+        #   2. `git switch <original>`: now safe (no staged content
+        #      to carry across).
+        #
+        # The pre-flight working-tree-clean check guarantees the hard
+        # reset only throws away OUR changes, never operator work.
+        # Each step is independently guarded so one failure doesn't
+        # block the next.
         if switched_to_queue:
+            try:
+                _git(repo, "reset", "--hard", "HEAD")
+            except ScaffoldError as reset_exc:
+                print(
+                    f"warning: could not reset queue branch before restore: {reset_exc}",
+                    file=sys.stderr,
+                )
             try:
                 _git(repo, "switch", original_branch)
             except ScaffoldError as restore_exc:
