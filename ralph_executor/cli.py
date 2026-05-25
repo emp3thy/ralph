@@ -175,10 +175,14 @@ def _resolve_workspace(name: str) -> Path:
             "then resolves to C:\\dev\\ralph\\my-repo)"
         )
     name_path = Path(name)
-    if name_path.is_absolute() or len(name_path.parts) != 1 or ".." in name_path.parts:
+    if (
+        name_path.is_absolute()
+        or len(name_path.parts) != 1
+        or name_path.parts[0] in ("..", ".")
+    ):
         raise ConfigError(
             f"--workspace name must be a plain directory name "
-            f"(no separators, no '..', not absolute); got: {name!r}"
+            f"(no separators, no '.' or '..', not absolute); got: {name!r}"
         )
     return (Path(home_raw) / name).resolve()
 

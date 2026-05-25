@@ -255,6 +255,22 @@ def test_main_workspace_rejects_parent_traversal(
     assert "plain directory name" in err
 
 
+def test_main_workspace_rejects_single_dot(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--workspace .` would resolve to $RALPH_HOME itself, silently
+    making Ralph operate on the home root. Must be rejected."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "."])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
 def test_main_workspace_rejects_path_separator(
     cfg_for_repo: ExecutorConfig,
     monkeypatch: pytest.MonkeyPatch,
