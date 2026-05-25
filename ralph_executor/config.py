@@ -92,7 +92,10 @@ def _validate_repo_path(path: Path) -> Path:
 def load_config() -> ExecutorConfig:
     """Read environment variables and produce a validated ``ExecutorConfig``."""
     repo_raw = _require_env("RALPH_REPO_PATH")
-    anthropic_key = _require_env("ANTHROPIC_API_KEY")
+    # ANTHROPIC_API_KEY is optional — `claude -p` works via Claude Code's
+    # OAuth session when no key is provided. claude_spawn only propagates
+    # the key into the subprocess env if it was actually supplied.
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     repo_path = _validate_repo_path(Path(repo_raw))
     queue_branch = os.environ.get("RALPH_QUEUE_BRANCH") or DEFAULT_QUEUE_BRANCH
     main_branch = os.environ.get("RALPH_MAIN_BRANCH") or DEFAULT_MAIN_BRANCH

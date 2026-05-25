@@ -77,7 +77,11 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     argv = _build_argv(cfg, pbi)
     env = os.environ.copy()
     env["RALPH_PBI_DIR"] = str(pbi.path)
-    env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
+    # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
+    # Empty string breaks claude CLI's OAuth fallback — leave it absent
+    # so the claude CLI picks up its own OAuth session.
+    if cfg.anthropic_api_key:
+        env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     result = subprocess.run(
