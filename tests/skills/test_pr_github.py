@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -38,8 +39,6 @@ THREAD_NODE_ID = "PRRT_kwDOABCD12345"
 
 
 def _load_module(name: str, path: Path) -> ModuleType:
-    import sys
-
     assert path.is_file(), f"missing entry script at {path}"
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -214,6 +213,25 @@ def test_common_parse_thread_id_accepts_opaque_string(
     common_module: ModuleType,
 ) -> None:
     assert common_module.parse_thread_id("PRRT_kwDOABCD12345") == "PRRT_kwDOABCD12345"
+
+
+def test_common_parse_branch_passes_bare_name_through(common_module: ModuleType) -> None:
+    assert common_module.parse_branch("ralph/WI-1234") == "ralph/WI-1234"
+
+
+def test_common_parse_branch_strips_refs_heads_prefix(common_module: ModuleType) -> None:
+    """refs/heads/<name> is the fully-qualified ref form; create-pr's --source-
+    branch / --target-branch flags accept either form. The helper must
+    normalise to the bare branch name."""
+    assert common_module.parse_branch("refs/heads/main") == "main"
+    assert common_module.parse_branch("refs/heads/ralph/WI-1234") == "ralph/WI-1234"
+
+
+def test_common_parse_branch_rejects_empty(common_module: ModuleType) -> None:
+    with pytest.raises(common_module.FatalError):
+        common_module.parse_branch("")
+    with pytest.raises(common_module.FatalError):
+        common_module.parse_branch("   ")
 
 
 # ----------------------------------------------------------------------
