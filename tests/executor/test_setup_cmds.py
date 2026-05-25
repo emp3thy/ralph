@@ -249,6 +249,56 @@ def test_scaffold_skips_branch_switch_when_reset_fails(
     assert _current_branch(fresh_repo) == QUEUE_BRANCH
 
 
+def test_scaffold_refuses_detached_head(
+    fresh_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Detached HEAD makes `git switch HEAD` invalid syntax — the cleanup
+    path would strand the operator with a confusing error. Refuse upfront."""
+    head_sha = subprocess.run(
+        ["git", "-C", str(fresh_repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(fresh_repo), "checkout", "--detach", head_sha],
+        check=True,
+        capture_output=True,
+    )
+
+    exit_code = cmd_scaffold(repo_path=fresh_repo, force=False, with_config_toml=True)
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "detached HEAD" in err
+    # Critical: no state mutation happened.
+    assert not (fresh_repo / ".ralph").exists()
+
+
+def test_scaffold_handles_oserror_from_file_creation(
+    fresh_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Disk-full / permission-denied during mkdir or write_text inside the
+    scaffold body must surface as a clean error + cleanup, not a raw
+    traceback that strands the operator on ralph-queue."""
+    real_mkdir = Path.mkdir
+
+    def faulty_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if ".ralph" in str(self):
+            raise OSError("simulated disk full")
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", faulty_mkdir)
+
+    exit_code = cmd_scaffold(repo_path=fresh_repo, force=False, with_config_toml=True)
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "simulated disk full" in err
+    # Operator restored to main, not stranded on ralph-queue.
+    assert _current_branch(fresh_repo) == "main"
+
+
 def test_scaffold_fails_on_non_git_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     not_a_repo = tmp_path / "plain"
     not_a_repo.mkdir()

@@ -196,13 +196,25 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
         return 2
 
     # Capture the original branch BEFORE any state-mutating step so the
-    # error handler can restore it on commit failure. If even this call
-    # fails (e.g. detached HEAD or corrupt repo), we report and bail
-    # before touching anything else.
+    # error handler can restore it on commit failure. If this call fails
+    # (corrupt repo), report and bail before touching anything else.
     try:
         original_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     except ScaffoldError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Detached HEAD: `rev-parse --abbrev-ref HEAD` returns the literal
+    # 'HEAD'. The cleanup path would then run `git switch HEAD`, which
+    # is invalid syntax. Refuse upfront so the operator gets a clear
+    # message instead of a confusing 'could not restore branch HEAD'
+    # warning after the scaffold succeeds-then-fails.
+    if original_branch == "HEAD":
+        print(
+            "error: cannot scaffold from detached HEAD — check out a branch first "
+            "(e.g. `git switch main`)",
+            file=sys.stderr,
+        )
         return 2
 
     # Track whether we actually moved off the original branch so the
@@ -277,7 +289,11 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
                     f"git commit failed (exit {commit_status.returncode}): "
                     f"{commit_status.stderr.strip() or commit_status.stdout.strip()}"
                 )
-    except ScaffoldError as exc:
+    except (ScaffoldError, OSError) as exc:
+        # OSError covers disk-full / permission-denied from mkdir /
+        # write_text inside the scaffold body — without it, those raise
+        # raw tracebacks while the operator is stranded on ralph-queue
+        # with a partial .ralph/.
         print(f"error: {exc}", file=sys.stderr)
         # Best-effort cleanup: if we switched into the queue branch
         # before the error fired, restore the operator to where they

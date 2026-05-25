@@ -106,6 +106,16 @@ def test_read_raises_on_malformed_toml(fake_home: Path) -> None:
         read_ralph_home()
 
 
+def test_write_escapes_control_characters_in_path(fake_home: Path) -> None:
+    """Round-trip a path containing newline / tab / control chars.
+    Without proper escaping these break TOML syntax and the next read
+    would raise TOMLDecodeError on a file we just wrote."""
+    weird = fake_home / "with\nnewline\tand\x01control"
+    write_ralph_home(weird)
+    # Critical: re-reading must NOT raise (file is valid TOML).
+    assert read_ralph_home() == weird
+
+
 def test_read_expands_user_in_value(fake_home: Path) -> None:
     """Paths persisted as ``~/...`` (the literal tilde) should expand on read."""
     write_ralph_home(Path("~/dev/ralph"))

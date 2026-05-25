@@ -65,6 +65,33 @@ def read_ralph_home() -> Path | None:
     return Path(raw.strip()).expanduser()
 
 
+def _toml_escape_basic_string(value: str) -> str:
+    """Escape a string for use as a TOML basic-string value.
+
+    TOML basic strings forbid bare control characters U+0000–U+001F and
+    U+007F in addition to the obvious backslash + quote. A path
+    containing any of those would produce a syntactically invalid TOML
+    file that round-trips as a TOMLDecodeError on the next read.
+    """
+    parts: list[str] = []
+    for ch in value:
+        if ch == "\\":
+            parts.append("\\\\")
+        elif ch == '"':
+            parts.append('\\"')
+        elif ch == "\n":
+            parts.append("\\n")
+        elif ch == "\r":
+            parts.append("\\r")
+        elif ch == "\t":
+            parts.append("\\t")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            parts.append(f"\\u{ord(ch):04X}")
+        else:
+            parts.append(ch)
+    return "".join(parts)
+
+
 def write_ralph_home(value: Path) -> Path:
     """Persist ``ralph_home`` to ``~/.ralph/config.toml``.
 
@@ -74,9 +101,6 @@ def write_ralph_home(value: Path) -> Path:
     """
     cfg_file = user_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
-    # TOML basic-string escapes only ``\`` and ``"`` — sufficient for any
-    # POSIX or Windows path. No third-party tomli-w dep needed for this
-    # one-key file.
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    escaped = _toml_escape_basic_string(str(value))
     cfg_file.write_text(f'ralph_home = "{escaped}"\n', encoding="utf-8")
     return cfg_file
