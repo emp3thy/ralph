@@ -159,8 +159,13 @@ def _configure_logging(level: int) -> None:
 def _resolve_workspace(name: str) -> Path:
     """Resolve ``--workspace NAME`` against ``$RALPH_HOME``.
 
-    Raises ``ConfigError`` if RALPH_HOME is unset or empty so the operator
-    gets a clear error rather than a silently-wrong path.
+    ``NAME`` must be a plain directory name (no path separators, no
+    parent-traversal, not absolute). Otherwise ``Path(home) / name``
+    would silently escape ``$RALPH_HOME`` — Python's ``Path / abs``
+    discards the LHS, and ``..`` traversal resolves outside the root.
+
+    Raises ``ConfigError`` if ``RALPH_HOME`` is unset/empty or if
+    ``name`` violates the plain-directory-name invariant.
     """
     home_raw = os.environ.get("RALPH_HOME", "").strip()
     if not home_raw:
@@ -168,6 +173,12 @@ def _resolve_workspace(name: str) -> Path:
             "--workspace requires RALPH_HOME to be set (e.g. "
             "RALPH_HOME=C:\\dev\\ralph; ralph-executor --workspace my-repo "
             "then resolves to C:\\dev\\ralph\\my-repo)"
+        )
+    name_path = Path(name)
+    if name_path.is_absolute() or len(name_path.parts) != 1 or ".." in name_path.parts:
+        raise ConfigError(
+            f"--workspace name must be a plain directory name "
+            f"(no separators, no '..', not absolute); got: {name!r}"
         )
     return (Path(home_raw) / name).resolve()
 

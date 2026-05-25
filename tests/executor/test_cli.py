@@ -214,6 +214,54 @@ def test_main_repo_and_workspace_are_mutually_exclusive(
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+def test_main_workspace_rejects_absolute_name(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An absolute --workspace name would silently escape RALPH_HOME
+    (Path('home') / '/etc' yields Path('/etc')). Must be rejected."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+
+    # Use a Windows-style absolute path that argparse won't try to expand.
+    exit_code = cli.main(["--once", "--workspace", "C:\\etc"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_rejects_parent_traversal(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `..` segment would resolve outside RALPH_HOME. Must be rejected."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "..\\sibling"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_rejects_path_separator(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Multi-segment names break the one-ralph-per-workspace convention
+    and are easy to confuse with `--repo`. Reject them."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "a/b"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
 def test_main_workspace_validates_resolved_path(
     cfg_for_repo: ExecutorConfig,
     monkeypatch: pytest.MonkeyPatch,
