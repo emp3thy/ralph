@@ -1,7 +1,7 @@
 ---
 id: TEST-001
 type: feature
-status: current
+status: done
 severity: normal
 attempts: 0
 created_at: 2026-05-25T17:15:00+00:00
