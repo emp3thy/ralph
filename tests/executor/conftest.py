@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from textwrap import dedent
@@ -127,25 +128,53 @@ def sample_pbi(fake_repo: Path) -> Path:
 def fake_claude_binary(tmp_path: Path) -> Path:
     """Write a stand-in ``claude`` script that echoes its argv to stdout.
 
-    The default script returns exit code 0 with empty stdout -- tests
+    The default script returns exit code 0 with empty stdout — tests
     override its content by writing a new script at the same path.
+
+    On Windows, shebang scripts cannot be executed directly; the fixture
+    creates a ``.py`` file alongside a ``.cmd`` wrapper and returns the
+    ``.cmd`` path so ``subprocess.run`` can invoke it without a shell.
+    On POSIX the extensionless script with a shebang is returned directly.
     """
+    import platform
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text(
-        "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n",
-        encoding="utf-8",
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return script
+    py_body = "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
+    if platform.system() == "Windows":
+        py_script = bin_dir / "claude.py"
+        py_script.write_text(py_body, encoding="utf-8")
+        cmd_script = bin_dir / "claude.cmd"
+        cmd_script.write_text(
+            f'@"{sys.executable}" "%~dp0claude.py" %*\n',
+            encoding="utf-8",
+        )
+        return cmd_script
+    else:
+        script = bin_dir / "claude"
+        script.write_text(py_body, encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return script
 
 
 def write_claude_script(path: Path, body: str) -> None:
-    """Overwrite the stand-in ``claude`` script with a custom Python body."""
-    shebang = "#!/usr/bin/env python3\n"
-    path.write_text(shebang + body, encoding="utf-8")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    """Overwrite the stand-in ``claude`` Python body.
+
+    ``path`` is the value returned by the ``fake_claude_binary`` fixture —
+    either an extensionless POSIX script or a ``.cmd`` wrapper on Windows.
+    On Windows, the actual Python source lives at ``<stem>.py`` next to the
+    ``.cmd`` file; on POSIX it is the file itself.
+    """
+    import platform
+
+    if platform.system() == "Windows":
+        # Write to the .py file that the .cmd wrapper delegates to.
+        py_script = path.with_suffix(".py")
+        py_script.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+    else:
+        shebang = "#!/usr/bin/env python3\n"
+        path.write_text(shebang + body, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
 @pytest.fixture
