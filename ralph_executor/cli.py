@@ -2,7 +2,8 @@
 
 Usage::
 
-    ralph-executor [--once] [--iterations N] [--repo PATH] [--log-level LEVEL]
+    ralph-executor [--once] [--iterations N]
+                   [--repo PATH | --workspace NAME] [--log-level LEVEL]
     ralph-executor health --ready
     ralph-executor health --live
     ralph-executor doctor [--json]
@@ -10,8 +11,20 @@ Usage::
 * ``--once``           -- run a single iteration and exit. Alias for
                           ``--iterations 1``. Kept for backward compatibility.
 * ``--iterations N``   -- run exactly N iterations and exit.
-* ``--repo PATH``      -- override ``RALPH_REPO_PATH`` for this run.
+* ``--repo PATH``      -- explicit path to the repo Ralph operates on.
+* ``--workspace NAME`` -- resolve repo path against ``$RALPH_HOME/NAME``.
+                          Mutually exclusive with ``--repo``. Requires
+                          ``RALPH_HOME`` to be set. Convention for running
+                          multiple ralphs on one machine: keep every
+                          ralph's checkout under ``$RALPH_HOME/<name>/``.
 * ``--log-level``      -- override ``RALPH_LOG_LEVEL`` for this run.
+
+Repo path resolution (highest → lowest):
+
+  1. ``--repo PATH``
+  2. ``--workspace NAME``  →  ``$RALPH_HOME/NAME``
+  3. ``RALPH_REPO_PATH`` env var
+  4. Current working directory
 
 Startup sequence (BEFORE the iteration loop):
 
@@ -38,8 +51,14 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
-from ralph_executor.config import ConfigError, ExecutorConfig, load_config
+from ralph_executor.config import (
+    ConfigError,
+    ExecutorConfig,
+    load_config,
+    validate_repo_path,
+)
 from ralph_executor.host_select import (
     HostSelectionError,
     prepare_host_environment,
@@ -75,9 +94,18 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Run exactly N iterations and exit.",
     )
-    parser.add_argument(
+    repo_group = parser.add_mutually_exclusive_group()
+    repo_group.add_argument(
         "--repo",
-        help="Override RALPH_REPO_PATH for this run.",
+        help=("Explicit path to the repo Ralph operates on. Overrides RALPH_REPO_PATH and cwd."),
+    )
+    repo_group.add_argument(
+        "--workspace",
+        metavar="NAME",
+        help=(
+            "Resolve repo path against $RALPH_HOME/NAME. Requires RALPH_HOME "
+            "to be set. Convention for running multiple ralphs on one host."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -128,14 +156,32 @@ def _configure_logging(level: int) -> None:
     logging.getLogger("ralph_executor").setLevel(level)
 
 
-def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
-    from pathlib import Path
+def _resolve_workspace(name: str) -> Path:
+    """Resolve ``--workspace NAME`` against ``$RALPH_HOME``.
 
+    Raises ``ConfigError`` if RALPH_HOME is unset or empty so the operator
+    gets a clear error rather than a silently-wrong path.
+    """
+    home_raw = os.environ.get("RALPH_HOME", "").strip()
+    if not home_raw:
+        raise ConfigError(
+            "--workspace requires RALPH_HOME to be set (e.g. "
+            "RALPH_HOME=C:\\dev\\ralph; ralph-executor --workspace my-repo "
+            "then resolves to C:\\dev\\ralph\\my-repo)"
+        )
+    return (Path(home_raw) / name).resolve()
+
+
+def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
     repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
     changed = False
+    # argparse already enforces mutual exclusion between --repo and --workspace.
     if args.repo:
-        repo_path = Path(args.repo).resolve()
+        repo_path = validate_repo_path(Path(args.repo).resolve(), source="--repo")
+        changed = True
+    elif args.workspace:
+        repo_path = validate_repo_path(_resolve_workspace(args.workspace), source="--workspace")
         changed = True
     if args.log_level:
         log_level = int(logging.getLevelName(args.log_level))
@@ -218,11 +264,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --- default command: run the executor loop ---
     try:
         cfg = load_config()
+        cfg = _apply_overrides(cfg, args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-
-    cfg = _apply_overrides(cfg, args)
     _configure_logging(cfg.log_level)
 
     log.info(

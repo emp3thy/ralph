@@ -11,6 +11,14 @@ Precedence (lowest → highest):
   3. ``RALPH_*`` environment variables.
   4. CLI flags applied by ``ralph_executor.cli._apply_overrides``.
 
+Repo path resolution (highest → lowest, all evaluated by the CLI layer
+except the last two which live here):
+
+  1. ``--repo <PATH>``
+  2. ``--workspace <NAME>``  →  ``$RALPH_HOME/<NAME>``
+  3. ``RALPH_REPO_PATH`` env var
+  4. Current working directory
+
 Two values are intentionally NOT readable from TOML:
 
 * ``repo_path`` — chicken-and-egg (we need it to find the TOML file).
@@ -79,21 +87,37 @@ class ExecutorConfig:
     anthropic_api_key: str
 
 
-def _require_env(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ConfigError(f"environment variable {name} is required")
-    return value
+def validate_repo_path(path: Path, *, source: str) -> Path:
+    """Validate that ``path`` is a git repo directory and return it resolved.
 
-
-def _validate_repo_path(path: Path) -> Path:
+    ``source`` describes where the path came from (env var name, CLI flag,
+    or "cwd") so the error message points the operator at the right knob.
+    """
     if not path.exists():
-        raise ConfigError(f"RALPH_REPO_PATH={path} not a directory: does not exist")
+        raise ConfigError(f"repo path {path} (from {source}) does not exist")
     if not path.is_dir():
-        raise ConfigError(f"RALPH_REPO_PATH={path} not a directory")
+        raise ConfigError(f"repo path {path} (from {source}) is not a directory")
     if not (path / ".git").exists():
-        raise ConfigError(f"RALPH_REPO_PATH={path} not a git repository (no .git/ entry)")
+        raise ConfigError(
+            f"repo path {path} (from {source}) is not a git repository (no .git/ entry)"
+        )
     return path.resolve()
+
+
+def _resolve_repo_path() -> Path:
+    """Resolve the repo path from env → cwd, then validate.
+
+    Resolution order (highest → lowest):
+      1. ``RALPH_REPO_PATH`` env var (operator/daemon escape hatch).
+      2. Current working directory.
+
+    CLI flags (``--repo``, ``--workspace``) override the result via
+    ``ralph_executor.cli._apply_overrides``.
+    """
+    env_value = os.environ.get("RALPH_REPO_PATH", "").strip()
+    if env_value:
+        return validate_repo_path(Path(env_value), source="RALPH_REPO_PATH")
+    return validate_repo_path(Path.cwd(), source="cwd")
 
 
 def _load_toml_overrides(repo_path: Path) -> Mapping[str, Any]:
@@ -201,13 +225,15 @@ def _resolve_log_level(*, toml_value: Any, default: str, source_label: str) -> i
 def load_config() -> ExecutorConfig:
     """Read defaults < ``<repo>/.ralph/config.toml`` < env, and validate.
 
-    ``RALPH_REPO_PATH`` is required (env-only — needed to locate the
-    TOML file). ``ANTHROPIC_API_KEY`` is optional and env-only by policy
-    (secret); empty string means "use claude CLI's OAuth session".
+    Repo path resolution: ``RALPH_REPO_PATH`` env var if set, else the
+    current working directory. CLI flags (``--repo``, ``--workspace``)
+    override the result downstream in ``cli._apply_overrides``.
+
+    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
+    empty string means "use claude CLI's OAuth session".
     """
-    repo_raw = _require_env("RALPH_REPO_PATH")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    repo_path = _validate_repo_path(Path(repo_raw))
+    repo_path = _resolve_repo_path()
 
     toml_overrides = _load_toml_overrides(repo_path)
     source_label = str(repo_path / ".ralph" / "config.toml")
