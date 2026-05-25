@@ -109,7 +109,11 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
             text=True,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # OSError catches FileNotFoundError (gh not installed),
+        # PermissionError (gh present but not executable in this
+        # container/CI), and any other transient OS-level failure.
+        # All map to "no PR detected" — sweep (Plan 8) will reconcile.
         log.warning("gh pr list failed for %s: %s", branch, exc)
         return None
     if result.returncode != 0:
