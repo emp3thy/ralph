@@ -395,7 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # so the operator fixes their env rather than silently running
     # against missing or stale skill directories.
     try:
-        host = prepare_host_environment()
+        host = prepare_host_environment(host_override=cfg.git_host or None)
         log.info("host environment ready: host=%s", host)
     except HostSelectionError as exc:
         print(f"error: {exc}", file=sys.stderr)

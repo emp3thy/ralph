@@ -85,6 +85,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         iteration_sleep_seconds=0.0,
         claude_binary=str(fake_claude),
         anthropic_api_key="fake-key",
+        git_host="github",
     )
     return work, cfg
 
