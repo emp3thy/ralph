@@ -21,7 +21,7 @@ Sibling PBI 19b covers sweep-side events (PR_MERGED, PR_GREEN_THEN_RED, PBI_CLOS
 
 ## Tasks
 
-### Task 1 — signature helpers
+### Task 1 — signature helpers ✅
 
 Add to `ralph_executor/safety/events.py`:
 
