@@ -57,3 +57,63 @@
   (implement orchestrator), Task 7 (cross-validate PBIs against workspace
   validator), Task 8 (fix mypy duplicate-module + full toolchain + PR).
   Next iteration: Task 5.
+
+## Iteration 4 — 2026-05-27 — Tasks 5+6 orchestrator (red → green) [committed without HISTORY update]
+
+- Task 5: wrote `tests/skills/test_ralph_add.py` (11 tests using a tmp-path
+  mock fetcher; bare git repo + working clone + `ralph-queue` branch
+  fixture). Red step confirmed via `AssertionError: missing entry script
+  at ...add.py`.
+- Task 6: wrote `skills/ralph-add/scripts/add.py` (commit `67ad77d`).
+  Host-agnostic orchestrator: argparse CLI; resolves fetcher via
+  `RALPH_WORKITEM_FETCH_SCRIPT` → `~/.claude/skills/workitem-fetch/...`
+  → `RALPH_GIT_HOST`-keyed dev fallback; invokes fetcher with
+  `subprocess.run`; parses + schema-validates JSON; writes PBI under
+  `.ralph/inbox/<WI-id>/` with frontmatter + body (PBI.md for feature,
+  BUG.md + REPRODUCE.md for bug) + PLAN.md (feature only) + HISTORY.md
+  + attachments/<name>; supports `--expand-children`,
+  `--severity` override, `--dry-run`, `--no-push`, `--branch`;
+  `--via-mcp` and `--repo-url` exit 2 in v1; commits + pushes via
+  `subprocess.run([git, ...])`.
+- Tests + impl shipped in one TDD commit per plan Task 6 Step 4.
+- HISTORY.md was not updated by Iteration 4 itself (executor's
+  `_persist_iteration_writes` ran on a clean tree and was a no-op).
+  Iteration 5 below records both Iter 4 and Iter 5 work.
+
+## Iteration 5 — 2026-05-27 — Tasks 7+8 validator test + toolchain + PR
+
+- Task 7: appended `test_generated_pbi_passes_plan1_validator` to
+  `tests/skills/test_ralph_add.py`. Mirrors the produced
+  `WI-<n>` directory into a `feature-WI-<n>` sibling and runs
+  `scripts.validate_samples.validate_sample`; asserts empty error list.
+  Docstring rewritten to reflect reconciliation #3 (validator derives
+  type from frontmatter, not directory prefix) rather than the plan's
+  stale claim that the prefix is required. Commit `426a7b0`.
+- Task 8: resolved the mypy duplicate-module collision parked in
+  Iter 3 by adding an `exclude` regex `skills/[^/]+/scripts/__init__\.py$`
+  to `[tool.mypy]` in `pyproject.toml`. The inner `scripts/__init__.py`
+  markers are decorative — directory names contain hyphens (`ralph-add`,
+  `workitem-fetch-github`) so the inner packages aren't importable via
+  dotted path anyway (tests use `importlib.util.spec_from_file_location`).
+  Commit `d5abe9e`.
+- Tests: `uv run pytest` → 394 passed, 2 skipped (opt-in
+  `RALPH_PROMPT_SMOKE`).
+- Lint: `uv run ruff check .` → All checks passed!
+- Format: `uv run ruff format --check .` → 67 files already formatted.
+- Type-check: `uv run mypy ralph_executor scripts skills tests` →
+  Success: no issues found in 65 source files.
+- Help text: both `ralph-add --help` and
+  `workitem-fetch-github --help` list every flag the plan documents.
+- PR created via `pr` skill: `#25` —
+  https://github.com/emp3thy/ralph/pull/25, branch
+  `ralph/STAGE-B-PLAN-03` → `main`, title
+  "STAGE-B-PLAN-03: ralph-add skill + workitem-fetch-github (Phase 1)".
+- Notes: all 8 Phase 1 plan tasks complete. Phase 2 (ADO fetcher) is
+  documented in the plan and deferred to a follow-up PBI. PR shipped;
+  PBI ready to move from `current/` to `pending-pr/`.
+
+## Iteration 5 — 2026-05-27 — PR created
+
+- PR: #25
+- Branch: ralph/STAGE-B-PLAN-03
+- Title: STAGE-B-PLAN-03: ralph-add skill + workitem-fetch-github (Phase 1)
