@@ -33,3 +33,16 @@
 - Step 5 (Task 5): added scope-boundary paragraph to `_run_ralph` docstring in `ralph_executor/loop.py` distinguishing Plan 18's spawn-time CI-green verifier (consumed via `ClaudeOutcome` to gate `pr_created`) from `pr.green_then_red` post-merge regression detection (sweep observer, Plan 19b). NO-OP code-wise as PLAN specified — verifier was already wired through `classify_outcome` in Task 3.
 - Tests: full `uv run pytest` green (374 passed, 2 skipped). `uv run ruff check .` clean; `uv run ruff format --check .` clean; `uv run mypy ralph_executor scripts skills tests` clean (60 source files).
 - Notes: Task 6 (TOML knobs `pr_check_poll_max_attempts` / `pr_check_poll_interval_seconds`) remains — next iteration plumbs them into `_wait_for_pr_checks` via cfg. Commit 32f2bee on ralph/STAGE-B-PLAN-18-verifier.
+
+## Iteration 6 — 2026-05-27T00:30:00+00:00
+
+- Step 6 (Task 6): promoted the CI-green verifier's polling budget from hard-coded `_wait_for_pr_checks` defaults to user-tunable `ExecutorConfig` fields. Added `DEFAULT_PR_CHECK_POLL_MAX_ATTEMPTS = 6` / `DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS = 30.0`, `pr_check_poll_max_attempts: int` / `pr_check_poll_interval_seconds: float` on the `ExecutorConfig` dataclass, the two keys in `_TOML_KNOWN_KEYS`, and `_resolve_int` / `_resolve_float` plumbing in `load_config`. Env overrides are `RALPH_PR_CHECK_POLL_MAX_ATTEMPTS` / `RALPH_PR_CHECK_POLL_INTERVAL_SECONDS`. `spawn_claude_p` now forwards `cfg.pr_check_poll_max_attempts` / `cfg.pr_check_poll_interval_seconds` into `_wait_for_pr_checks`.
+- Tests: 3 new `test_config_toml.py` cases (defaults, TOML pickup, env-wins-over-TOML), updated `test_spawn_simulates_pr_creation` stub to accept the kwargs and assert the cfg values reach the call site. Added the two new fields to `ExecutorConfig` instantiations in `tests/executor/conftest.py` and `tests/safety/test_integration_loop.py`. Also added `RALPH_PR_CHECK_POLL_*` to `test_config_toml.py::clean_env` so the new tests start from a clean env.
+- Tests: full `uv run pytest` green (377 passed, 2 skipped). `uv run ruff check .` clean; `uv run ruff format --check .` clean; `uv run mypy ralph_executor scripts skills tests` clean (60 source files).
+- Notes: PLAN.md fully checked. All 6 tasks done. Commit 487c689 on ralph/STAGE-B-PLAN-18-verifier.
+
+## Iteration 6 — 2026-05-27T00:35:00+00:00 — PR created
+
+- PR: !22 (https://github.com/emp3thy/ralph/pull/22)
+- Branch: ralph/STAGE-B-PLAN-18-verifier
+- Title: STAGE-B-PLAN-18-verifier: real CI-green verifier before pr_created

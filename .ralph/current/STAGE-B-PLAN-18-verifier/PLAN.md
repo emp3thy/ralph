@@ -22,7 +22,7 @@ Progress (each Ralph iteration completes one):
 - [x] Task 3 — integrate into `classify_outcome`
 - [x] Task 4 — tests
 - [x] Task 5 — `_run_ralph` docstring update (NO-OP code-wise)
-- [ ] Task 6 — config knob for budget
+- [x] Task 6 — config knob for budget
 
 ### Task 1 — `_query_pr_checks` helper
 
