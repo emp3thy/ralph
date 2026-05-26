@@ -242,3 +242,121 @@ def test_schema_validation_runs_before_emit(
     spec.loader.exec_module(schema_mod)
     errors = schema_mod.validate(payload)
     assert errors == [], f"fetcher emitted invalid document: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# _download host-allow-list (regression for PR #25 BugBot finding)
+# ---------------------------------------------------------------------------
+
+
+def test_download_uses_auth_session_for_github_hosts(
+    fetch_module: ModuleType,
+    env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitHub-hosted attachments need the bearer token (private user-content
+    URLs return 404 without it). The fetcher's GhClient session carries
+    the Authorization header — assert that session is used for GH hosts."""
+    from scripts.gh_client import GhClient
+
+    client = GhClient(token=TOKEN)
+
+    captured: dict[str, object] = {}
+
+    class _StubResponse:
+        status_code = 200
+        content = b"github-bytes"
+        text = ""
+
+    def _stub_session_get(url: str, timeout: float) -> _StubResponse:
+        captured["used"] = "session"
+        captured["url"] = url
+        return _StubResponse()
+
+    monkeypatch.setattr(client._session, "get", _stub_session_get)
+    # Ensure the authless path is NOT called for github hosts.
+    monkeypatch.setattr(
+        fetch_module.requests,
+        "get",
+        lambda *a, **kw: pytest.fail("authless requests.get called for github URL"),
+    )
+
+    result = fetch_module._download(client, "https://github.com/x/y/files/123")
+    assert result == b"github-bytes"
+    assert captured["used"] == "session"
+
+
+def test_download_uses_authless_for_third_party_hosts(
+    fetch_module: ModuleType,
+    env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for PR #25 BugBot finding: a URL from issue body that
+    points to a non-GitHub host MUST be fetched WITHOUT the auth-bearing
+    session. The bearer token would otherwise leak to whoever owns
+    that third-party host."""
+    from scripts.gh_client import GhClient
+
+    client = GhClient(token=TOKEN)
+
+    captured: dict[str, object] = {}
+
+    class _StubResponse:
+        status_code = 200
+        content = b"third-party-bytes"
+        text = ""
+
+    # Sentinel: if the auth-bearing session is used, fail loudly.
+    monkeypatch.setattr(
+        client._session,
+        "get",
+        lambda *a, **kw: pytest.fail("auth session used for third-party URL"),
+    )
+
+    def _stub_requests_get(url: str, timeout: float) -> _StubResponse:
+        captured["used"] = "authless"
+        captured["url"] = url
+        return _StubResponse()
+
+    monkeypatch.setattr(fetch_module.requests, "get", _stub_requests_get)
+
+    result = fetch_module._download(client, "https://attacker.example/leak.png")
+    assert result == b"third-party-bytes"
+    assert captured["used"] == "authless"
+
+
+def test_download_recognises_user_content_subdomains(
+    fetch_module: ModuleType,
+    env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """user-images.githubusercontent.com and friends are GitHub-hosted —
+    must use the auth session, not the authless path."""
+    from scripts.gh_client import GhClient
+
+    client = GhClient(token=TOKEN)
+
+    class _StubResponse:
+        status_code = 200
+        content = b"user-content-bytes"
+        text = ""
+
+    session_calls: list[str] = []
+
+    def _stub_session_get(url: str, timeout: float) -> _StubResponse:
+        session_calls.append(url)
+        return _StubResponse()
+
+    monkeypatch.setattr(client._session, "get", _stub_session_get)
+    monkeypatch.setattr(
+        fetch_module.requests,
+        "get",
+        lambda *a, **kw: pytest.fail("authless requests.get called for user-content URL"),
+    )
+
+    fetch_module._download(client, "https://user-images.githubusercontent.com/123/abc.png")
+    fetch_module._download(
+        client,
+        "https://private-user-images.githubusercontent.com/456/def.png",
+    )
+    assert len(session_calls) == 2

@@ -15,6 +15,9 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+import requests
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
@@ -162,8 +165,40 @@ def _extract_attachment_urls(body: str) -> list[tuple[str, str]]:
     return results
 
 
+# Hosts that legitimately need (or accept) the GitHub bearer token on
+# attachment GETs. Any URL outside this allow-list is fetched WITHOUT
+# the auth header so the GH_TOKEN doesn't leak to third-party image
+# hosts referenced from issue bodies.
+_GITHUB_ATTACHMENT_HOSTS = frozenset(
+    {
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "user-images.githubusercontent.com",
+        "private-user-images.githubusercontent.com",
+        "objects.githubusercontent.com",
+    }
+)
+
+
 def _download(client: GhClient, url: str) -> bytes:
-    response = client._session.get(url, timeout=client.timeout)
+    """Fetch ``url`` and return the body bytes.
+
+    Uses the auth-bearing session ONLY for GitHub-controlled hosts.
+    Issue bodies can reference any image URL — without this gate the
+    GH_TOKEN bearer header travels to every third-party host. An
+    attacker who controls or can observe such a host could capture
+    the token.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host in _GITHUB_ATTACHMENT_HOSTS:
+        response = client._session.get(url, timeout=client.timeout)
+    else:
+        # Authless fetch — same timeout, but no Authorization header.
+        # If a third-party host returns 403 because it needs other
+        # creds, surface as GhError just like the GitHub path.
+        response = requests.get(url, timeout=client.timeout)
     if not (200 <= response.status_code < 300):
         raise GhError(status_code=response.status_code, body=response.text, url=url)
     return bytes(response.content)
