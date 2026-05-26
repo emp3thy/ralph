@@ -1,11 +1,11 @@
 ---
 id: STAGE-B-PLAN-18-verifier
 type: feature
-status: inbox
+status: current
 severity: high
 attempts: 0
 created_at: 2026-05-26T07:30:00+00:00
-updated_at: 2026-05-26T07:30:00+00:00
+updated_at: 2026-05-26T21:05:46+00:00
 depends_on: []
 ---
 
