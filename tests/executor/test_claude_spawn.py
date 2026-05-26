@@ -204,8 +204,18 @@ def test_spawn_simulates_pr_creation(
         assert branch == f"ralph/{pbi.id}"
         return "https://github.com/example/repo/pull/9999"
 
-    def _fake_wait_for_pr_checks(_repo_path: Path, pr_number: int) -> tuple[str, list[str]]:
+    def _fake_wait_for_pr_checks(
+        _repo_path: Path,
+        pr_number: int,
+        *,
+        max_polls: int,
+        interval_seconds: float,
+    ) -> tuple[str, list[str]]:
         assert pr_number == 9999
+        # cfg_for_repo carries the defaults — confirm the cfg knobs reach
+        # the verifier so the operator can actually shorten the budget.
+        assert max_polls == cfg_for_repo.pr_check_poll_max_attempts
+        assert interval_seconds == cfg_for_repo.pr_check_poll_interval_seconds
         return ("pass", [])
 
     monkeypatch.setattr("ralph_executor.claude_spawn._query_open_pr_via_gh", _fake_gh_lookup)

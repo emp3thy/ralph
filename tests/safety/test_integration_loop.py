@@ -90,6 +90,8 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         ado_org_url="",
         ado_project="",
         halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
     )
     return work, cfg
 

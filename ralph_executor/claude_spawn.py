@@ -427,7 +427,12 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
             pr_check_state = "error"
             pr_check_failed_names = [f"could not parse PR number from {pr_url}"]
         else:
-            pr_check_state, pr_check_failed_names = _wait_for_pr_checks(cfg.repo_path, pr_number)
+            pr_check_state, pr_check_failed_names = _wait_for_pr_checks(
+                cfg.repo_path,
+                pr_number,
+                max_polls=cfg.pr_check_poll_max_attempts,
+                interval_seconds=cfg.pr_check_poll_interval_seconds,
+            )
     return classify_outcome(
         pbi_dir=pbi.path,
         stdout=stdout_text,
