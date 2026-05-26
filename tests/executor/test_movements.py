@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from ralph_executor.queue.movements import (
     move_current_to_pending_pr,
     move_inbox_to_current,
 )
+from ralph_executor.safety.events import EventType, open_log
 from tests.executor.conftest import write_sample_pbi
 
 
@@ -103,6 +105,39 @@ def test_move_from_wrong_state_raises(cfg_for_repo: ExecutorConfig, fake_repo: P
     pbi = source.inbox_pbis()[0]
     with pytest.raises(QueueMovementError, match="must be in current"):
         move_current_to_pending_pr(cfg_for_repo, pbi)
+
+
+def test_pbi_opened_event_emitted_on_claim(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
+    _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+    now = datetime.now(tz=UTC)
+    event_log = open_log(fake_repo)
+    try:
+        move_inbox_to_current(cfg_for_repo, pbi, event_log=event_log, now=now)
+        events = event_log.recent(window=timedelta(hours=1), now=now)
+    finally:
+        event_log.close()
+    opened = [ev for ev in events if ev.kind == EventType.PBI_OPENED]
+    assert len(opened) == 1
+    assert opened[0].pbi_id == "WI-1234"
+    assert opened[0].payload == {}
+
+
+def test_move_inbox_to_current_emits_no_event_when_event_log_omitted(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+    move_inbox_to_current(cfg_for_repo, pbi)
+    now = datetime.now(tz=UTC)
+    event_log = open_log(fake_repo)
+    try:
+        events = event_log.recent(window=timedelta(hours=1), now=now)
+    finally:
+        event_log.close()
+    assert [ev for ev in events if ev.kind == EventType.PBI_OPENED] == []
 
 
 def test_move_uses_branch_from_config(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:

@@ -105,15 +105,37 @@ def _move(
     return parse_pbi_directory(dst, status=target_state)
 
 
-def move_inbox_to_current(cfg: ExecutorConfig, pbi: PBI) -> PBI:
-    """Claim a PBI from inbox into the single-focus current folder."""
-    return _move(
+def move_inbox_to_current(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    event_log: EventLog | None = None,
+    now: datetime | None = None,
+) -> PBI:
+    """Claim a PBI from inbox into the single-focus current folder.
+
+    Emits ``PBI_OPENED`` to ``event_log`` when ``event_log`` is provided.
+    The cycle detector's ``whack_a_mole`` rule consumes opens vs closes
+    over a rolling window.
+    """
+    moved = _move(
         cfg,
         pbi,
         expected_state="inbox",
         target_state="current",
         commit_prefix="chore(ralph-queue)",
     )
+    if event_log is not None:
+        recorded_at = now if now is not None else datetime.now(tz=UTC)
+        event_log.append(
+            Event(
+                kind=EventType.PBI_OPENED,
+                recorded_at=recorded_at,
+                pbi_id=moved.id,
+                payload={},
+            )
+        )
+    return moved
 
 
 def move_current_to_pending_pr(

@@ -185,7 +185,8 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
     Sequence (matches the spec's "Branch dance"):
-      1. ``move_inbox_to_current`` (commits + pushes on ralph-queue).
+      1. ``move_inbox_to_current`` (commits + pushes on ralph-queue,
+         emits ``PBI_OPENED`` to the event log for the cycle detector).
       2. ``git pull main``.
       3. ``git checkout -b ralph/<PBI-ID>`` off main.
       4. Switch back to ``ralph-queue`` so the caller sees the updated
@@ -193,7 +194,16 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
-    moved = move_inbox_to_current(cfg, pbi)
+    event_log = open_log(cfg.repo_path)
+    try:
+        moved = move_inbox_to_current(
+            cfg,
+            pbi,
+            event_log=event_log,
+            now=datetime.now(tz=UTC),
+        )
+    finally:
+        event_log.close()
     _pull_main(cfg)
     branch = _feature_branch_name(moved)
     if git_ops.branch_exists(cfg.repo_path, branch):
