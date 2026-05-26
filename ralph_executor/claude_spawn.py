@@ -77,12 +77,18 @@ def _build_argv(cfg: ExecutorConfig, pbi: PBI) -> list[str]:
     Windows, where ``bufsize=1`` does not propagate line-buffering to
     the child's CRT (see BUG-claude-stdout-streaming-windows).
     """
+    # Order matters: the prompt string MUST immediately follow `-p`,
+    # otherwise Claude's arg parser (commander/yargs style) consumes the
+    # next token as the prompt value. Putting `--output-format` between
+    # `-p` and the prompt would make Claude treat "--output-format" as
+    # the prompt and the actual prompt as an unrecognised positional.
+    # Stream-json flags go BEFORE `-p`.
     argv = [
         cfg.claude_binary,
-        "-p",
         "--output-format",
         "stream-json",
         "--verbose",
+        "-p",
         (
             "Read ./prompt/PROMPT.md and work the PBI in "
             f"{pbi.path}. Follow the standing instructions."

@@ -445,13 +445,29 @@ def test_spawn_passes_stream_json_flags_to_claude(
     operator sees nothing until Claude exits
     (BUG-claude-stdout-streaming-windows)."""
     pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    # Print argv one element per line so the assertions below can check
+    # both presence AND ordering. Substring-matching the joined string
+    # would let `-p --output-format stream-json --verbose <prompt>` pass
+    # while still being broken (commander/yargs would treat `-p`'s value
+    # as `--output-format`).
     write_claude_script(
         fake_claude_binary,
-        "import sys\nprint(' '.join(sys.argv[1:]))\nsys.exit(0)\n",
+        "import sys\nprint('\\n'.join(sys.argv[1:]))\nsys.exit(0)\n",
     )
     outcome = spawn_claude_p(cfg_for_repo, pbi)
-    assert "--output-format stream-json" in outcome.stdout
-    assert "--verbose" in outcome.stdout
+    argv_lines = outcome.stdout.splitlines()
+    assert "--output-format" in argv_lines
+    assert "stream-json" in argv_lines
+    assert "--verbose" in argv_lines
+    assert "-p" in argv_lines
+    # The token immediately after `-p` must be the prompt string, not
+    # one of the stream-json flags — otherwise Claude consumes the flag
+    # as the prompt value (BugBot finding on PR #24).
+    p_index = argv_lines.index("-p")
+    prompt_token = argv_lines[p_index + 1]
+    assert prompt_token.startswith("Read ./prompt/PROMPT.md"), (
+        f"argv element after -p must be the prompt; got {prompt_token!r}"
+    )
 
 
 def test_summarise_stream_json_line_extracts_assistant_text() -> None:
