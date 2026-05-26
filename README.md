@@ -150,6 +150,11 @@ Workspace root specifically:
 Secrets stay env-only: `GH_TOKEN` (auto-resolved by `gh` CLI),
 optional `ANTHROPIC_API_KEY` (omit to use Claude Code OAuth).
 
+`git_host` is also TOML-readable — set `git_host = "github"` (or
+`"ado"`) in `<repo>/.ralph/config.toml` instead of exporting
+`$RALPH_GIT_HOST` every shell. The `scaffold` subcommand emits this
+key in the stub it writes.
+
 ## Development
 
 ```bash

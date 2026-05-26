@@ -59,6 +59,7 @@ _TOML_KNOWN_KEYS = frozenset(
         "log_level",
         "iteration_sleep_seconds",
         "claude_binary",
+        "git_host",
     }
 )
 
@@ -85,6 +86,11 @@ class ExecutorConfig:
     iteration_sleep_seconds: float
     claude_binary: str
     anthropic_api_key: str
+    # Empty string = "not set in TOML/env"; host_select falls back to
+    # reading ``RALPH_GIT_HOST`` directly and errors if that is also
+    # unset. Validation of allowed values (github/ado) happens in
+    # host_select, not here, to keep config layer host-agnostic.
+    git_host: str
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -278,6 +284,13 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_CLAUDE_BINARY,
         source_label=source_label,
     )
+    git_host = _resolve_str(
+        name="git_host",
+        env_name="RALPH_GIT_HOST",
+        toml_value=toml_overrides.get("git_host"),
+        default="",
+        source_label=source_label,
+    )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -288,4 +301,5 @@ def load_config() -> ExecutorConfig:
         iteration_sleep_seconds=sleep_seconds,
         claude_binary=claude_binary,
         anthropic_api_key=anthropic_key,
+        git_host=git_host,
     )

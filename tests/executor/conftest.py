@@ -189,6 +189,7 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         iteration_sleep_seconds=0.0,
         claude_binary=str(fake_claude_binary),
         anthropic_api_key="fake-key",
+        git_host="github",
     )
 
 

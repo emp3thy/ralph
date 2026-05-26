@@ -31,6 +31,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_LOG_LEVEL",
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
+        "RALPH_GIT_HOST",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -123,6 +124,28 @@ def test_toml_wrong_type_string_raises(clean_env: Path) -> None:
     _write_toml(clean_env, "queue_branch = 42\n")
     with pytest.raises(ConfigError, match="queue_branch must be a string"):
         load_config()
+
+
+def test_toml_git_host_is_picked_up(clean_env: Path) -> None:
+    """`git_host = "github"` in TOML flows through to ExecutorConfig.git_host
+    so the operator doesn't need $RALPH_GIT_HOST set in the shell."""
+    _write_toml(clean_env, 'git_host = "github"\n')
+    cfg = load_config()
+    assert cfg.git_host == "github"
+
+
+def test_env_git_host_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_toml(clean_env, 'git_host = "github"\n')
+    monkeypatch.setenv("RALPH_GIT_HOST", "ado")
+    cfg = load_config()
+    assert cfg.git_host == "ado"
+
+
+def test_git_host_empty_when_neither_set(clean_env: Path) -> None:
+    """Empty string is the "not set" sentinel — host_select then errors
+    pointing at both knobs."""
+    cfg = load_config()
+    assert cfg.git_host == ""
 
 
 def test_toml_invalid_log_level_raises(clean_env: Path) -> None:

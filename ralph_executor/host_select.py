@@ -1,11 +1,16 @@
 """Startup-phase host selection for the executor.
 
 Ralph supports two git-host backends: ``github`` and ``ado``. The choice
-is made once per pod (or once per local dev session) via the
-``RALPH_GIT_HOST`` environment variable and is fixed for that pod's
-lifetime. This module runs once at startup BEFORE the iteration loop:
+is made once per pod (or once per local dev session). It can be set
+either via ``$RALPH_GIT_HOST`` or via ``git_host = "github"`` in
+``<repo>/.ralph/config.toml`` (env wins, as everywhere else). The
+resolved value is fixed for that pod's lifetime. This module runs once
+at startup BEFORE the iteration loop:
 
-  1. ``select_host()`` reads and validates ``RALPH_GIT_HOST``.
+  1. ``select_host(override=...)`` validates the resolved host string.
+     The override is normally sourced from ``ExecutorConfig.git_host``
+     (which itself layers TOML over env); when omitted, falls back to
+     reading ``$RALPH_GIT_HOST`` directly for backwards compatibility.
   2. ``verify_auth_env(host)`` checks the host's required auth vars.
   3. ``stage_skills(host, skills_root, claude_skills_dir)`` copies the
      chosen ``pr-<host>/`` and ``workitem-fetch-<host>/`` directories
@@ -19,7 +24,8 @@ design rationale.
 
 Environment variables (all read here, none in ``config.py``):
 
-* ``RALPH_GIT_HOST`` -- required. Either ``github`` or ``ado``.
+* ``RALPH_GIT_HOST`` -- required UNLESS set via TOML (see above).
+  Either ``github`` or ``ado``.
 * ``GH_TOKEN``, ``GH_OWNER`` -- required when host is ``github``.
 * ``ADO_PAT``, ``ADO_ORG_URL``, ``ADO_PROJECT`` -- required when ``ado``.
 * ``RALPH_SKILLS_ROOT`` -- optional. Path to the source ``skills/`` tree
@@ -65,27 +71,40 @@ def _is_blank(value: str | None) -> bool:
     return value is None or not value.strip()
 
 
-def select_host() -> Host:
-    """Read ``RALPH_GIT_HOST`` and return the canonical host string.
+def select_host(override: str | None = None) -> Host:
+    """Return the canonical host string.
 
-    Raises ``HostSelectionError`` if the variable is unset, blank, or
-    not one of the supported hosts.
+    Resolution order (highest → lowest):
+      1. ``override`` argument (non-blank). Typically sourced from
+         ``ExecutorConfig.git_host`` which itself layers TOML over env.
+      2. ``RALPH_GIT_HOST`` environment variable (legacy direct path
+         used when no override is supplied).
+
+    Raises ``HostSelectionError`` if neither yields a non-blank value
+    or if the resolved value is not one of the supported hosts.
+
+    The error message points at TOML, env, AND init since any of the
+    three can fix it — operator shouldn't have to guess which knob.
     """
-    raw = os.environ.get("RALPH_GIT_HOST")
+    if not _is_blank(override):
+        raw: str | None = override
+        source_hint = "ExecutorConfig.git_host (set via .ralph/config.toml or $RALPH_GIT_HOST)"
+    else:
+        raw = os.environ.get("RALPH_GIT_HOST")
+        source_hint = "$RALPH_GIT_HOST or `.ralph/config.toml` git_host key"
     if _is_blank(raw):
         raise HostSelectionError(
-            "RALPH_GIT_HOST is required but unset or blank. "
-            f"Set it to one of {list(VALID_HOSTS)} before starting "
-            "ralph-executor (e.g. `export RALPH_GIT_HOST=github`)."
+            f"git host is required but unset. "
+            f"Set it to one of {list(VALID_HOSTS)} via either "
+            f'$RALPH_GIT_HOST or `git_host = "github"` in '
+            f"<repo>/.ralph/config.toml."
         )
     assert raw is not None  # narrowed by _is_blank
     normalised = raw.strip().lower()
     if normalised not in VALID_HOSTS:
         raise HostSelectionError(
-            f"RALPH_GIT_HOST={raw!r} is not a supported host. "
-            f"Valid values: {list(VALID_HOSTS)}. "
-            "Set RALPH_GIT_HOST=github for GitHub repos or "
-            "RALPH_GIT_HOST=ado for Azure DevOps repos."
+            f"git host {raw!r} (from {source_hint}) is not a supported host. "
+            f"Valid values: {list(VALID_HOSTS)}."
         )
     return normalised
 
@@ -231,6 +250,7 @@ def prepare_host_environment(
     *,
     skills_root: Path | None = None,
     claude_skills_dir: Path | None = None,
+    host_override: str | None = None,
 ) -> Host:
     """Run the four startup-phase steps in order and return the host.
 
@@ -276,8 +296,8 @@ def prepare_host_environment(
         else:
             effective_claude_skills_dir = _default_claude_skills_dir()
 
-    host = select_host()
-    log.info("RALPH_GIT_HOST=%s", host)
+    host = select_host(override=host_override)
+    log.info("git_host=%s", host)
     verify_auth_env(host)
     log.info(
         "staging skills from %s into %s",
