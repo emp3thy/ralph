@@ -33,7 +33,13 @@ from ralph_executor.safety.cycle_detector import (
     evaluate_signature_recurrence,
     evaluate_whack_a_mole,
 )
-from ralph_executor.safety.events import Event, EventLog, EventType, open_log
+from ralph_executor.safety.events import (
+    Event,
+    EventLog,
+    EventType,
+    open_log,
+    signature_from_text,
+)
 from ralph_executor.safety.halt import (
     HaltedError,
     HaltStatus,
@@ -84,6 +90,7 @@ __all__ = [
     "open_log",
     "read_attempts",
     "read_stuck_reason",
+    "signature_from_text",
     "snapshot_state",
     "write_attempts",
     "write_halt_sentinel",

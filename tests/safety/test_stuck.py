@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from ralph_executor.safety.cycle_detector import (
+    SignalKind,
+    evaluate_signature_recurrence,
+)
+from ralph_executor.safety.events import Event, EventLog, EventType, signature_from_text
 from ralph_executor.safety.stuck import (
     StuckOutcome,
     detect_stuck,
@@ -131,3 +136,90 @@ def test_handle_stuck_returns_none_when_no_stuck_file(
     now = datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC)
     outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now)
     assert outcome is None
+
+
+def test_signature_observed_event_emitted_on_stuck(
+    repo_dir: Path,
+    event_log: EventLog,
+) -> None:
+    reason_body = "blocking: dependency missing\n"
+    pbi_dir = write_pbi_dir(
+        repo_dir,
+        bucket="current",
+        pbi_id="WI-9",
+        extra_files={"STUCK.md": reason_body},
+    )
+    now = datetime(2026, 5, 27, 0, 0, 0, tzinfo=UTC)
+    outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now, event_log=event_log)
+    assert outcome is not None
+    recent = event_log.recent(window=timedelta(minutes=1), now=now)
+    signatures = [e for e in recent if e.kind == EventType.SIGNATURE_OBSERVED]
+    assert len(signatures) == 1
+    assert signatures[0].pbi_id == "WI-9"
+    assert signatures[0].recorded_at == now
+    assert signatures[0].payload == {
+        "signature": signature_from_text(reason_body.strip()),
+    }
+
+
+def test_signature_recurrence_trips_after_pbi_closed_then_signature_reobserved(
+    repo_dir: Path,
+    event_log: EventLog,
+) -> None:
+    """End-to-end wiring: a sweep-emitted PBI_CLOSED signature followed by a
+    handle_stuck-emitted SIGNATURE_OBSERVED with the same hash trips
+    ``evaluate_signature_recurrence``.
+
+    The sweep-side PBI_CLOSED emission itself lives in sibling PBI 19b; here
+    we synthesise it directly so the loop-side wiring this PBI introduces
+    (handle_stuck -> SIGNATURE_OBSERVED) can be exercised end-to-end against
+    the real ``EventLog`` and the detector running over the persisted events.
+    """
+    reason_body = "blocking: dependency cli missing\n"
+    expected_sig = signature_from_text(reason_body.strip())
+    now = datetime(2026, 5, 27, 0, 0, 0, tzinfo=UTC)
+
+    event_log.append(
+        Event(
+            kind=EventType.PBI_CLOSED,
+            recorded_at=now - timedelta(hours=22),
+            pbi_id="WI-old",
+            payload={"signature": expected_sig},
+        )
+    )
+
+    pbi_dir = write_pbi_dir(
+        repo_dir,
+        bucket="current",
+        pbi_id="WI-new",
+        extra_files={"STUCK.md": reason_body},
+    )
+    outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now, event_log=event_log)
+    assert outcome is not None
+
+    events = event_log.recent(window=timedelta(hours=24), now=now)
+    observed = [
+        ev for ev in events if ev.kind == EventType.SIGNATURE_OBSERVED and ev.pbi_id == "WI-new"
+    ]
+    assert len(observed) == 1
+    assert observed[0].payload == {"signature": expected_sig}
+
+    signal = evaluate_signature_recurrence(events, now)
+    assert signal is not None
+    assert signal.kind == SignalKind.SIGNATURE_RECURRENCE
+    assert expected_sig in signal.description
+
+
+def test_handle_stuck_emits_no_signature_when_event_log_omitted(
+    repo_dir: Path,
+) -> None:
+    pbi_dir = write_pbi_dir(
+        repo_dir,
+        bucket="current",
+        pbi_id="WI-10",
+        extra_files={"STUCK.md": "stuck\n"},
+    )
+    now = datetime(2026, 5, 27, 0, 0, 0, tzinfo=UTC)
+    outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now)
+    assert outcome is not None
+    assert outcome.event.kind == EventType.PBI_BLOCKED

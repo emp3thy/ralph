@@ -12,6 +12,7 @@ from ralph_executor.safety.events import (
     EventLog,
     EventType,
     open_log,
+    signature_from_text,
 )
 from tests.safety.conftest import make_event, offset
 
@@ -127,3 +128,28 @@ def test_recent_with_zero_window_returns_only_strict_present(
     )
     events = event_log.recent(window=timedelta(0), now=now)
     assert [ev.kind for ev in events] == [EventType.PBI_OPENED]
+
+
+def test_signature_from_text_is_16_hex_chars() -> None:
+    sig = signature_from_text("hello world")
+    assert len(sig) == 16
+    assert all(c in "0123456789abcdef" for c in sig)
+
+
+def test_signature_from_text_normalises_whitespace_and_case() -> None:
+    a = signature_from_text("Hello   World\n")
+    b = signature_from_text("  hello world  ")
+    c = signature_from_text("HELLO\tWORLD")
+    assert a == b == c
+
+
+def test_signature_from_text_distinguishes_distinct_inputs() -> None:
+    assert signature_from_text("foo") != signature_from_text("bar")
+
+
+def test_signature_from_text_handles_empty_and_whitespace_only() -> None:
+    # Deterministic, both reduce to empty string; harmless equality.
+    a = signature_from_text("")
+    b = signature_from_text("   \n\t  ")
+    assert a == b
+    assert len(a) == 16

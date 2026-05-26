@@ -46,6 +46,7 @@ from ralph_executor.safety import (
     AttemptCounter,
     AttemptsExceeded,
     Event,
+    EventLog,
     EventType,
     HaltedError,
     HaltStatus,
@@ -132,7 +133,13 @@ def _ensure_on_queue_branch(cfg: ExecutorConfig) -> None:
         git_ops.checkout(cfg.repo_path, cfg.queue_branch)
 
 
-def _persist_iteration_writes(cfg: ExecutorConfig, pbi_id: str) -> None:
+def _persist_iteration_writes(
+    cfg: ExecutorConfig,
+    pbi_id: str,
+    *,
+    event_log: EventLog | None = None,
+    now: datetime | None = None,
+) -> None:
     """Commit + push any HISTORY.md/STUCK.md/PLAN.md edits Claude wrote
     inside the current PBI dir during this iteration.
 
@@ -146,6 +153,11 @@ def _persist_iteration_writes(cfg: ExecutorConfig, pbi_id: str) -> None:
     .ralph/state/events.db) aren't accidentally committed every
     iteration. No-ops cleanly when the index ends up empty and when the
     PBI was already moved out of current/ by a sibling code path.
+
+    Emits ``FILE_TOUCHED`` to ``event_log`` when a new commit lands and
+    the diff is non-empty. The cycle detector reserves the event for
+    future per-iteration rules (no current rule reads it; emit for
+    forward compatibility).
     """
     _ensure_on_queue_branch(cfg)
     pbi_dir = cfg.repo_path / ".ralph" / "current" / pbi_id
@@ -163,6 +175,18 @@ def _persist_iteration_writes(cfg: ExecutorConfig, pbi_id: str) -> None:
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
         git_ops.push(cfg.repo_path, cfg.queue_branch)
+        if event_log is not None:
+            files = git_ops.diff_names(cfg.repo_path, head_before, head_after)
+            if files:
+                recorded_at = now if now is not None else datetime.now(tz=UTC)
+                event_log.append(
+                    Event(
+                        kind=EventType.FILE_TOUCHED,
+                        recorded_at=recorded_at,
+                        pbi_id=pbi_id,
+                        payload={"files": files},
+                    )
+                )
 
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
@@ -185,7 +209,8 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
     Sequence (matches the spec's "Branch dance"):
-      1. ``move_inbox_to_current`` (commits + pushes on ralph-queue).
+      1. ``move_inbox_to_current`` (commits + pushes on ralph-queue,
+         emits ``PBI_OPENED`` to the event log for the cycle detector).
       2. ``git pull main``.
       3. ``git checkout -b ralph/<PBI-ID>`` off main.
       4. Switch back to ``ralph-queue`` so the caller sees the updated
@@ -193,7 +218,16 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
-    moved = move_inbox_to_current(cfg, pbi)
+    event_log = open_log(cfg.repo_path)
+    try:
+        moved = move_inbox_to_current(
+            cfg,
+            pbi,
+            event_log=event_log,
+            now=datetime.now(tz=UTC),
+        )
+    finally:
+        event_log.close()
     _pull_main(cfg)
     branch = _feature_branch_name(moved)
     if git_ops.branch_exists(cfg.repo_path, branch):
@@ -316,7 +350,15 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             )
 
         if outcome.kind == "pr_created":
-            move_current_to_pending_pr(cfg, pbi)
+            touched = git_ops.diff_names(cfg.repo_path, cfg.main_branch, _feature_branch_name(pbi))
+            move_current_to_pending_pr(
+                cfg,
+                pbi,
+                event_log=event_log,
+                pr_url=outcome.pr_url,
+                touched_files=touched,
+                now=now,
+            )
             return outcome, IterationResult(
                 outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
             )
@@ -327,6 +369,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 repo=cfg.repo_path,
                 pbi_dir=pbi.path,
                 now=datetime.now(tz=UTC),
+                event_log=event_log,
             )
             if stuck_outcome is not None:
                 event_log.append(stuck_outcome.event)
@@ -376,7 +419,16 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # inside the PBI dir. The move_current_to_* paths handle their
         # own commits via git mv, but partial/error outcomes leave the
         # PBI in current/ with dirty files that would otherwise be lost.
-        _persist_iteration_writes(cfg, current.id)
+        event_log = open_log(cfg.repo_path)
+        try:
+            _persist_iteration_writes(
+                cfg,
+                current.id,
+                event_log=event_log,
+                now=datetime.now(tz=UTC),
+            )
+        finally:
+            event_log.close()
         if _check_cycle_detector(cfg, source):
             # META-BUG + sentinel already written by _check_cycle_detector;
             # raise HaltedError so the caller knows the loop is frozen.
