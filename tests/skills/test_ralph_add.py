@@ -207,6 +207,109 @@ def test_feature_work_item_writes_feature_pbi(
     assert (pbi_dir / "attachments" / "context.pdf").read_bytes().startswith(b"%PDF")
 
 
+def test_attachment_with_path_traversal_name_is_stripped_to_basename(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot finding on PR #25: a hostile / buggy
+    fetcher emitting `\"name\": \"../../sensitive\"` must NOT escape the
+    attachments/ directory. add.py strips directory components via
+    Path(name).name before writing."""
+    import base64
+
+    payload_bytes = base64.b64encode(b"escaped").decode("ascii")
+    doc = _doc(
+        number=WORK_ITEM_ID,
+        pbi_type="feature",
+        title="x",
+        body="x",
+        acceptance="- x.",
+        attachments=[
+            {
+                "name": "../../escape-attempt.bin",
+                "url": "https://x/escape.bin",
+                "content_base64": payload_bytes,
+            },
+        ],
+    )
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
+    assert exit_code == 0
+    capsys.readouterr()  # drain
+
+    _git(git_repo, "checkout", "ralph-queue")
+    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
+    # The file is written under attachments/<basename> — NOT escaped up.
+    assert (pbi_dir / "attachments" / "escape-attempt.bin").read_bytes() == b"escaped"
+    # Critical: the parent directories did NOT get a file written by
+    # the traversal — the working tree above attachments/ is clean.
+    inbox_dir = git_repo / ".ralph" / "inbox"
+    # The PBI dir is one level under inbox; nothing else should appear
+    # adjacent to it.
+    siblings = {p.name for p in inbox_dir.iterdir() if p.is_file()}
+    assert "escape-attempt.bin" not in siblings
+
+
+def test_dry_run_with_expand_children_reports_zero_attachments(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot LOW on PR #25: with --expand-children +
+    --dry-run, the JSON report's attachments_downloaded must be 0
+    (mirroring the non-expand dry-run path). Counting attachments that
+    were never written would make the dry-run output lie."""
+    import base64
+
+    payload_bytes = base64.b64encode(b"would-be-written").decode("ascii")
+    child_id = WORK_ITEM_ID + 1
+    parent_doc = _doc(
+        number=WORK_ITEM_ID,
+        pbi_type="feature",
+        title="parent epic",
+        body="parent",
+        acceptance="- parent.",
+        child_ids=[f"WI-{child_id}"],
+    )
+    child_doc = _doc(
+        number=child_id,
+        pbi_type="feature",
+        title="child",
+        body="child",
+        acceptance="- child.",
+        attachments=[
+            {"name": "child-att.bin", "url": "x", "content_base64": payload_bytes},
+        ],
+    )
+    fetcher = _write_mock_fetcher(
+        tmp_path,
+        documents_by_id={WORK_ITEM_ID: parent_doc, child_id: child_doc},
+    )
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--repo",
+            str(git_repo),
+            "--expand-children",
+            "--dry-run",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["attachments_downloaded"] == 0
+
+
 def test_bug_work_item_writes_bug_pbi(
     tmp_path: Path,
     git_repo: Path,

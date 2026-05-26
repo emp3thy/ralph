@@ -330,7 +330,18 @@ def _write_pbi_directory(
         attachments_dir = pbi_dir / ATTACHMENT_SUBDIR
         attachments_dir.mkdir(exist_ok=True)
         for att in attachments:
-            name = str(att["name"])
+            # Strip directory components from the fetcher-supplied name to
+            # prevent path traversal: a hostile / buggy fetcher emitting
+            # `"../../sensitive"` would otherwise escape attachments_dir
+            # via Path's join semantics. add.py is host-agnostic and must
+            # not trust that all fetchers (current GitHub, future ADO,
+            # third-party) sanitize names.
+            name = Path(str(att["name"])).name
+            if not name:
+                raise _FatalError(
+                    f"attachment name {att['name']!r} resolves to empty after "
+                    f"directory-component stripping"
+                )
             try:
                 payload = base64.b64decode(att["content_base64"], validate=True)
             except (ValueError, TypeError) as exc:
@@ -430,7 +441,12 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 else:
                     pbi_dir = repo / ".ralph" / "inbox" / str(child_doc["id"])
-                attachments_total += len(child_doc.get("attachments") or [])
+                # Mirror the non-expand path (line 468 below): no files
+                # are written in dry-run, so the reported count must be 0.
+                # Counting them here would make the dry-run JSON output
+                # inconsistent with what actually happened on disk.
+                if not args.dry_run:
+                    attachments_total += len(child_doc.get("attachments") or [])
                 children_expanded += 1
                 if first_pbi_for_report is None:
                     first_pbi_for_report = (
