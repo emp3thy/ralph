@@ -245,6 +245,17 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     lives on ``ralph-queue``. Plan 7 defers the full reconciliation --
     likely needing a git-worktree or .ralph-merge-into-feature scheme --
     to Plan 9 / a follow-up. See PR #5 review thread for context.
+
+    Event emission scope: this function only consumes the classified
+    ``ClaudeOutcome`` and emits ``pbi.*`` / ``attempt.incremented`` /
+    ``pbi.blocked`` events. ``pr.green_then_red`` (post-merge regression
+    detection) is NOT emitted here — that observation requires polling
+    PR check state AFTER pr_created has promoted the PBI to
+    ``pending-pr/``, and is the sweep observer's job per Plan 19b. The
+    CI-green verifier wired into ``classify_outcome`` by Plan 18 only
+    decides classification at spawn-time (gating ``pr_created`` on
+    required-check pass); it does not itself produce a
+    ``PR_GREEN_THEN_RED`` event.
     """
     now = datetime.now(tz=UTC)
     event_log = open_log(cfg.repo_path)
