@@ -60,6 +60,12 @@ _TOML_KNOWN_KEYS = frozenset(
         "iteration_sleep_seconds",
         "claude_binary",
         "git_host",
+        # Per-host project identifiers + alerting. Promoted from env-only
+        # in this layer because they are project state, not secrets.
+        "gh_owner",
+        "ado_org_url",
+        "ado_project",
+        "halt_webhook",
     }
 )
 
@@ -91,6 +97,14 @@ class ExecutorConfig:
     # unset. Validation of allowed values (github/ado) happens in
     # host_select, not here, to keep config layer host-agnostic.
     git_host: str
+    # Per-host project identifiers + alerting. Empty string = "not set
+    # via TOML or env"; downstream consumers (host_select.verify_auth_env,
+    # safety.halt) decide whether absence is an error. Layered same as
+    # the other knobs: defaults < project-TOML < env.
+    gh_owner: str
+    ado_org_url: str
+    ado_project: str
+    halt_webhook: str
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -291,6 +305,34 @@ def load_config() -> ExecutorConfig:
         default="",
         source_label=source_label,
     )
+    gh_owner = _resolve_str(
+        name="gh_owner",
+        env_name="GH_OWNER",
+        toml_value=toml_overrides.get("gh_owner"),
+        default="",
+        source_label=source_label,
+    )
+    ado_org_url = _resolve_str(
+        name="ado_org_url",
+        env_name="ADO_ORG_URL",
+        toml_value=toml_overrides.get("ado_org_url"),
+        default="",
+        source_label=source_label,
+    )
+    ado_project = _resolve_str(
+        name="ado_project",
+        env_name="ADO_PROJECT",
+        toml_value=toml_overrides.get("ado_project"),
+        default="",
+        source_label=source_label,
+    )
+    halt_webhook = _resolve_str(
+        name="halt_webhook",
+        env_name="RALPH_HALT_WEBHOOK",
+        toml_value=toml_overrides.get("halt_webhook"),
+        default="",
+        source_label=source_label,
+    )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -302,4 +344,8 @@ def load_config() -> ExecutorConfig:
         claude_binary=claude_binary,
         anthropic_api_key=anthropic_key,
         git_host=git_host,
+        gh_owner=gh_owner,
+        ado_org_url=ado_org_url,
+        ado_project=ado_project,
+        halt_webhook=halt_webhook,
     )

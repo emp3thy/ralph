@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,22 @@ def _stub_prepare_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     own monkeypatch.
     """
     monkeypatch.setattr(cli, "prepare_host_environment", lambda **_: "github")
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_synced_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Snapshot + restore the env vars that ``cli._export_cfg_to_env``
+    mutates directly. Production code writes them via ``os.environ[k]=v``
+    which monkeypatch can't auto-undo, so tests that exercise that path
+    would otherwise leak values into siblings."""
+    for var in ("GH_OWNER", "ADO_ORG_URL", "ADO_PROJECT", "RALPH_HALT_WEBHOOK"):
+        # Captures current value; monkeypatch will restore on teardown
+        # whether or not the test mutates it.
+        existing = os.environ.get(var)
+        if existing is None:
+            monkeypatch.delenv(var, raising=False)
+        else:
+            monkeypatch.setenv(var, existing)
 
 
 def test_main_runs_one_iteration_with_once_flag(
@@ -410,6 +427,77 @@ def test_main_workspace_errors_when_no_ralph_home_anywhere(
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "ralph-executor init" in err
+
+
+def test_main_syncs_cfg_to_env_before_host_select(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`load_config` may have read project identifiers from TOML — those
+    must be exported to os.environ BEFORE prepare_host_environment so
+    host_select.verify_auth_env (and downstream skill scripts) see them."""
+    import dataclasses as _dc
+
+    monkeypatch.delenv("GH_OWNER", raising=False)
+    monkeypatch.delenv("ADO_ORG_URL", raising=False)
+    monkeypatch.delenv("ADO_PROJECT", raising=False)
+    monkeypatch.delenv("RALPH_HALT_WEBHOOK", raising=False)
+
+    cfg = _dc.replace(
+        cfg_for_repo,
+        gh_owner="acme",
+        ado_org_url="https://dev.azure.com/acme",
+        ado_project="acme-project",
+        halt_webhook="https://hooks.acme/halt",
+    )
+
+    observed_env: dict[str, str | None] = {}
+
+    def _spy_prepare(**_kwargs: object) -> str:
+        observed_env["GH_OWNER"] = os.environ.get("GH_OWNER")
+        observed_env["ADO_ORG_URL"] = os.environ.get("ADO_ORG_URL")
+        observed_env["ADO_PROJECT"] = os.environ.get("ADO_PROJECT")
+        observed_env["RALPH_HALT_WEBHOOK"] = os.environ.get("RALPH_HALT_WEBHOOK")
+        return "github"
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli, "prepare_host_environment", _spy_prepare)
+    monkeypatch.setattr(
+        cli,
+        "iterate_once",
+        lambda c: IterationResult(outcome="idle", pbi_id=None),
+    )
+
+    cli.main(["--once"])
+
+    assert observed_env == {
+        "GH_OWNER": "acme",
+        "ADO_ORG_URL": "https://dev.azure.com/acme",
+        "ADO_PROJECT": "acme-project",
+        "RALPH_HALT_WEBHOOK": "https://hooks.acme/halt",
+    }
+
+
+def test_main_does_not_clobber_existing_env_with_empty_cfg(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a TOML key is empty (not configured), don't overwrite an
+    existing env var with empty string — that would mask the env value."""
+    monkeypatch.setenv("GH_OWNER", "pre-existing")
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)  # gh_owner=""
+
+    observed: dict[str, str | None] = {}
+
+    def _spy_prepare(**_kwargs: object) -> str:
+        observed["GH_OWNER"] = os.environ.get("GH_OWNER")
+        return "github"
+
+    monkeypatch.setattr(cli, "prepare_host_environment", _spy_prepare)
+    monkeypatch.setattr(cli, "iterate_once", lambda c: IterationResult(outcome="idle", pbi_id=None))
+
+    cli.main(["--once"])
+    assert observed["GH_OWNER"] == "pre-existing"
 
 
 def test_public_reexports_are_stable() -> None:

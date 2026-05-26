@@ -86,6 +86,10 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         claude_binary=str(fake_claude),
         anthropic_api_key="fake-key",
         git_host="github",
+        gh_owner="",
+        ado_org_url="",
+        ado_project="",
+        halt_webhook="",
     )
     return work, cfg
 

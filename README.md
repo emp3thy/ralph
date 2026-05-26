@@ -155,6 +155,28 @@ optional `ANTHROPIC_API_KEY` (omit to use Claude Code OAuth).
 `$RALPH_GIT_HOST` every shell. The `scaffold` subcommand emits this
 key in the stub it writes.
 
+Same goes for project identifiers and alerting URLs that aren't
+secrets — set these once in `<repo>/.ralph/config.toml`:
+
+```toml
+gh_owner = "your-github-org-or-user"     # was $GH_OWNER
+ado_org_url = "https://dev.azure.com/..." # was $ADO_ORG_URL
+ado_project = "your-project"             # was $ADO_PROJECT
+halt_webhook = "https://..."             # was $RALPH_HALT_WEBHOOK
+```
+
+Per-machine paths (where things live on YOUR machine) live in
+`~/.ralph/config.toml` instead of project config:
+
+```toml
+ralph_home = "C:/dev/ralph"
+skills_root = "C:/Users/you/source/ralph/skills"  # was $RALPH_SKILLS_ROOT
+claude_skills_dir = "C:/Users/you/.claude/skills" # was $RALPH_CLAUDE_SKILLS_DIR
+```
+
+Secrets stay env-only: `GH_TOKEN`, `ADO_PAT`, optional
+`ANTHROPIC_API_KEY`.
+
 ## Development
 
 ```bash

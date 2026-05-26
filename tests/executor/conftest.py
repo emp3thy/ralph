@@ -190,6 +190,10 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         claude_binary=str(fake_claude_binary),
         anthropic_api_key="fake-key",
         git_host="github",
+        gh_owner="",
+        ado_org_url="",
+        ado_project="",
+        halt_webhook="",
     )
 
 
