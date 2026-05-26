@@ -1,0 +1,15 @@
+# ralph-executor per-repo configuration for the ralph repo itself
+# (self-host: ralph operating on its own queue).
+#
+# All keys are optional. Defaults are baked into ralph_executor.config.
+# Environment variables (RALPH_*) override anything set here; CLI flags
+# override env. See the load_config docstring for the precedence chain.
+
+git_host = "github"
+
+# queue_branch = "ralph-queue"
+# main_branch = "main"
+# max_attempts = 20
+# iteration_sleep_seconds = 30
+# claude_binary = "claude"
+# log_level = "INFO"
