@@ -6,6 +6,7 @@
 # override env. See the load_config docstring for the precedence chain.
 
 git_host = "github"
+gh_owner = "emp3thy"
 
 # queue_branch = "ralph-queue"
 # main_branch = "main"
@@ -13,3 +14,6 @@ git_host = "github"
 # iteration_sleep_seconds = 30
 # claude_binary = "claude"
 # log_level = "INFO"
+# ado_org_url = "https://dev.azure.com/your-org"
+# ado_project = "your-ado-project"
+# halt_webhook = "https://outlook.office.com/webhook/..."
