@@ -188,19 +188,25 @@ def test_spawn_simulates_pr_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """spawn_claude_p resolves PR state via _query_open_pr_via_gh AFTER
-    the claude subprocess exits. Stub the helper to return a fake PR
-    URL — no real gh CLI call needed."""
+    the claude subprocess exits, then gates pr_created on
+    _wait_for_pr_checks reporting CI green. Stub both helpers — no real
+    gh CLI call needed."""
     pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
     write_claude_script(
         fake_claude_binary,
         "print('done')\n",
     )
 
-    def _fake_gh_lookup(repo_path: Path, branch: str) -> str | None:
+    def _fake_gh_lookup(_repo_path: Path, branch: str) -> str | None:
         assert branch == f"ralph/{pbi.id}"
         return "https://github.com/example/repo/pull/9999"
 
+    def _fake_wait_for_pr_checks(_repo_path: Path, pr_number: int) -> tuple[str, list[str]]:
+        assert pr_number == 9999
+        return ("pass", [])
+
     monkeypatch.setattr("ralph_executor.claude_spawn._query_open_pr_via_gh", _fake_gh_lookup)
+    monkeypatch.setattr("ralph_executor.claude_spawn._wait_for_pr_checks", _fake_wait_for_pr_checks)
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "pr_created"
     assert outcome.pr_url == "https://github.com/example/repo/pull/9999"

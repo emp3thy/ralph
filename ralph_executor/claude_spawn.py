@@ -293,6 +293,26 @@ def _wait_for_pr_checks(
     return ("pending", [])
 
 
+def _pr_number_from_url(pr_url: str) -> int | None:
+    """Extract the integer PR number from a GitHub PR URL.
+
+    Returns ``None`` when the URL does not match the expected
+    ``.../pull/<int>`` shape so callers can fall back to a non-``pr_created``
+    classification rather than crash.
+    """
+    parts = pr_url.rstrip("/").split("/")
+    try:
+        idx = parts.index("pull")
+    except ValueError:
+        return None
+    if idx + 1 >= len(parts):
+        return None
+    try:
+        return int(parts[idx + 1])
+    except ValueError:
+        return None
+
+
 def _tee_stream(
     stream: IO[str],
     prefix: str,
@@ -395,6 +415,19 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     # the pr-skill emits its own JSON envelope).
     feature_branch = f"ralph/{pbi.id}"
     pr_url = _query_open_pr_via_gh(cfg.repo_path, feature_branch)
+    # Gate pr_created on required CI checks being green. _wait_for_pr_checks
+    # polls up to 3 min per iteration; non-pass states fall through to
+    # ``partial`` in classify_outcome so the next iteration re-polls.
+    pr_check_state: PrCheckState = "pass"
+    pr_check_failed_names: list[str] = []
+    if pr_url is not None:
+        pr_number = _pr_number_from_url(pr_url)
+        if pr_number is None:
+            log.warning("could not parse PR number from %s", pr_url)
+            pr_check_state = "error"
+            pr_check_failed_names = [f"could not parse PR number from {pr_url}"]
+        else:
+            pr_check_state, pr_check_failed_names = _wait_for_pr_checks(cfg.repo_path, pr_number)
     return classify_outcome(
         pbi_dir=pbi.path,
         stdout=stdout_text,
@@ -402,6 +435,8 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
         exit_code=returncode,
         duration_seconds=duration,
         pr_url=pr_url,
+        pr_check_state=pr_check_state,
+        pr_check_failed_names=pr_check_failed_names,
     )
 
 
@@ -414,6 +449,8 @@ def classify_outcome(
     duration_seconds: float,
     pr_url: str | None = None,
     pr_lookup: Callable[[], str | None] | None = None,
+    pr_check_state: PrCheckState = "pass",
+    pr_check_failed_names: list[str] | None = None,
 ) -> ClaudeOutcome:
     """Map the raw (stdout, stderr, exit, on-disk, pr-state) tuple to a
     typed outcome.
@@ -421,14 +458,27 @@ def classify_outcome(
     Precedence (highest first):
       1. STUCK.md present on disk → ``stuck``
       2. Exit code non-zero       → ``error``
-      3. open PR exists for the feature branch → ``pr_created``
+      3. open PR exists for the feature branch AND
+         ``pr_check_state == "pass"`` → ``pr_created``
          (``pr_url`` is taken directly; if not provided, ``pr_lookup``
          is called once and its return value is used)
-      4. Otherwise                → ``partial``
+      4. open PR exists but ``pr_check_state == "fail"`` → ``partial``
+         with a synthetic stderr line naming the failed required checks
+         so the next iteration's Claude session reads them.
+      5. open PR exists but ``pr_check_state in ("pending", "error")``
+         → ``partial`` (no synthetic stderr; the next iteration's
+         polling will re-decide).
+      6. Otherwise                → ``partial``
 
     ``pr_url`` and ``pr_lookup`` exist so tests can inject the PR-state
     answer without monkeypatching subprocess. Production callers pass
-    ``pr_url`` (already resolved by ``_query_open_pr_via_gh``).
+    ``pr_url`` (already resolved by ``_query_open_pr_via_gh``) AND
+    ``pr_check_state`` (resolved by ``_wait_for_pr_checks``).
+
+    ``pr_check_state`` defaults to ``"pass"`` so legacy tests that
+    pre-date the CI-green verifier (and don't care about it) keep
+    classifying as ``pr_created`` when a ``pr_url`` is set. Production
+    code paths in ``spawn_claude_p`` always pass the real state.
     """
     stuck_present = (pbi_dir / _STUCK_FILENAME).is_file()
 
@@ -453,8 +503,34 @@ def classify_outcome(
     if pr_url is None and pr_lookup is not None:
         pr_url = pr_lookup()
     if pr_url:
+        if pr_check_state == "pass":
+            return ClaudeOutcome(
+                kind="pr_created",
+                pr_url=pr_url,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=exit_code,
+                duration_seconds=duration_seconds,
+            )
+        if pr_check_state == "fail":
+            names = pr_check_failed_names or []
+            synthetic = (
+                f"PR {pr_url} required checks failed: "
+                f"{', '.join(names) if names else '<unnamed>'}. "
+                f"Fix the failures next iteration."
+            )
+            joined_stderr = (stderr + "\n" + synthetic) if stderr else synthetic
+            return ClaudeOutcome(
+                kind="partial",
+                pr_url=pr_url,
+                stdout=stdout,
+                stderr=joined_stderr,
+                exit_code=exit_code,
+                duration_seconds=duration_seconds,
+            )
+        # pending or error: keep PBI in current/; next iteration re-polls.
         return ClaudeOutcome(
-            kind="pr_created",
+            kind="partial",
             pr_url=pr_url,
             stdout=stdout,
             stderr=stderr,
