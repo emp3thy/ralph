@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from ralph_executor.loop import (
     run_loop,
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
+from ralph_executor.safety.events import EventType, open_log
 from tests.executor.conftest import write_sample_pbi
 
 
@@ -451,3 +453,81 @@ def test_persist_iteration_writes_excludes_state_dir(
     tracked = _git(fake_repo, "ls-files", ".ralph/state/marker.txt").strip()
     assert tracked == "", "state/marker.txt was incorrectly tracked"
     assert state_marker.read_text(encoding="utf-8") == "local-only"
+
+
+def test_file_touched_event_emitted_on_iteration_commit(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After ``_persist_iteration_writes`` commits Claude's HISTORY.md
+    edit, a ``FILE_TOUCHED`` event must land in the log with the path
+    of the changed file in its payload. The cycle detector reserves
+    this event for future per-iteration rules; emit unconditionally
+    for forward compatibility.
+    """
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim WI-1234 → current/
+
+    history_path = fake_repo / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
+    history_before = history_path.read_text(encoding="utf-8")
+
+    def _appending_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+        history_path.write_text(
+            history_before + "\n## Iteration 1 — partial\n",
+            encoding="utf-8",
+        )
+        return ClaudeOutcome(
+            kind="partial",
+            pr_url=None,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
+    iterate_once(cfg_for_repo)
+
+    now = datetime.now(tz=UTC)
+    event_log = open_log(fake_repo)
+    try:
+        events = event_log.recent(window=timedelta(hours=1), now=now)
+    finally:
+        event_log.close()
+    touched = [ev for ev in events if ev.kind == EventType.FILE_TOUCHED]
+    assert len(touched) == 1, f"expected one FILE_TOUCHED event, got {touched!r}"
+    assert touched[0].pbi_id == "WI-1234"
+    files = touched[0].payload.get("files")
+    assert isinstance(files, list) and files, "FILE_TOUCHED payload must list files"
+    assert any("HISTORY.md" in path for path in files), (
+        f"expected HISTORY.md in touched files, got {files!r}"
+    )
+
+
+def test_file_touched_skipped_on_empty_commit(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Claude writes nothing inside the PBI dir during a partial
+    iteration, ``_persist_iteration_writes`` produces no new commit
+    and must NOT emit ``FILE_TOUCHED`` — empty payloads would dilute
+    the cycle detector's signal.
+    """
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
+
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+    iterate_once(cfg_for_repo)
+
+    now = datetime.now(tz=UTC)
+    event_log = open_log(fake_repo)
+    try:
+        events = event_log.recent(window=timedelta(hours=1), now=now)
+    finally:
+        event_log.close()
+    assert [ev for ev in events if ev.kind == EventType.FILE_TOUCHED] == []
