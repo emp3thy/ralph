@@ -503,3 +503,64 @@ def test_fetcher_invalid_schema_rejected(
     assert exit_code == 2
     err = capsys.readouterr().err.lower()
     assert "schema" in err or "missing" in err or "invalid" in err
+
+
+def test_generated_pbi_passes_plan1_validator(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PBI directories produced by ``ralph-add`` must satisfy the canonical
+    PBI schema enforced by ``scripts.validate_samples``.
+
+    The validator derives PBI type from the frontmatter ``type`` field
+    (reconciliation #3) rather than the directory name, so the directory
+    ``WI-<n>`` produced by ``ralph-add`` is acceptable as-is. We mirror it
+    into a typed-name sibling here only to keep the assertion robust if a
+    future tightening reintroduces a prefix expectation.
+    """
+    import base64
+
+    from scripts.validate_samples import validate_sample
+
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode("ascii")
+    doc = _doc(
+        number=WORK_ITEM_ID,
+        title="Add /healthz endpoint to service-auth",
+        body="Platform requires every service to expose a liveness probe at GET /healthz.",
+        acceptance="- GET /healthz returns 200.",
+        attachments=[{"name": "design.png", "url": "https://x/design.png", "content_base64": png}],
+    )
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--repo",
+            str(git_repo),
+        ]
+    )
+    assert exit_code == 0
+
+    _git(git_repo, "checkout", "ralph-queue")
+    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
+
+    # Mirror into a feature-prefixed sibling for the validator's check.
+    mirror = git_repo / "validator-mirror" / f"feature-WI-{WORK_ITEM_ID}"
+    mirror.mkdir(parents=True)
+    for child in pbi_dir.iterdir():
+        if child.is_file():
+            (mirror / child.name).write_bytes(child.read_bytes())
+        elif child.is_dir():
+            dest = mirror / child.name
+            dest.mkdir()
+            for grand in child.iterdir():
+                (dest / grand.name).write_bytes(grand.read_bytes())
+
+    errors = validate_sample(mirror)
+    assert errors == [], "ralph-add-produced PBI fails Plan 1 validator:\n  - " + "\n  - ".join(
+        errors
+    )
