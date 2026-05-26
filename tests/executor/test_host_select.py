@@ -23,6 +23,38 @@ from ralph_executor.host_select import (
 # --- select_host ------------------------------------------------------
 
 
+def test_select_host_override_beats_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``override`` is supplied (non-blank), it wins over $RALPH_GIT_HOST.
+    Mirrors the load_config layering where TOML/env feed cfg.git_host
+    and cli passes that as the override."""
+    monkeypatch.setenv("RALPH_GIT_HOST", "ado")
+    assert select_host(override="github") == "github"
+
+
+def test_select_host_override_blank_falls_back_to_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RALPH_GIT_HOST", "github")
+    assert select_host(override="") == "github"
+    assert select_host(override=None) == "github"
+
+
+def test_select_host_no_override_no_env_errors_mentioning_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Error message must point at BOTH env and TOML — operator could
+    fix it via either knob and shouldn't have to guess."""
+    monkeypatch.delenv("RALPH_GIT_HOST", raising=False)
+    with pytest.raises(HostSelectionError) as exc_info:
+        select_host()
+    msg = str(exc_info.value)
+    assert "RALPH_GIT_HOST" in msg
+    assert "git_host" in msg
+    assert "config.toml" in msg
+
+
 def test_select_host_returns_github(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

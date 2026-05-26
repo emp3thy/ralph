@@ -20,7 +20,7 @@ def _stub_prepare_host_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that exercise host-prep failure modes override this with their
     own monkeypatch.
     """
-    monkeypatch.setattr(cli, "prepare_host_environment", lambda: "github")
+    monkeypatch.setattr(cli, "prepare_host_environment", lambda **_: "github")
 
 
 def test_main_runs_one_iteration_with_once_flag(
@@ -113,7 +113,7 @@ def test_main_calls_prepare_host_environment_before_loop(
         order.append("load_config")
         return cfg_for_repo
 
-    def _record_prepare() -> str:
+    def _record_prepare(**_kwargs: object) -> str:
         order.append("prepare_host_environment")
         return "github"
 
@@ -142,8 +142,8 @@ def test_main_exits_2_on_host_selection_error(
     """A HostSelectionError aborts before the loop and prints to stderr."""
     iterate_calls: list[ExecutorConfig] = []
 
-    def _explode() -> str:
-        raise HostSelectionError("RALPH_GIT_HOST is required but unset or blank.")
+    def _explode(**_kwargs: object) -> str:
+        raise HostSelectionError("git host is required but unset or blank.")
 
     def _record(cfg: ExecutorConfig) -> IterationResult:
         iterate_calls.append(cfg)
@@ -157,7 +157,7 @@ def test_main_exits_2_on_host_selection_error(
     assert exit_code == 2
     assert iterate_calls == []  # loop never entered
     err = capsys.readouterr().err
-    assert "RALPH_GIT_HOST" in err
+    assert "git host" in err
 
 
 def test_main_uses_workspace_flag_to_resolve_repo(

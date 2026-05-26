@@ -40,6 +40,7 @@ CONFIG_TOML_STUB = """\
 # iteration_sleep_seconds = 30
 # claude_binary = "claude"
 # log_level = "INFO"
+# git_host = "github"   # or "ado"
 """
 
 
