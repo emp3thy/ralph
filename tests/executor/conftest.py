@@ -194,6 +194,8 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         ado_org_url="",
         ado_project="",
         halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
     )
 
 

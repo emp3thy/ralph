@@ -46,6 +46,11 @@ DEFAULT_MAX_ATTEMPTS = 20
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_ITERATION_SLEEP_SECONDS = 30.0
 DEFAULT_CLAUDE_BINARY = "claude"
+# CI-green verifier budget (Plan 18, Task 6). 6 polls × 30 s = 3-minute
+# wall budget per iteration; longer waits roll over into the next
+# iteration via classify_outcome -> ``partial``.
+DEFAULT_PR_CHECK_POLL_MAX_ATTEMPTS = 6
+DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS = 30.0
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
@@ -66,6 +71,9 @@ _TOML_KNOWN_KEYS = frozenset(
         "ado_org_url",
         "ado_project",
         "halt_webhook",
+        # CI-green verifier budget — see DEFAULT_PR_CHECK_POLL_* above.
+        "pr_check_poll_max_attempts",
+        "pr_check_poll_interval_seconds",
     }
 )
 
@@ -105,6 +113,12 @@ class ExecutorConfig:
     ado_org_url: str
     ado_project: str
     halt_webhook: str
+    # CI-green verifier budget consumed by
+    # ``ralph_executor.claude_spawn._wait_for_pr_checks``. ``max_attempts``
+    # × ``interval_seconds`` is the wall budget per iteration; on timeout
+    # the classifier returns ``partial`` and the next iteration re-polls.
+    pr_check_poll_max_attempts: int
+    pr_check_poll_interval_seconds: float
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -333,6 +347,20 @@ def load_config() -> ExecutorConfig:
         default="",
         source_label=source_label,
     )
+    pr_check_poll_max_attempts = _resolve_int(
+        name="pr_check_poll_max_attempts",
+        env_name="RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
+        toml_value=toml_overrides.get("pr_check_poll_max_attempts"),
+        default=DEFAULT_PR_CHECK_POLL_MAX_ATTEMPTS,
+        source_label=source_label,
+    )
+    pr_check_poll_interval_seconds = _resolve_float(
+        name="pr_check_poll_interval_seconds",
+        env_name="RALPH_PR_CHECK_POLL_INTERVAL_SECONDS",
+        toml_value=toml_overrides.get("pr_check_poll_interval_seconds"),
+        default=DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS,
+        source_label=source_label,
+    )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -348,4 +376,6 @@ def load_config() -> ExecutorConfig:
         ado_org_url=ado_org_url,
         ado_project=ado_project,
         halt_webhook=halt_webhook,
+        pr_check_poll_max_attempts=pr_check_poll_max_attempts,
+        pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
     )
