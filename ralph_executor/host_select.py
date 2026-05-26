@@ -123,13 +123,27 @@ def verify_auth_env(host: str) -> None:
     required = REQUIRED_AUTH_ENV[host]
     missing = [name for name in required if _is_blank(os.environ.get(name))]
     if missing:
+        # Map env-var names to their TOML-key equivalents (when one exists)
+        # so the operator sees both knobs in the error. Secrets stay
+        # env-only by policy.
+        toml_hint = {
+            "GH_OWNER": "gh_owner",
+            "ADO_ORG_URL": "ado_org_url",
+            "ADO_PROJECT": "ado_project",
+            # GH_TOKEN / ADO_PAT are secrets: env-only, no TOML hint.
+        }
+        per_var_hints = [
+            (
+                f"{name} (TOML: `{toml_hint[name]}` in <repo>/.ralph/config.toml)"
+                if name in toml_hint
+                else f"{name} (env-only; secret)"
+            )
+            for name in missing
+        ]
         raise HostSelectionError(
-            f"RALPH_GIT_HOST={host} but required auth env var(s) "
-            f"missing or blank: {missing}. "
-            f"Set all of {list(required)} before starting "
-            "ralph-executor. See docs/superpowers/plans/"
-            "2026-05-24-00-orchestrator.md#host-selection-architecture--"
-            "github-phase-1-and-ado-phase-2 for the full list."
+            f"git_host={host} but required auth value(s) missing or blank: "
+            + "; ".join(per_var_hints)
+            + ". Either export the env var(s) or set the TOML key(s) where shown."
         )
 
 
@@ -276,6 +290,12 @@ def prepare_host_environment(
 
     Returns the selected host so callers can log it.
     """
+    # Local import to avoid an import cycle (user_config imports
+    # ConfigError from config, and config-layer code doesn't pull
+    # host_select). Only consulted as a fallback below; tests that
+    # monkeypatch the env vars are unaffected.
+    from ralph_executor.user_config import read_claude_skills_dir, read_skills_root
+
     effective_skills_root: Path
     if skills_root is not None:
         effective_skills_root = skills_root
@@ -284,7 +304,11 @@ def prepare_host_environment(
         if env_root and env_root.strip():
             effective_skills_root = Path(env_root.strip())
         else:
-            effective_skills_root = _default_skills_root()
+            user_cfg_root = read_skills_root()
+            if user_cfg_root is not None:
+                effective_skills_root = user_cfg_root
+            else:
+                effective_skills_root = _default_skills_root()
 
     effective_claude_skills_dir: Path
     if claude_skills_dir is not None:
@@ -294,7 +318,11 @@ def prepare_host_environment(
         if env_claude and env_claude.strip():
             effective_claude_skills_dir = Path(env_claude.strip())
         else:
-            effective_claude_skills_dir = _default_claude_skills_dir()
+            user_cfg_claude = read_claude_skills_dir()
+            if user_cfg_claude is not None:
+                effective_claude_skills_dir = user_cfg_claude
+            else:
+                effective_claude_skills_dir = _default_claude_skills_dir()
 
     host = select_host(override=host_override)
     log.info("git_host=%s", host)

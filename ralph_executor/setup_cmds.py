@@ -41,6 +41,15 @@ CONFIG_TOML_STUB = """\
 # claude_binary = "claude"
 # log_level = "INFO"
 # git_host = "github"   # or "ado"
+#
+# Project identifiers + alerting (promoted from env-only). Set these
+# instead of exporting $GH_OWNER / $ADO_ORG_URL / $ADO_PROJECT /
+# $RALPH_HALT_WEBHOOK every shell. Secrets (GH_TOKEN, ADO_PAT) stay
+# env-only by policy.
+# gh_owner = "your-github-org-or-user"
+# ado_org_url = "https://dev.azure.com/your-org"
+# ado_project = "your-ado-project"
+# halt_webhook = "https://outlook.office.com/webhook/..."
 """
 
 

@@ -390,6 +390,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg.main_branch,
     )
 
+    # Sync TOML-sourced project identifiers / alerting into the process
+    # env BEFORE host_select runs. host_select.verify_auth_env and the
+    # pr-<host> + workitem-fetch-<host> skills all read these by name
+    # from the environment; this single bridge lets operators write
+    # them once in `.ralph/config.toml` instead of exporting per shell.
+    # Skips empty values so existing env values aren't clobbered with "".
+    for name, value in (
+        ("GH_OWNER", cfg.gh_owner),
+        ("ADO_ORG_URL", cfg.ado_org_url),
+        ("ADO_PROJECT", cfg.ado_project),
+        ("RALPH_HALT_WEBHOOK", cfg.halt_webhook),
+    ):
+        if value:
+            os.environ[name] = value
+
     # Stage host-specific skills BEFORE any iteration. If this fails,
     # Ralph can't operate against the chosen host -- abort immediately
     # so the operator fixes their env rather than silently running
