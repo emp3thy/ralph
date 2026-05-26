@@ -1,11 +1,11 @@
 ---
 id: STAGE-B-PLAN-19a-loop-events
 type: feature
-status: current
+status: pending-pr
 severity: high
 attempts: 0
 created_at: 2026-05-26T07:30:00+00:00
-updated_at: 2026-05-26T21:55:29+00:00
+updated_at: 2026-05-26T22:44:29+00:00
 depends_on: []
 ---
 
