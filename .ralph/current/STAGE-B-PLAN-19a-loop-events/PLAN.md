@@ -78,7 +78,7 @@ Update caller in `loop.py::_claim_pbi`.
 
 Commit: `feat(queue): emit PBI_OPENED on claim`
 
-### Task 4 — FILE_TOUCHED in `_persist_iteration_writes`
+### Task 4 — FILE_TOUCHED in `_persist_iteration_writes` ✅
 
 After the commit in `_persist_iteration_writes` (loop.py) succeeds, compute `git diff --name-only HEAD@{1} HEAD` and emit FILE_TOUCHED. Skip if the commit was a no-op (no files changed).
 

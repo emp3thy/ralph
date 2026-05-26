@@ -21,3 +21,10 @@
 - Lint/format/mypy: clean.
 - Fixture fix: `tests/executor/conftest.py::fake_repo` now writes `.gitignore` with `.ralph/state/` to mirror production. Without it, `commit_all`'s `git add -A` swallowed the runtime `events.db` into the queue commit, and the next `event_log.append` inside `_claim_pbi` produced a tracked-file modification that blocked the subsequent `git checkout main`. Recorded as a better-memory `failure` observation (id 0ced4747).
 - Notes: Tasks 4 + 5 + 6 remain.
+
+## Iteration 4 — 2026-05-26T23:50:00+00:00
+
+- Step 4: refactored `_persist_iteration_writes` to accept kwargs-only `event_log`, `now`; emits `FILE_TOUCHED` with the diff (`git_ops.diff_names(head_before, head_after)`) after the commit lands. Skipped on no-op commits via existing `head_after != head_before` guard, and on empty diff. Wired `iterate_once` to open the log, pass it through, and close in a try/finally.
+- Tests: green — added `test_file_touched_event_emitted_on_iteration_commit` + `test_file_touched_skipped_on_empty_commit` to `tests/executor/test_loop.py`. Full suite 373 passed / 2 skipped.
+- Lint/format/mypy: clean across the whole repo.
+- Notes: Tasks 5 + 6 remain. Commit landed as feature-branch `b576cb4`.
