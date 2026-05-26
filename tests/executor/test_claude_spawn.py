@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from ralph_executor.claude_spawn import (
+    _query_pr_checks,
+    _wait_for_pr_checks,
     classify_outcome,
     spawn_claude_p,
 )
@@ -210,6 +213,191 @@ def test_spawn_simulates_pr_creation(
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "pr_created"
     assert outcome.pr_url == "https://github.com/example/repo/pull/9999"
+
+
+def _fake_run_factory(
+    returncode: int, stdout: str, stderr: str = ""
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Build a ``subprocess.run`` stand-in returning a fixed CompletedProcess.
+
+    Patched into ``ralph_executor.claude_spawn.subprocess.run`` via
+    string-form ``monkeypatch.setattr`` so ``_query_pr_checks`` exercises
+    its parsing without hitting the real gh CLI.
+    """
+
+    def _fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "checks"],
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    return _fake_run
+
+
+def test_query_pr_checks_returns_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = '[{"bucket":"pass","name":"build"},{"bucket":"pass","name":"lint"}]'
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(0, payload))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "pass"
+    assert names == []
+
+
+def test_query_pr_checks_returns_fail_with_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh exits 1 when a required check has failed, but the JSON array on
+    stdout is still authoritative — _query_pr_checks must parse it."""
+    payload = (
+        '[{"bucket":"pass","name":"build"},'
+        '{"bucket":"fail","name":"unit-tests"},'
+        '{"bucket":"fail","name":"lint"}]'
+    )
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(1, payload))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "fail"
+    assert names == ["unit-tests", "lint"]
+
+
+def test_query_pr_checks_returns_pending_on_exit_8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh exits 8 with empty stdout when a required check is still
+    pending — _query_pr_checks must classify as ``pending`` so the
+    polling loop keeps waiting rather than erroring out."""
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(8, ""))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "pending"
+    assert names == []
+
+
+def test_query_pr_checks_returns_error_on_gh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``gh`` not installed (FileNotFoundError) is the canonical
+    ``error`` path — _query_pr_checks must not raise."""
+
+    def _explode(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh not on PATH")
+
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _explode)
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "error"
+    assert names and "gh not on PATH" in names[0]
+
+
+def test_wait_for_pr_checks_polls_until_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two pending polls then pass — loop must keep going past pending and
+    return as soon as a terminal state arrives."""
+    sequence: list[tuple[str, list[str]]] = [
+        ("pending", []),
+        ("pending", []),
+        ("pass", []),
+    ]
+    calls = {"n": 0}
+
+    def _fake_query(_repo: Path, _num: int, **_kwargs: object) -> tuple[str, list[str]]:
+        result = sequence[calls["n"]]
+        calls["n"] += 1
+        return result
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("ralph_executor.claude_spawn._query_pr_checks", _fake_query)
+    monkeypatch.setattr("ralph_executor.claude_spawn.time.sleep", lambda s: sleeps.append(s))
+    state, names = _wait_for_pr_checks(tmp_path, 42, max_polls=6, interval_seconds=0.5)
+    assert state == "pass"
+    assert names == []
+    assert calls["n"] == 3
+    # Two sleeps between three polls; final pass does not trigger a sleep.
+    assert sleeps == [0.5, 0.5]
+
+
+def test_wait_for_pr_checks_budget_exhausted_returns_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All polls report pending — caller treats the returned ``pending``
+    as ``partial`` so the NEXT iteration re-polls. The loop must not
+    sleep after the final attempt."""
+    calls = {"n": 0}
+
+    def _always_pending(*_args: object, **_kwargs: object) -> tuple[str, list[str]]:
+        calls["n"] += 1
+        return ("pending", [])
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("ralph_executor.claude_spawn._query_pr_checks", _always_pending)
+    monkeypatch.setattr("ralph_executor.claude_spawn.time.sleep", lambda s: sleeps.append(s))
+    state, names = _wait_for_pr_checks(tmp_path, 42, max_polls=3, interval_seconds=0.25)
+    assert state == "pending"
+    assert names == []
+    assert calls["n"] == 3
+    # Two sleeps between three polls; no sleep after the last one.
+    assert sleeps == [0.25, 0.25]
+
+
+def test_classify_outcome_pass_returns_pr_created(tmp_path: Path) -> None:
+    """Default ``pr_check_state="pass"`` keeps pre-verifier callers
+    working; the explicit form behaves identically."""
+    pbi_dir = tmp_path / "WI-pass"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/1",
+        pr_check_state="pass",
+    )
+    assert outcome.kind == "pr_created"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/1"
+
+
+def test_classify_outcome_fail_returns_partial_with_stderr(tmp_path: Path) -> None:
+    """A PR exists but a required check failed → ``partial`` with the
+    failing check names appended to stderr so the next iteration's
+    Claude session can read them."""
+    pbi_dir = tmp_path / "WI-fail"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="existing stderr line",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/2",
+        pr_check_state="fail",
+        pr_check_failed_names=["unit-tests", "lint"],
+    )
+    assert outcome.kind == "partial"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/2"
+    assert "existing stderr line" in outcome.stderr
+    assert "unit-tests" in outcome.stderr
+    assert "lint" in outcome.stderr
+    assert "Fix the failures next iteration" in outcome.stderr
+
+
+def test_classify_outcome_pending_returns_partial(tmp_path: Path) -> None:
+    """Pending and error states must NOT emit a synthetic stderr line —
+    the next iteration's polling decides; we don't want Claude to chase
+    a transient pending as if it were a fail."""
+    pbi_dir = tmp_path / "WI-pending"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/3",
+        pr_check_state="pending",
+    )
+    assert outcome.kind == "partial"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/3"
+    assert outcome.stderr == ""
 
 
 def test_spawn_simulates_stuck(
