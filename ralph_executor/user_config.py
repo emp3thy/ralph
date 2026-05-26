@@ -1,17 +1,23 @@
 """Per-user configuration file for ralph-executor.
 
-Lives at ``~/.ralph/config.toml`` and currently holds a single key:
+Lives at ``~/.ralph/config.toml`` and holds *per-machine* knobs:
 
-  ``ralph_home``  --  directory under which every per-repo ralph
-                      workspace lives (referenced by ``--workspace NAME``).
+  ``ralph_home``         -- directory under which every per-repo ralph
+                            workspace lives (referenced by ``--workspace NAME``)
+  ``skills_root``        -- source ``skills/`` tree containing
+                            ``pr-<host>/`` and ``workitem-fetch-<host>/``
+  ``claude_skills_dir``  -- where staged ``pr/`` + ``workitem-fetch/`` end up
+                            (defaults to ``~/.claude/skills``)
 
 Written by ``ralph-executor init`` and read at runtime by the workspace
-resolution path. ``$RALPH_HOME`` environment variable always overrides
-the file for the daemon / systemd escape-hatch case.
+resolution path and ``host_select.prepare_host_environment``. The
+matching environment variables (``$RALPH_HOME``, ``$RALPH_SKILLS_ROOT``,
+``$RALPH_CLAUDE_SKILLS_DIR``) always override the file for the daemon /
+systemd escape-hatch case.
 
-Layout intentionally minimal: this file holds *user* preferences (where
-to put my ralph clones), not *project* knobs (which already live in
-``<repo>/.ralph/config.toml`` per Plan-7 layering).
+Layout intentionally minimal: this file holds *user* preferences
+(where things live on THIS machine), not *project* knobs (which live
+in ``<repo>/.ralph/config.toml`` per Plan-7 layering).
 """
 
 from __future__ import annotations
@@ -31,9 +37,8 @@ def user_config_path() -> Path:
     return Path.home() / ".ralph" / "config.toml"
 
 
-def read_ralph_home() -> Path | None:
-    """Return the ``ralph_home`` value from the user config file, or None
-    if the file does not exist OR the key is absent.
+def _load_user_config() -> dict[str, object]:
+    """Read the user config TOML, returning {} if absent.
 
     Malformed TOML / wrong-type value / unreadable file raises
     ``ConfigError`` so a broken file surfaces a clear error rather than
@@ -41,7 +46,7 @@ def read_ralph_home() -> Path | None:
     """
     cfg_file = user_config_path()
     if not cfg_file.is_file():
-        return None
+        return {}
     try:
         with cfg_file.open("rb") as fh:
             data = tomllib.load(fh)
@@ -50,19 +55,50 @@ def read_ralph_home() -> Path | None:
     except OSError as exc:
         # Catches permission denied, IO errors, and the is_file/open
         # race (file deleted between the existence check and open).
-        # Both callers only catch ConfigError; without this wrap, a
-        # permission-denied user-config file would surface as a raw
-        # traceback rather than the clean operator-facing error the
-        # docstring promises.
+        # Callers only catch ConfigError; without this wrap, a permission
+        # error would surface as a raw traceback rather than the clean
+        # operator-facing error the docstring promises.
         raise ConfigError(f"{cfg_file}: cannot read file: {exc}") from exc
-    raw = data.get("ralph_home")
+    return data
+
+
+def _read_path_key(key: str) -> Path | None:
+    """Read a Path-valued key from the user config; return None if absent."""
+    data = _load_user_config()
+    raw = data.get(key)
     if raw is None:
         return None
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError(
-            f"{cfg_file}: ralph_home must be a non-empty string, got {type(raw).__name__}"
+            f"{user_config_path()}: {key} must be a non-empty string, got {type(raw).__name__}"
         )
     return Path(raw.strip()).expanduser()
+
+
+def read_ralph_home() -> Path | None:
+    """Return the ``ralph_home`` value from the user config, or None.
+
+    Errors on malformed TOML / wrong-type value / unreadable file.
+    """
+    return _read_path_key("ralph_home")
+
+
+def read_skills_root() -> Path | None:
+    """Return the ``skills_root`` value from the user config, or None.
+
+    ``host_select.prepare_host_environment`` falls back to this between
+    its explicit kwarg / env-var layer and the source-checkout default.
+    """
+    return _read_path_key("skills_root")
+
+
+def read_claude_skills_dir() -> Path | None:
+    """Return the ``claude_skills_dir`` value from the user config, or None.
+
+    ``host_select.prepare_host_environment`` falls back to this between
+    its explicit kwarg / env-var layer and the ``~/.claude/skills`` default.
+    """
+    return _read_path_key("claude_skills_dir")
 
 
 def _toml_escape_basic_string(value: str) -> str:

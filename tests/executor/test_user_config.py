@@ -8,7 +8,9 @@ import pytest
 
 from ralph_executor.config import ConfigError
 from ralph_executor.user_config import (
+    read_claude_skills_dir,
     read_ralph_home,
+    read_skills_root,
     user_config_path,
     write_ralph_home,
 )
@@ -114,6 +116,36 @@ def test_write_escapes_control_characters_in_path(fake_home: Path) -> None:
     write_ralph_home(weird)
     # Critical: re-reading must NOT raise (file is valid TOML).
     assert read_ralph_home() == weird
+
+
+def test_read_skills_root_returns_none_when_absent(fake_home: Path) -> None:
+    assert read_skills_root() is None
+
+
+def test_read_skills_root_picks_up_value(fake_home: Path) -> None:
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('skills_root = "/opt/ralph/skills"\n', encoding="utf-8")
+    assert read_skills_root() == Path("/opt/ralph/skills")
+
+
+def test_read_claude_skills_dir_returns_none_when_absent(fake_home: Path) -> None:
+    assert read_claude_skills_dir() is None
+
+
+def test_read_claude_skills_dir_picks_up_value(fake_home: Path) -> None:
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('claude_skills_dir = "~/custom-skills"\n', encoding="utf-8")
+    assert read_claude_skills_dir() == Path("~/custom-skills").expanduser()
+
+
+def test_read_skills_root_rejects_non_string(fake_home: Path) -> None:
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("skills_root = 42\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="skills_root must be a non-empty string"):
+        read_skills_root()
 
 
 def test_read_expands_user_in_value(fake_home: Path) -> None:

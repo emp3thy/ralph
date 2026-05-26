@@ -32,6 +32,10 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
         "RALPH_GIT_HOST",
+        "GH_OWNER",
+        "ADO_ORG_URL",
+        "ADO_PROJECT",
+        "RALPH_HALT_WEBHOOK",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -146,6 +150,48 @@ def test_git_host_empty_when_neither_set(clean_env: Path) -> None:
     pointing at both knobs."""
     cfg = load_config()
     assert cfg.git_host == ""
+
+
+def test_promoted_keys_picked_up_from_toml(clean_env: Path) -> None:
+    """gh_owner / ado_org_url / ado_project / halt_webhook flow from
+    TOML into ExecutorConfig — removes the need to export them per shell."""
+    _write_toml(
+        clean_env,
+        """
+        gh_owner = "emp3thy"
+        ado_org_url = "https://dev.azure.com/example"
+        ado_project = "example-proj"
+        halt_webhook = "https://hooks.example/halt"
+        """,
+    )
+    cfg = load_config()
+    assert cfg.gh_owner == "emp3thy"
+    assert cfg.ado_org_url == "https://dev.azure.com/example"
+    assert cfg.ado_project == "example-proj"
+    assert cfg.halt_webhook == "https://hooks.example/halt"
+
+
+def test_env_wins_over_toml_for_promoted_keys(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, 'gh_owner = "from-toml"\nado_project = "from-toml-ado"\n')
+    monkeypatch.setenv("GH_OWNER", "from-env")
+    monkeypatch.setenv("ADO_PROJECT", "from-env-ado")
+    cfg = load_config()
+    assert cfg.gh_owner == "from-env"
+    assert cfg.ado_project == "from-env-ado"
+
+
+def test_promoted_keys_empty_when_neither_set(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for var in ("GH_OWNER", "ADO_ORG_URL", "ADO_PROJECT", "RALPH_HALT_WEBHOOK"):
+        monkeypatch.delenv(var, raising=False)
+    cfg = load_config()
+    assert cfg.gh_owner == ""
+    assert cfg.ado_org_url == ""
+    assert cfg.ado_project == ""
+    assert cfg.halt_webhook == ""
 
 
 def test_toml_invalid_log_level_raises(clean_env: Path) -> None:
