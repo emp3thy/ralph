@@ -68,9 +68,26 @@ def _build_argv(cfg: ExecutorConfig, pbi: PBI) -> list[str]:
     path is forwarded both as an argument (the standing PROMPT.md tells
     Ralph to read it) and via the ``RALPH_PBI_DIR`` environment variable
     (which test stand-ins use to locate the PBI on disk).
+
+    ``--output-format stream-json --verbose`` makes Claude emit one
+    line-delimited JSON event per step (system init, assistant message,
+    tool use, result, etc.) and FLUSH after each line. Without this,
+    Node's default block-buffering on a piped stdout means the parent
+    sees no output until Claude exits — fatal for operator visibility on
+    Windows, where ``bufsize=1`` does not propagate line-buffering to
+    the child's CRT (see BUG-claude-stdout-streaming-windows).
     """
+    # Order matters: the prompt string MUST immediately follow `-p`,
+    # otherwise Claude's arg parser (commander/yargs style) consumes the
+    # next token as the prompt value. Putting `--output-format` between
+    # `-p` and the prompt would make Claude treat "--output-format" as
+    # the prompt and the actual prompt as an unrecognised positional.
+    # Stream-json flags go BEFORE `-p`.
     argv = [
         cfg.claude_binary,
+        "--output-format",
+        "stream-json",
+        "--verbose",
         "-p",
         (
             "Read ./prompt/PROMPT.md and work the PBI in "
@@ -320,14 +337,70 @@ def _pr_number_from_url(pr_url: str) -> int | None:
         return None
 
 
+def _summarise_stream_json_line(raw_line: str) -> str:
+    """Return a compact one-line summary of a Claude stream-json event.
+
+    Claude's ``--output-format stream-json`` emits one JSON envelope per
+    line. Logging the raw envelope is verbose and hard to skim; this
+    helper extracts the most useful fields per event type and falls back
+    to the raw (stripped) line on any parse failure. Truncates long
+    text payloads at 200 chars so log lines stay scannable.
+    """
+    stripped = raw_line.rstrip()
+    try:
+        event = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return stripped
+    if not isinstance(event, dict):
+        return stripped
+    event_type = str(event.get("type", "?"))
+    subtype = event.get("subtype")
+    if event_type == "assistant":
+        message = event.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = str(block.get("text", "")).strip().replace("\n", " ")
+                        if text:
+                            return f"assistant: {text[:200]}"
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool = block.get("name", "?")
+                        return f"assistant: tool_use {tool}"
+        return "assistant: (no text)"
+    if event_type == "system" and subtype:
+        hook_name = event.get("hook_name")
+        if hook_name:
+            return f"system/{subtype}: {hook_name}"
+        return f"system/{subtype}"
+    if event_type == "result":
+        is_error = event.get("is_error")
+        duration = event.get("duration_ms")
+        marker = "error" if is_error else (subtype or "ok")
+        if isinstance(duration, int):
+            return f"result: {marker} ({duration} ms)"
+        return f"result: {marker}"
+    if subtype:
+        return f"{event_type}/{subtype}"
+    return event_type
+
+
 def _tee_stream(
     stream: IO[str],
     prefix: str,
     buf: list[str],
     err_slot: list[BaseException],
 ) -> None:
-    """Drain a subprocess stream line-by-line: log each line live with a
-    prefix AND accumulate the raw content into ``buf`` for the caller.
+    """Drain a subprocess stream line-by-line: log a compact per-line
+    summary live with a prefix AND accumulate the raw content into
+    ``buf`` for the caller.
+
+    Lines that parse as stream-json envelopes are summarised via
+    :func:`_summarise_stream_json_line`; any other line (e.g. a stderr
+    warning) is logged verbatim. The raw line is always preserved in
+    ``buf`` so downstream consumers (the classifier, diagnostics) see
+    the unaltered output.
 
     Any exception is captured into ``err_slot`` so the parent can re-raise
     it after join — otherwise it would be silently swallowed by Python's
@@ -337,7 +410,8 @@ def _tee_stream(
     try:
         for raw_line in stream:
             buf.append(raw_line)
-            log.info("%s %s", prefix, raw_line.rstrip())
+            summary = _summarise_stream_json_line(raw_line)
+            log.info("%s %s", prefix, summary)
     except BaseException as exc:  # noqa: BLE001 - re-raised in parent
         err_slot.append(exc)
 

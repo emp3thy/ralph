@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -10,6 +13,8 @@ import pytest
 
 from ralph_executor.claude_spawn import (
     _query_pr_checks,
+    _summarise_stream_json_line,
+    _tee_stream,
     _wait_for_pr_checks,
     classify_outcome,
     spawn_claude_p,
@@ -427,3 +432,142 @@ def test_spawn_simulates_stuck(
     )
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "stuck"
+
+
+def test_spawn_passes_stream_json_flags_to_claude(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """The spawner must pass ``--output-format stream-json --verbose`` so
+    Claude flushes one JSON envelope per event on Windows. Without these
+    flags, Node block-buffers stdout when stdout is a pipe and the
+    operator sees nothing until Claude exits
+    (BUG-claude-stdout-streaming-windows)."""
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    # Print argv one element per line so the assertions below can check
+    # both presence AND ordering. Substring-matching the joined string
+    # would let `-p --output-format stream-json --verbose <prompt>` pass
+    # while still being broken (commander/yargs would treat `-p`'s value
+    # as `--output-format`).
+    write_claude_script(
+        fake_claude_binary,
+        "import sys\nprint('\\n'.join(sys.argv[1:]))\nsys.exit(0)\n",
+    )
+    outcome = spawn_claude_p(cfg_for_repo, pbi)
+    argv_lines = outcome.stdout.splitlines()
+    assert "--output-format" in argv_lines
+    assert "stream-json" in argv_lines
+    assert "--verbose" in argv_lines
+    assert "-p" in argv_lines
+    # The token immediately after `-p` must be the prompt string, not
+    # one of the stream-json flags — otherwise Claude consumes the flag
+    # as the prompt value (BugBot finding on PR #24).
+    p_index = argv_lines.index("-p")
+    prompt_token = argv_lines[p_index + 1]
+    assert prompt_token.startswith("Read ./prompt/PROMPT.md"), (
+        f"argv element after -p must be the prompt; got {prompt_token!r}"
+    )
+
+
+def test_summarise_stream_json_line_extracts_assistant_text() -> None:
+    """Assistant events get summarised to their first text block so the
+    operator sees what Claude is actually saying, not the JSON envelope."""
+    raw = '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}\n'
+    assert _summarise_stream_json_line(raw) == "assistant: hello world"
+
+
+def test_summarise_stream_json_line_handles_tool_use() -> None:
+    """tool_use blocks surface the tool name — tool calls are the most
+    interesting events to watch live."""
+    raw = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}\n'
+    )
+    assert _summarise_stream_json_line(raw) == "assistant: tool_use Bash"
+
+
+def test_summarise_stream_json_line_handles_system_event() -> None:
+    raw = '{"type":"system","subtype":"init","cwd":"/tmp"}\n'
+    assert _summarise_stream_json_line(raw) == "system/init"
+
+
+def test_summarise_stream_json_line_handles_result() -> None:
+    raw = '{"type":"result","subtype":"success","is_error":false,"duration_ms":2517}\n'
+    assert _summarise_stream_json_line(raw) == "result: success (2517 ms)"
+
+
+def test_summarise_stream_json_line_falls_back_for_non_json() -> None:
+    """Stderr lines and pre-init warnings are not JSON — fall back to
+    the raw stripped line so operators still see them."""
+    raw = "Warning: no stdin data received in 3s\n"
+    assert _summarise_stream_json_line(raw) == "Warning: no stdin data received in 3s"
+
+
+class _TimedBuf(list[str]):
+    """Subclass of list that records monotonic timestamps on append.
+
+    Used by the streaming regression test to assert lines arrived
+    incrementally during the child's lifetime, not all at once at exit.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timestamps: list[float] = []
+
+    def append(self, item: str) -> None:
+        self.timestamps.append(time.monotonic())
+        super().append(item)
+
+
+def test_tee_stream_delivers_lines_incrementally(tmp_path: Path) -> None:
+    """Regression: a child that prints ``tick-N`` with 200ms gaps and
+    flushes per line must produce a non-empty buffer BEFORE the child
+    exits, with appends spread across time rather than batched at the
+    end. This guards against Windows-pipe block-buffering on the parent
+    side. (The child-side fix — passing ``--output-format stream-json``
+    to Claude — is verified by
+    ``test_spawn_passes_stream_json_flags_to_claude``.)"""
+    script = tmp_path / "ticker.py"
+    script.write_text(
+        "import sys, time\n"
+        "for i in range(3):\n"
+        "    sys.stdout.write(f'tick-{i}\\n')\n"
+        "    sys.stdout.flush()\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-u", str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    buf = _TimedBuf()
+    stderr_buf: list[str] = []
+    stdout_err: list[BaseException] = []
+    stderr_err: list[BaseException] = []
+    t_out = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stdout, "[tick]", buf, stdout_err),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stderr, "[tick!]", stderr_buf, stderr_err),
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+    proc.wait()
+    t_out.join()
+    t_err.join()
+    assert not stdout_err and not stderr_err
+    assert [line.rstrip() for line in buf] == ["tick-0", "tick-1", "tick-2"]
+    # Three lines with 200ms gaps → the gap between the first append and
+    # the last must be at least 300ms. A buffered child would deliver all
+    # three within a few ms of each other at exit.
+    span = buf.timestamps[-1] - buf.timestamps[0]
+    assert span >= 0.3, f"lines arrived in {span:.3f}s; expected >= 0.3s with 200ms child gaps"
