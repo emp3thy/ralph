@@ -247,6 +247,52 @@ def _query_pr_checks(
     return ("error", ["unexpected bucket states: " + repr(sorted(buckets))])
 
 
+def _wait_for_pr_checks(
+    repo_path: Path,
+    pr_number: int,
+    *,
+    max_polls: int = 6,
+    interval_seconds: float = 30.0,
+) -> tuple[PrCheckState, list[str]]:
+    """Poll ``_query_pr_checks`` until terminal or the budget is exhausted.
+
+    Polls up to ``max_polls`` times, sleeping ``interval_seconds`` between
+    attempts. Total wall budget = ``max_polls * interval_seconds`` (default
+    6 × 30 s = 3 minutes per iteration).
+
+    A state is **terminal** if it lets the classifier make a confident
+    decision now:
+
+      * ``pass``    — CI green; classifier returns ``pr_created``.
+      * ``fail``    — at least one required check failed; classifier
+                      returns ``partial`` with the failed names visible
+                      on stderr.
+      * ``error``   — gh-side problem (binary missing, timeout, malformed
+                      JSON). Retrying within the same iteration is
+                      unlikely to help and would just burn the budget;
+                      we surface the error to the caller, which treats
+                      it as ``partial`` so the NEXT iteration re-polls.
+
+    Non-terminal:
+
+      * ``pending`` — at least one check is still running. Sleep and
+                      re-poll.
+
+    Returns ``("pending", [])`` if the budget is exhausted without a
+    decision; the caller treats this as ``partial`` so the PBI stays in
+    ``current/`` and the next iteration polls again.
+    """
+    if max_polls < 1:
+        return ("pending", [])
+    for attempt in range(max_polls):
+        state, names = _query_pr_checks(repo_path, pr_number)
+        if state != "pending":
+            return (state, names)
+        if attempt < max_polls - 1:
+            time.sleep(interval_seconds)
+    return ("pending", [])
+
+
 def _tee_stream(
     stream: IO[str],
     prefix: str,
