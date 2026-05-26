@@ -305,7 +305,15 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             )
 
         if outcome.kind == "pr_created":
-            move_current_to_pending_pr(cfg, pbi)
+            touched = git_ops.diff_names(cfg.repo_path, cfg.main_branch, _feature_branch_name(pbi))
+            move_current_to_pending_pr(
+                cfg,
+                pbi,
+                event_log=event_log,
+                pr_url=outcome.pr_url,
+                touched_files=touched,
+                now=now,
+            )
             return outcome, IterationResult(
                 outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
             )

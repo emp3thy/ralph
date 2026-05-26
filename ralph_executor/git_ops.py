@@ -163,3 +163,24 @@ def mv(repo: Path, src: Path, dst: Path) -> None:
 def rev_parse_head(repo: Path) -> str:
     """Return the 40-char sha of the current HEAD."""
     return _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def diff_names(repo: Path, base: str, head: str) -> list[str]:
+    """Return the list of paths changed between ``base`` and ``head``.
+
+    Runs ``git diff --name-only <base>..<head>``. Returns an empty list if
+    either ref is missing or the diff command fails (the cycle detector's
+    payload contract tolerates an empty ``files`` list, so a partial
+    failure is preferable to crashing the move).
+    """
+    result = _run_git(repo, "diff", "--name-only", f"{base}..{head}", check=False)
+    if result.returncode != 0:
+        log.warning(
+            "diff_names %s..%s failed (%d): %s",
+            base,
+            head,
+            result.returncode,
+            result.stderr.strip(),
+        )
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
