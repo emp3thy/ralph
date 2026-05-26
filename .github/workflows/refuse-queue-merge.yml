@@ -1,0 +1,31 @@
+name: refuse ralph-queue -> main merges
+
+# `ralph-queue` is the queue state branch (.ralph/inbox|current|... PBI
+# trees and per-iteration commits). It must NEVER merge into `main` —
+# that would land queue state on the source-of-truth code branch and
+# poison subsequent operator clones / new ralph workspaces.
+#
+# Main -> ralph-queue is the legitimate direction (operator brings the
+# latest executor code into the queue checkout); the reverse direction
+# is always an accident.
+#
+# This workflow fails the PR check when the head is `ralph-queue` and
+# the base is `main`. Mark it as a required status check on `main` in
+# the GitHub branch protection settings to make it blocking.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  refuse:
+    runs-on: ubuntu-latest
+    steps:
+      - name: reject ralph-queue -> main
+        if: github.head_ref == 'ralph-queue'
+        run: |
+          echo "::error::ralph-queue must never merge into main — queue state belongs on the queue branch only."
+          exit 1
+      - name: allow non-queue branches
+        if: github.head_ref != 'ralph-queue'
+        run: echo "head=${{ github.head_ref }} -> ok"
