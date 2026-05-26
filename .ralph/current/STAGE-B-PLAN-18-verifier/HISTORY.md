@@ -27,3 +27,9 @@
 - `_query_pr_checks` tests patch `ralph_executor.claude_spawn.subprocess.run` via string-form `monkeypatch.setattr` because mypy rejects the attribute-form `claude_spawn.subprocess` patch (subprocess is not re-exported). `_wait_for_pr_checks` tests patch `_query_pr_checks` plus `time.sleep` so the loop runs instantly and asserts the exact sleep cadence (sleep BETWEEN polls, not AFTER the final one). The `_fake_run_factory` helper builds a fixed `subprocess.CompletedProcess` so each test states only the gh exit code + JSON payload it cares about.
 - Tests: full `uv run pytest` green (374 passed, 2 skipped). `uv run ruff check .` clean; `uv run ruff format --check .` clean; `uv run mypy ralph_executor scripts skills tests` clean (60 source files).
 - Notes: Tasks 5 (NO-OP docstring) and 6 (TOML knobs) remain. Commit 032d77f on ralph/STAGE-B-PLAN-18-verifier.
+
+## Iteration 5 — 2026-05-27T00:00:00+00:00
+
+- Step 5 (Task 5): added scope-boundary paragraph to `_run_ralph` docstring in `ralph_executor/loop.py` distinguishing Plan 18's spawn-time CI-green verifier (consumed via `ClaudeOutcome` to gate `pr_created`) from `pr.green_then_red` post-merge regression detection (sweep observer, Plan 19b). NO-OP code-wise as PLAN specified — verifier was already wired through `classify_outcome` in Task 3.
+- Tests: full `uv run pytest` green (374 passed, 2 skipped). `uv run ruff check .` clean; `uv run ruff format --check .` clean; `uv run mypy ralph_executor scripts skills tests` clean (60 source files).
+- Notes: Task 6 (TOML knobs `pr_check_poll_max_attempts` / `pr_check_poll_interval_seconds`) remains — next iteration plumbs them into `_wait_for_pr_checks` via cfg. Commit 32f2bee on ralph/STAGE-B-PLAN-18-verifier.
