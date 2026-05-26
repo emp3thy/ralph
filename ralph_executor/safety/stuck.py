@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from ralph_executor.safety.events import Event, EventType
+from ralph_executor.safety.events import Event, EventLog, EventType, signature_from_text
 
 _MAX_REASON_BYTES = 2048
 _TRUNCATION_MARKER = "...[truncated]"
@@ -87,7 +87,13 @@ def move_to_blocked(*, repo: Path, pbi_dir: Path, reason: str) -> Path:
     return target
 
 
-def handle_stuck(*, repo: Path, pbi_dir: Path, now: datetime) -> StuckOutcome | None:
+def handle_stuck(
+    *,
+    repo: Path,
+    pbi_dir: Path,
+    now: datetime,
+    event_log: EventLog | None = None,
+) -> StuckOutcome | None:
     """Top-level Layer 1 hook called by the executor's loop driver.
 
     If ``STUCK.md`` is present, moves the PBI to ``blocked/``, appends
@@ -96,11 +102,26 @@ def handle_stuck(*, repo: Path, pbi_dir: Path, now: datetime) -> StuckOutcome | 
     ``pbi.blocked`` event the caller should append to the event log.
     Returns ``None`` if there is no STUCK.md (the iteration's normal
     outcome).
+
+    When ``event_log`` is provided, a ``signature.observed`` event is
+    appended carrying the hashed reason text so the cycle detector's
+    ``signature_recurrence`` rule can spot the same blocker recurring
+    across PBIs. Emission happens before ``move_to_blocked`` so the
+    signature is logged even if the move fails.
     """
     if not detect_stuck(pbi_dir):
         return None
     reason = read_stuck_reason(pbi_dir)
     pbi_id = pbi_dir.name
+    if event_log is not None:
+        event_log.append(
+            Event(
+                kind=EventType.SIGNATURE_OBSERVED,
+                recorded_at=now,
+                pbi_id=pbi_id,
+                payload={"signature": signature_from_text(reason)},
+            )
+        )
     target = move_to_blocked(repo=repo, pbi_dir=pbi_dir, reason=reason)
     event = Event(
         kind=EventType.PBI_BLOCKED,

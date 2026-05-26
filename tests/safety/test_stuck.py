@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from ralph_executor.safety.events import EventLog, EventType, signature_from_text
 from ralph_executor.safety.stuck import (
     StuckOutcome,
     detect_stuck,
@@ -131,3 +132,42 @@ def test_handle_stuck_returns_none_when_no_stuck_file(
     now = datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC)
     outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now)
     assert outcome is None
+
+
+def test_signature_observed_event_emitted_on_stuck(
+    repo_dir: Path,
+    event_log: EventLog,
+) -> None:
+    reason_body = "blocking: dependency missing\n"
+    pbi_dir = write_pbi_dir(
+        repo_dir,
+        bucket="current",
+        pbi_id="WI-9",
+        extra_files={"STUCK.md": reason_body},
+    )
+    now = datetime(2026, 5, 27, 0, 0, 0, tzinfo=UTC)
+    outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now, event_log=event_log)
+    assert outcome is not None
+    recent = event_log.recent(window=timedelta(minutes=1), now=now)
+    signatures = [e for e in recent if e.kind == EventType.SIGNATURE_OBSERVED]
+    assert len(signatures) == 1
+    assert signatures[0].pbi_id == "WI-9"
+    assert signatures[0].recorded_at == now
+    assert signatures[0].payload == {
+        "signature": signature_from_text(reason_body.strip()),
+    }
+
+
+def test_handle_stuck_emits_no_signature_when_event_log_omitted(
+    repo_dir: Path,
+) -> None:
+    pbi_dir = write_pbi_dir(
+        repo_dir,
+        bucket="current",
+        pbi_id="WI-10",
+        extra_files={"STUCK.md": "stuck\n"},
+    )
+    now = datetime(2026, 5, 27, 0, 0, 0, tzinfo=UTC)
+    outcome = handle_stuck(repo=repo_dir, pbi_dir=pbi_dir, now=now)
+    assert outcome is not None
+    assert outcome.event.kind == EventType.PBI_BLOCKED

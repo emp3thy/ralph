@@ -358,6 +358,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 repo=cfg.repo_path,
                 pbi_dir=pbi.path,
                 now=datetime.now(tz=UTC),
+                event_log=event_log,
             )
             if stuck_outcome is not None:
                 event_log.append(stuck_outcome.event)
