@@ -1,11 +1,11 @@
 ---
 id: BUG-claude-stdout-streaming-windows
 type: bug
-status: current
+status: pending-pr
 severity: high
 attempts: 0
 created_at: 2026-05-26T22:15:00+00:00
-updated_at: 2026-05-26T22:44:32+00:00
+updated_at: 2026-05-26T22:54:48+00:00
 depends_on: []
 ---
 
