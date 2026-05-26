@@ -38,7 +38,7 @@ Used by every emit site that needs a signature.
 
 Commit: `feat(events): signature_from_text helper for cycle-detector event payloads`
 
-### Task 2 — PR_CREATED in `move_current_to_pending_pr`
+### Task 2 — PR_CREATED in `move_current_to_pending_pr` ✅
 
 `ralph_executor/queue/movements.py::move_current_to_pending_pr` currently moves the PBI directory but emits nothing. Refactor to accept an event log + PR URL, and emit:
 
@@ -61,7 +61,7 @@ Update the caller in `loop.py::_run_ralph` to pass `event_log` and the diff.
 
 Commit: `feat(queue): emit PR_CREATED with files+signature when promoting to pending-pr`
 
-### Task 3 — PBI_OPENED in `move_inbox_to_current`
+### Task 3 — PBI_OPENED in `move_inbox_to_current` ✅
 
 Similarly refactor `move_inbox_to_current` to emit:
 
