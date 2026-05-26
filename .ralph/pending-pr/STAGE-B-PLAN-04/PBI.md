@@ -1,11 +1,11 @@
 ---
 id: STAGE-B-PLAN-04
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-25T19:46:00+00:00
-updated_at: 2026-05-26T23:33:02+00:00
+updated_at: 2026-05-26T23:48:53+00:00
 depends_on: []
 ---
 
