@@ -166,17 +166,27 @@ def rev_parse_head(repo: Path) -> str:
 
 
 def diff_names(repo: Path, base: str, head: str) -> list[str]:
-    """Return the list of paths changed between ``base`` and ``head``.
+    """Return the list of paths the feature branch introduced.
 
-    Runs ``git diff --name-only <base>..<head>``. Returns an empty list if
-    either ref is missing or the diff command fails (the cycle detector's
-    payload contract tolerates an empty ``files`` list, so a partial
-    failure is preferable to crashing the move).
+    Runs ``git diff --name-only <base>...<head>`` (THREE dots).
+    Three-dot is the diff from the merge-base of base+head to head — i.e.
+    only what the feature branch actually changed. Two-dot would include
+    files main changed after the feature branch was created, polluting
+    the cycle-detector ``files`` payload and risking false
+    same_file_thrashing trips. For two sequential commit SHAs (the
+    ``_persist_iteration_writes`` call site) the merge-base of a parent
+    and its child is the parent itself, so two-dot and three-dot produce
+    identical results — the change is safe at both call sites.
+
+    Returns an empty list if either ref is missing or the diff command
+    fails (the cycle detector's payload contract tolerates an empty
+    ``files`` list, so a partial failure is preferable to crashing
+    the move).
     """
-    result = _run_git(repo, "diff", "--name-only", f"{base}..{head}", check=False)
+    result = _run_git(repo, "diff", "--name-only", f"{base}...{head}", check=False)
     if result.returncode != 0:
         log.warning(
-            "diff_names %s..%s failed (%d): %s",
+            "diff_names %s...%s failed (%d): %s",
             base,
             head,
             result.returncode,
