@@ -163,7 +163,7 @@ def stage_skills(host: str, skills_root: Path, claude_skills_dir: Path) -> None:
     # workitem-fetch-<host>/ is OPTIONAL — it ships in Plan 3 (deferred)
     # for the supervisor-side ralph-add skill. The executor itself doesn't
     # invoke it; only PROMPT.md-driven Claude sessions might. Tolerate
-    # absence with a warning so MVR runs before Plan 3 lands.
+    # absence with a warning so the MVR runs before Plan 3 lands.
     claude_skills_dir.mkdir(parents=True, exist_ok=True)
     log.info("staging pr skill: %s -> %s", pr_src, claude_skills_dir / "pr")
     _copy_skill_tree(pr_src, claude_skills_dir / "pr")
@@ -194,7 +194,7 @@ def verify_staged(claude_skills_dir: Path) -> None:
     Raises ``HostSelectionError`` listing every missing file.
     """
     # pr/ is required; workitem-fetch/ is optional (Plan 3 deferred).
-    # Verify only the entry points that should exist for the executor path.
+    # Verify only the executor-required entry point.
     # Real script name is create_pr.py (underscore — see skills/pr-github/scripts/).
     expected = [claude_skills_dir / "pr" / "scripts" / "create_pr.py"]
     missing = [

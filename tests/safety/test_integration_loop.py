@@ -248,7 +248,13 @@ def test_attempts_exceeded_moves_pbi_to_blocked(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the attempt counter fires, iterate_once moves the PBI to blocked/."""
+    """When the attempt counter fires, iterate_once moves the PBI to blocked/.
+
+    The new attempts semantic only increments on ``stuck`` / ``error``
+    outcomes, so this test forces an ``error`` outcome (the fake claude
+    binary's clean exit would classify as ``partial`` otherwise and not
+    decrement the budget at all).
+    """
     monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "1")
     repo, cfg = _init_repo(tmp_path)
     # Write a PBI with attempts already at the limit so the next increment fires.
@@ -262,6 +268,18 @@ def test_attempts_exceeded_moves_pbi_to_blocked(
     from ralph_executor import loop as loop_module
 
     monkeypatch.setattr(loop_module, "_check_cycle_detector", lambda cfg, src: False)
+    monkeypatch.setattr(
+        loop_module,
+        "spawn_claude_p",
+        lambda cfg, pbi: ClaudeOutcome(
+            kind="error",
+            pr_url=None,
+            stdout="",
+            stderr="boom",
+            exit_code=2,
+            duration_seconds=0.01,
+        ),
+    )
 
     result = iterate_once(cfg)
     assert not (repo / ".ralph" / "current" / "WI-overrun").exists()

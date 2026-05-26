@@ -279,7 +279,7 @@ def test_stage_skills_missing_workitem_fetch_source_is_tolerated(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """workitem-fetch-<host>/ is OPTIONAL (Plan 3 deferred). Missing dir
-    must emit a warning and skip — NOT raise. The executor only needs
+    must emit a warning and skip -- NOT raise. The executor only needs
     pr/; only supervisor skills consume workitem-fetch/.
     """
     import logging
@@ -295,7 +295,6 @@ def test_stage_skills_missing_workitem_fetch_source_is_tolerated(
     with caplog.at_level(logging.WARNING, logger="ralph_executor.host_select"):
         stage_skills("ado", skills_root, claude_skills_dir)
     assert any("workitem-fetch-ado" in rec.message for rec in caplog.records)
-    # pr/ staged successfully even without workitem-fetch/.
     assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
 
 
@@ -329,7 +328,7 @@ def test_verify_staged_missing_workitem_fetch_script_is_tolerated(
     tmp_path: Path,
 ) -> None:
     """workitem-fetch/ is optional (Plan 3 deferred). Verify must NOT
-    require workitem-fetch/scripts/fetch.py — only pr/scripts/create_pr.py.
+    require workitem-fetch/scripts/fetch.py -- only pr/scripts/create_pr.py.
     """
     claude_skills_dir = tmp_path / "claude_skills"
     (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)

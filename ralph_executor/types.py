@@ -24,6 +24,11 @@ class PBI:
 
     ``path`` is the absolute path to the PBI's directory in the queue
     checkout -- i.e. ``<repo>/.ralph/<status>/<id>/``.
+
+    ``depends_on`` lists IDs of other PBIs that must reach ``done/``
+    before this one is eligible for ``pick_next``. Optional — default
+    is an empty tuple. Cycles are NOT detected by the queue source;
+    operator responsibility (the dependency graph is small and static).
     """
 
     id: str
@@ -34,3 +39,4 @@ class PBI:
     created_at: datetime
     updated_at: datetime
     path: Path
+    depends_on: tuple[str, ...] = ()

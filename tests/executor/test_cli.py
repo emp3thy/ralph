@@ -160,6 +160,258 @@ def test_main_exits_2_on_host_selection_error(
     assert "RALPH_GIT_HOST" in err
 
 
+def test_main_uses_workspace_flag_to_resolve_repo(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--workspace NAME resolves to $RALPH_HOME/NAME and validates the
+    result against the git-repo invariants."""
+    home = fake_repo.parent
+    workspace_name = fake_repo.name
+
+    observed: list[str] = []
+
+    def _capture(cfg: ExecutorConfig) -> IterationResult:
+        observed.append(str(cfg.repo_path))
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "iterate_once", _capture)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", str(home))
+
+    exit_code = cli.main(["--once", "--workspace", workspace_name])
+    assert exit_code == 0
+    assert observed == [str(fake_repo.resolve())]
+
+
+def test_main_workspace_without_ralph_home_errors(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--workspace without RALPH_HOME must exit 2 with a clear error."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.delenv("RALPH_HOME", raising=False)
+
+    exit_code = cli.main(["--once", "--workspace", "any-name"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "RALPH_HOME" in err
+
+
+def test_main_repo_and_workspace_are_mutually_exclusive(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """argparse should reject --repo together with --workspace."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--once", "--repo", "/x", "--workspace", "y"])
+    # argparse exits 2 on usage errors.
+    assert exc_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_main_workspace_rejects_absolute_name(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An absolute --workspace name would silently escape RALPH_HOME
+    (Path('home') / '/etc' yields Path('/etc')). Must be rejected.
+
+    Uses a POSIX-style absolute path because Path('/etc').is_absolute()
+    is True on both Windows and POSIX, whereas 'C:\\\\etc' only registers
+    as absolute on Windows.
+    """
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "/etc"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_rejects_parent_traversal(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `..` segment would resolve outside RALPH_HOME. Must be rejected.
+
+    Uses '/'-separated input so Path treats '..' as a separate component
+    on both Windows and POSIX (backslash is a regular filename character
+    on POSIX, so '..\\\\sibling' would slip past the parts check there).
+    """
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "../sibling"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_rejects_single_dot(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--workspace .` would resolve to $RALPH_HOME itself, silently
+    making Ralph operate on the home root. Must be rejected."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "/dev/ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "."])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_rejects_path_separator(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Multi-segment names break the one-ralph-per-workspace convention
+    and are easy to confuse with `--repo`. Reject them."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", "C:\\dev\\ralph")
+
+    exit_code = cli.main(["--once", "--workspace", "a/b"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "plain directory name" in err
+
+
+def test_main_workspace_validates_resolved_path(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """$RALPH_HOME/NAME pointing at a non-git directory must exit 2."""
+    home = tmp_path
+    bogus = home / "no-git-here"
+    bogus.mkdir()
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setenv("RALPH_HOME", str(home))
+
+    exit_code = cli.main(["--once", "--workspace", "no-git-here"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "not a git repository" in err
+    assert "--workspace" in err
+
+
+def test_main_init_subcommand_writes_user_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`ralph-executor init --ralph-home PATH` writes ~/.ralph/config.toml."""
+    from ralph_executor.user_config import read_ralph_home
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    target = tmp_path / "dev" / "ralph"
+
+    exit_code = cli.main(["init", "--ralph-home", str(target)])
+    assert exit_code == 0
+    assert read_ralph_home() == target.resolve()
+    out = capsys.readouterr().out
+    assert str(target.resolve()) in out
+
+
+def test_main_scaffold_subcommand_creates_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ralph-executor scaffold --repo PATH` creates ralph-queue with .ralph/."""
+    import subprocess
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "t@example.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "branch", "-M", "main"],
+        check=True,
+        capture_output=True,
+    )
+
+    exit_code = cli.main(["scaffold", "--repo", str(repo)])
+    assert exit_code == 0
+    assert (repo / ".ralph" / "inbox" / ".gitkeep").is_file()
+    assert (repo / ".ralph" / "config.toml").is_file()
+
+
+def test_main_workspace_reads_ralph_home_from_user_config(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When $RALPH_HOME is unset, --workspace falls back to ~/.ralph/config.toml."""
+    from ralph_executor.user_config import write_ralph_home
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_HOME", raising=False)
+    # Persist fake_repo's parent as ralph_home so --workspace <fake_repo.name>
+    # resolves to fake_repo.
+    write_ralph_home(fake_repo.parent)
+
+    observed: list[str] = []
+
+    def _capture(cfg: ExecutorConfig) -> IterationResult:
+        observed.append(str(cfg.repo_path))
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "iterate_once", _capture)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+
+    exit_code = cli.main(["--once", "--workspace", fake_repo.name])
+    assert exit_code == 0
+    assert observed == [str(fake_repo.resolve())]
+
+
+def test_main_workspace_errors_when_no_ralph_home_anywhere(
+    cfg_for_repo: ExecutorConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Neither env nor user-config set → clear error referencing `ralph-executor init`."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_HOME", raising=False)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+
+    exit_code = cli.main(["--once", "--workspace", "anything"])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "ralph-executor init" in err
+
+
 def test_public_reexports_are_stable() -> None:
     """The names listed below are imported by Plans 8, 9, 10."""
     from ralph_executor import (
