@@ -284,8 +284,15 @@ def _wait_for_pr_checks(
     """
     if max_polls < 1:
         return ("pending", [])
+    # Scale the per-call subprocess timeout to the configured poll
+    # interval so the documented total wall budget actually holds. With
+    # a hard-coded timeout, an operator setting interval_seconds=5 to
+    # get faster feedback would still see each gh-call block up to 30 s
+    # and overrun the 30-s total budget. Floor at 5 s to leave gh
+    # enough time to spin up + hit the API even on slow links.
+    per_call_timeout = max(interval_seconds, 5.0)
     for attempt in range(max_polls):
-        state, names = _query_pr_checks(repo_path, pr_number)
+        state, names = _query_pr_checks(repo_path, pr_number, timeout_seconds=per_call_timeout)
         if state != "pending":
             return (state, names)
         if attempt < max_polls - 1:
