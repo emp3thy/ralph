@@ -18,7 +18,7 @@ Placement: **classifier-mode**. The verifier runs inside `classify_outcome` (`ra
 Progress (each Ralph iteration completes one):
 
 - [x] Task 1 — `_query_pr_checks` helper
-- [ ] Task 2 — `_wait_for_pr_checks` polling loop
+- [x] Task 2 — `_wait_for_pr_checks` polling loop
 - [ ] Task 3 — integrate into `classify_outcome`
 - [ ] Task 4 — tests
 - [ ] Task 5 — `_run_ralph` docstring update (NO-OP code-wise)
