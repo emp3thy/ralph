@@ -86,7 +86,7 @@ Note: only emit if a NEW commit landed (compare HEAD before and after).
 
 Commit: `feat(loop): emit FILE_TOUCHED per iteration commit`
 
-### Task 5 — SIGNATURE_OBSERVED in `handle_stuck`
+### Task 5 — SIGNATURE_OBSERVED in `handle_stuck` ✅
 
 `ralph_executor/safety/stuck.py::handle_stuck` reads STUCK.md when Claude reports stuck. After reading the reason text, emit:
 

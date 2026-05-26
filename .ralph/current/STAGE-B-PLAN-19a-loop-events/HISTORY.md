@@ -28,3 +28,10 @@
 - Tests: green — added `test_file_touched_event_emitted_on_iteration_commit` + `test_file_touched_skipped_on_empty_commit` to `tests/executor/test_loop.py`. Full suite 373 passed / 2 skipped.
 - Lint/format/mypy: clean across the whole repo.
 - Notes: Tasks 5 + 6 remain. Commit landed as feature-branch `b576cb4`.
+
+## Iteration 5 — 2026-05-27T00:30:00+00:00
+
+- Step 5: `handle_stuck` gained an optional kwargs-only `event_log: EventLog | None`. When provided, it emits `SIGNATURE_OBSERVED` with `payload={"signature": signature_from_text(reason)}` BEFORE `move_to_blocked` so the signature is logged even if the move fails. Existing `PBI_BLOCKED` outcome.event flow is unchanged. Wired `_run_ralph` (loop.py) to pass the per-iteration `event_log` through.
+- Tests: green — added `test_signature_observed_event_emitted_on_stuck` (uses conftest `event_log` fixture) and `test_handle_stuck_emits_no_signature_when_event_log_omitted` to `tests/safety/test_stuck.py`; full safety + executor suites 260 passed.
+- Lint/format/mypy: clean across the whole repo (`ruff check .`, `ruff format --check .`, `mypy ralph_executor scripts skills tests`).
+- Notes: Task 6 (cycle-detector integration tests — the per-emit-site `test_signature_observed_event_emitted_on_stuck` already landed here) remains. Next iteration writes `test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file` and `test_signature_recurrence_trips_after_pbi_closed_then_signature_reobserved`. Commit landed as feature-branch `53e2bb4`.
