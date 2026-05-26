@@ -155,10 +155,7 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                "no entry file (expected one of "
-                f"{list(_ENTRY_FILE_PROBE_ORDER)})"
-            ),
+            message=(f"no entry file (expected one of {list(_ENTRY_FILE_PROBE_ORDER)})"),
         )
 
     try:
@@ -179,9 +176,7 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                f"{entry_file.name} has no leading YAML frontmatter block"
-            ),
+            message=(f"{entry_file.name} has no leading YAML frontmatter block"),
         )
 
     frontmatter_yaml, body = split
@@ -202,10 +197,7 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                "frontmatter is not a YAML mapping "
-                f"(got {type(parsed).__name__})"
-            ),
+            message=(f"frontmatter is not a YAML mapping (got {type(parsed).__name__})"),
         )
 
     missing = [f for f in REQUIRED_FRONTMATTER_FIELDS if f not in parsed]
@@ -225,10 +217,7 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                f"type={pbi_type!r} not in allowed set "
-                f"{sorted(ALLOWED_TYPES)}"
-            ),
+            message=(f"type={pbi_type!r} not in allowed set {sorted(ALLOWED_TYPES)}"),
         )
 
     severity = parsed.get("severity")
@@ -238,10 +227,7 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                f"severity={severity!r} not in allowed set "
-                f"{sorted(ALLOWED_SEVERITIES)}"
-            ),
+            message=(f"severity={severity!r} not in allowed set {sorted(ALLOWED_SEVERITIES)}"),
         )
 
     status_value = parsed.get("status")
@@ -251,21 +237,14 @@ def read_pbi(
             repo_name=repo_name,
             state=state,
             pbi_dir=pbi_dir,
-            message=(
-                f"status={status_value!r} not in allowed set "
-                f"{sorted(ALLOWED_STATUSES)}"
-            ),
+            message=(f"status={status_value!r} not in allowed set {sorted(ALLOWED_STATUSES)}"),
         )
 
     attempts_raw = parsed.get("attempts")
     attempts = attempts_raw if isinstance(attempts_raw, int) else 0
 
     pbi_id_raw = parsed.get("id")
-    pbi_id = (
-        pbi_id_raw
-        if isinstance(pbi_id_raw, str) and pbi_id_raw.strip()
-        else pbi_dir.name
-    )
+    pbi_id = pbi_id_raw if isinstance(pbi_id_raw, str) and pbi_id_raw.strip() else pbi_dir.name
 
     return PBIRow(
         repo_path=repo_path,
@@ -295,9 +274,7 @@ def enumerate_state(
     ``done/`` yet).
     """
     if state not in STATE_FOLDERS:
-        raise ValueError(
-            f"unknown state {state!r}; expected one of {STATE_FOLDERS}"
-        )
+        raise ValueError(f"unknown state {state!r}; expected one of {STATE_FOLDERS}")
     state_dir = repo_root / ".ralph" / state
     if not state_dir.is_dir():
         return []

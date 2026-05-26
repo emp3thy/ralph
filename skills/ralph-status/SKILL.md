@@ -105,10 +105,10 @@ cause exit code 2 — they are not soft-failed like individual PBIs.
 ## How it is invoked
 
 ```bash
-uv run python skills/ralph-status/scripts/show.py --repo /path/to/service-auth
-uv run python skills/ralph-status/scripts/show.py --repos-file ~/.config/ralph/repos
-uv run python skills/ralph-status/scripts/show.py --repo /path/to/svc --state current
-uv run python skills/ralph-status/scripts/show.py --repo /path/to/svc --json
+uv run python skills/ralph-status/scripts/status.py --repo /path/to/service-auth
+uv run python skills/ralph-status/scripts/status.py --repos-file ~/.config/ralph/repos
+uv run python skills/ralph-status/scripts/status.py --repo /path/to/svc --state current
+uv run python skills/ralph-status/scripts/status.py --repo /path/to/svc --json
 ```
 
 Tests live at `tests/skills/test_ralph_status.py` and use local bare +

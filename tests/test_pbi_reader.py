@@ -71,9 +71,7 @@ def _make_pbi(base: Path, name: str, entry_file: str, content: str) -> Path:
 
 def test_read_pbi_feature(tmp_path: Path) -> None:
     pbi_dir = _make_pbi(tmp_path, "WI-1234", "PBI.md", VALID_FEATURE_FRONTMATTER)
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRow)
     assert result.pbi_id == "WI-1234"
     assert result.pbi_type == "feature"
@@ -84,9 +82,7 @@ def test_read_pbi_feature(tmp_path: Path) -> None:
 
 def test_read_pbi_bug(tmp_path: Path) -> None:
     pbi_dir = _make_pbi(tmp_path, "BUG-1", "BUG.md", VALID_BUG_FRONTMATTER)
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="current"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="current")
     assert isinstance(result, PBIRow)
     assert result.pbi_type == "bug"
     assert result.severity == "critical"
@@ -100,9 +96,7 @@ def test_read_pbi_feedback(tmp_path: Path) -> None:
         "FEEDBACK.md",
         VALID_FEEDBACK_FRONTMATTER,
     )
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRow)
     assert result.pbi_type == "pr-feedback"
 
@@ -110,9 +104,7 @@ def test_read_pbi_feedback(tmp_path: Path) -> None:
 def test_read_pbi_missing_entry_file(tmp_path: Path) -> None:
     pbi_dir = tmp_path / "WI-9999"
     pbi_dir.mkdir()
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRowError)
     assert "no entry file" in result.message
 
@@ -132,9 +124,7 @@ updated_at: 2026-05-24T09:15:00+00:00
 # Title
 """
     pbi_dir = _make_pbi(tmp_path, "WI-1", "PBI.md", bad)
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRowError)
     assert "YAML" in result.message or "yaml" in result.message
 
@@ -153,9 +143,7 @@ updated_at: 2026-05-24T09:15:00+00:00
 # Title
 """
     pbi_dir = _make_pbi(tmp_path, "WI-1", "PBI.md", missing)
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRowError)
     assert "attempts" in result.message
 
@@ -174,9 +162,7 @@ updated_at: 2026-05-24T09:15:00+00:00
 # Title
 """
     pbi_dir = _make_pbi(tmp_path, "WI-1", "PBI.md", bad_type)
-    result = read_pbi(
-        pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox"
-    )
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
     assert isinstance(result, PBIRowError)
     assert "type=" in result.message
 
@@ -192,9 +178,7 @@ def test_enumerate_state_walks_pbis(tmp_path: Path) -> None:
     _make_pbi(inbox, "BUG-1", "BUG.md", VALID_BUG_FRONTMATTER)
     rows = enumerate_state(tmp_path, "inbox", repo_name="svc")
     assert len(rows) == 2
-    ids = sorted(
-        row.pbi_id if isinstance(row, PBIRow) else "?" for row in rows
-    )
+    ids = sorted(row.pbi_id if isinstance(row, PBIRow) else "?" for row in rows)
     assert ids == ["BUG-1", "WI-1234"]
     assert all(isinstance(row, PBIRow) for row in rows)
 

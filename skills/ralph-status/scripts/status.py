@@ -106,27 +106,19 @@ def _load_repos_config(args: argparse.Namespace) -> list[RepoConfig]:
 
     if args.repo:
         path = Path(args.repo).resolve()
-        configs.append(
-            RepoConfig(path=path, name=path.name, branch=branch)
-        )
+        configs.append(RepoConfig(path=path, name=path.name, branch=branch))
     else:
         cfg_path = Path(args.repos_file).resolve()
         if not cfg_path.is_file():
-            raise _FatalError(
-                f"--repos-file path does not exist: {cfg_path}"
-            )
+            raise _FatalError(f"--repos-file path does not exist: {cfg_path}")
         for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
             path = Path(line).expanduser().resolve()
-            configs.append(
-                RepoConfig(path=path, name=path.name, branch=branch)
-            )
+            configs.append(RepoConfig(path=path, name=path.name, branch=branch))
         if not configs:
-            raise _FatalError(
-                f"--repos-file contained no usable entries: {cfg_path}"
-            )
+            raise _FatalError(f"--repos-file contained no usable entries: {cfg_path}")
     return configs
 
 
@@ -192,9 +184,7 @@ def _extract_queue_snapshot(
     if not config.path.exists():
         raise _FatalError(f"--repo path does not exist: {config.path}")
     if not _is_git_repo(config.path):
-        raise _FatalError(
-            f"{config.path} is not a git repository (no .git/ directory)"
-        )
+        raise _FatalError(f"{config.path} is not a git repository (no .git/ directory)")
     _ensure_branch_exists(config.path, config.branch)
 
     worktree_dir = worktree_root / f"{config.name}__{config.branch}"
@@ -204,11 +194,7 @@ def _extract_queue_snapshot(
     _create_worktree(config.path, config.branch, worktree_dir)
     snapshot = RepoSnapshot(config=config, worktree_path=worktree_dir)
     for state in states:
-        snapshot.rows.extend(
-            enumerate_state(
-                worktree_dir, state, repo_name=config.name
-            )
-        )
+        snapshot.rows.extend(enumerate_state(worktree_dir, state, repo_name=config.name))
     return snapshot
 
 
@@ -277,10 +263,7 @@ def _render_table(rows: list[PBIRow | PBIRowError]) -> str:
 
     lines: list[str] = []
     for row_cells in cells:
-        parts = [
-            cell.ljust(widths[idx])
-            for idx, cell in enumerate(row_cells[:-1])
-        ]
+        parts = [cell.ljust(widths[idx]) for idx, cell in enumerate(row_cells[:-1])]
         parts.append(row_cells[-1])
         lines.append("  ".join(parts).rstrip())
     return "\n".join(lines) + "\n"
@@ -353,9 +336,7 @@ def _render_json(
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
-    states: tuple[str, ...] = (
-        (args.state,) if args.state else STATE_FOLDERS
-    )
+    states: tuple[str, ...] = (args.state,) if args.state else STATE_FOLDERS
 
     try:
         configs = _load_repos_config(args)
@@ -367,9 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: list[RepoSnapshot] = []
     try:
         for config in configs:
-            snap = _extract_queue_snapshot(
-                config, states=states, worktree_root=worktree_root
-            )
+            snap = _extract_queue_snapshot(config, states=states, worktree_root=worktree_root)
             snapshots.append(snap)
 
         all_rows: list[PBIRow | PBIRowError] = []
@@ -383,8 +362,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_count = len(snapshots)
             pbi_count = len(all_rows)
             print(
-                f"# {pbi_count} PBI(s) across {repo_count} repo(s) "
-                f"(states: {', '.join(states)})",
+                f"# {pbi_count} PBI(s) across {repo_count} repo(s) (states: {', '.join(states)})",
                 file=sys.stderr,
             )
         return 0
@@ -394,8 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
         print(
-            f"error: git command failed ({exc.returncode}): "
-            f"{' '.join(exc.cmd)}\n{stderr}",
+            f"error: git command failed ({exc.returncode}): {' '.join(exc.cmd)}\n{stderr}",
             file=sys.stderr,
         )
         return 2

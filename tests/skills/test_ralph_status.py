@@ -17,7 +17,7 @@ from types import ModuleType
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "skills" / "ralph-status" / "scripts" / "show.py"
+SCRIPT_PATH = REPO_ROOT / "skills" / "ralph-status" / "scripts" / "status.py"
 
 WI_FEATURE = "WI-1234"
 WI_BUG = "BUG-rosa-irsa"
@@ -110,11 +110,9 @@ MALFORMED_PBI_MD = "this file has no frontmatter at all\n"
 
 @pytest.fixture(scope="module")
 def show_module() -> ModuleType:
-    """Load ``skills/ralph-status/scripts/show.py`` as an importable module."""
+    """Load ``skills/ralph-status/scripts/status.py`` as an importable module."""
     assert SCRIPT_PATH.is_file(), f"missing entry script at {SCRIPT_PATH}"
-    spec = importlib.util.spec_from_file_location(
-        "ralph_status_script", SCRIPT_PATH
-    )
+    spec = importlib.util.spec_from_file_location("ralph_status_script", SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Register before exec_module so dataclasses can resolve forward-ref
@@ -135,9 +133,7 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
-def _write_pbi(
-    work: Path, state: str, pbi_id: str, entry_file: str, content: str
-) -> None:
+def _write_pbi(work: Path, state: str, pbi_id: str, entry_file: str, content: str) -> None:
     pbi_dir = work / ".ralph" / state / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
     (pbi_dir / entry_file).write_text(content, encoding="utf-8")
@@ -229,16 +225,12 @@ def test_state_filter_narrows_output(
     show_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = show_module.main(
-        ["--repo", str(git_repo_with_pbis), "--state", "current"]
-    )
+    exit_code = show_module.main(["--repo", str(git_repo_with_pbis), "--state", "current"])
     assert exit_code == 0
     stdout = capsys.readouterr().out
     assert WI_CURRENT in stdout
     for pbi_id in (WI_FEATURE, WI_BUG, WI_DONE, WI_BLOCKED):
-        assert pbi_id not in stdout, (
-            f"unexpected {pbi_id} in filtered output:\n{stdout}"
-        )
+        assert pbi_id not in stdout, f"unexpected {pbi_id} in filtered output:\n{stdout}"
 
 
 def test_json_output_is_valid(
@@ -246,9 +238,7 @@ def test_json_output_is_valid(
     show_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = show_module.main(
-        ["--repo", str(git_repo_with_pbis), "--json"]
-    )
+    exit_code = show_module.main(["--repo", str(git_repo_with_pbis), "--json"])
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert "rows" in payload
@@ -300,9 +290,7 @@ def test_repos_file_aggregates_across_repos(
         f"# A comment\n{git_repo_with_pbis}\n{second}\n",
         encoding="utf-8",
     )
-    exit_code = show_module.main(
-        ["--repos-file", str(cfg), "--json"]
-    )
+    exit_code = show_module.main(["--repos-file", str(cfg), "--json"])
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["repos"]) == 2
@@ -384,16 +372,12 @@ def test_no_cleanup_keeps_worktree(
     show_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exit_code = show_module.main(
-        ["--repo", str(git_repo_with_pbis), "--json", "--no-cleanup"]
-    )
+    exit_code = show_module.main(["--repo", str(git_repo_with_pbis), "--json", "--no-cleanup"])
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["repos"]) == 1
     worktree_path = Path(payload["repos"][0]["worktree_path"])
-    assert worktree_path.is_dir(), (
-        "--no-cleanup must leave the worktree on disk"
-    )
+    assert worktree_path.is_dir(), "--no-cleanup must leave the worktree on disk"
     assert (worktree_path / ".ralph").is_dir()
 
 
@@ -403,7 +387,62 @@ def test_state_filter_rejects_unknown_state(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as excinfo:
-        show_module.main(
-            ["--repo", str(git_repo_with_pbis), "--state", "limbo"]
-        )
+        show_module.main(["--repo", str(git_repo_with_pbis), "--state", "limbo"])
     assert excinfo.value.code == 2
+
+
+def test_status_recognises_plan1_samples(
+    tmp_path: Path,
+    show_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The reader must parse the canonical Plan 1 sample PBIs cleanly.
+
+    We copy ``samples/feature-WI-1234/`` etc. into ``.ralph/inbox/<id>/``
+    on a fresh ralph-queue branch and run the skill against the repo.
+    All three samples must show up as successful PBIRow entries (not
+    PBIRowError) in the JSON output.
+    """
+    samples_dir = REPO_ROOT / "samples"
+
+    bare = tmp_path / "svc.git"
+    work = tmp_path / "svc-work"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", str(work)], check=True)
+    _git(work, "config", "user.email", "test@example.com")
+    _git(work, "config", "user.name", "Test User")
+    _git(work, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(work, "branch", "-M", "main")
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-u", "origin", "main")
+    _git(work, "checkout", "-b", "ralph-queue")
+
+    sample_to_queue_id = {
+        "feature-WI-1234": "WI-1234",
+        "bug-deploy-rosa-irsa-2026-05-23": "BUG-rosa-irsa-2026-05-23",
+        "pr-feedback-WI-1234-r2": "PR-feedback-WI-1234-r2",
+    }
+    for sample_name, queue_id in sample_to_queue_id.items():
+        src = samples_dir / sample_name
+        assert src.is_dir(), f"missing sample: {src}"
+        dest = work / ".ralph" / "inbox" / queue_id
+        dest.mkdir(parents=True)
+        for child in src.iterdir():
+            if child.is_file():
+                (dest / child.name).write_bytes(child.read_bytes())
+
+    _git(work, "add", ".ralph")
+    _git(work, "commit", "-m", "feat(queue): seed from Plan 1 samples")
+    _git(work, "push", "-u", "origin", "ralph-queue")
+    _git(work, "checkout", "main")
+
+    exit_code = show_module.main(["--repo", str(work), "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert len(payload["rows"]) == 3
+    assert all(row["error"] is None for row in payload["rows"]), (
+        "Plan 1 samples must parse cleanly:\n" + json.dumps(payload["rows"], indent=2)
+    )
+    types = sorted(row["type"] for row in payload["rows"])
+    assert types == ["bug", "feature", "pr-feedback"]
