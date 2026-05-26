@@ -139,6 +139,114 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
     return str(url) if isinstance(url, str) and url else None
 
 
+PrCheckState = Literal["pass", "fail", "pending", "error"]
+
+
+def _query_pr_checks(
+    repo_path: Path,
+    pr_number: int,
+    *,
+    timeout_seconds: float = 30.0,
+) -> tuple[PrCheckState, list[str]]:
+    """Call ``gh pr checks <num> --required --json bucket,name`` once.
+
+    The verifier in Plan 18 uses this to decide whether to classify a
+    just-pushed PR as ``pr_created`` (real CI green) or to fall back to
+    ``partial`` (so the next iteration tries again).
+
+    Returns a (state, names) tuple:
+
+      * ``("pass", [])`` — every required check has ``bucket == "pass"``.
+        Note: when ``gh`` returns an empty array (no required checks are
+        configured on the branch) we ALSO return ``"pass"`` and log a
+        WARNING. This PBI assumes the operator has required checks
+        configured; if they don't, the verifier has nothing to gate on.
+      * ``("fail", [<failed names>])`` — at least one required check has
+        ``bucket == "fail"``. ``names`` is the list of failing check
+        names so the classifier can surface them on stderr for the next
+        iteration to read.
+      * ``("pending", [])`` — gh exited 8 (at least one bucket is
+        ``"pending"``). Caller's polling loop re-tries.
+      * ``("error", [<one-line summary>])`` — gh missing, timed out,
+        returned non-JSON, or some other unexpected failure. Caller
+        treats as ``partial`` (re-poll next iteration).
+
+    Failure mapping is intentionally pessimistic: anything we cannot
+    confidently parse as "all required checks green" returns non-``pass``
+    so the classifier never escalates a partial iteration to
+    ``pr_created`` on a transient gh outage.
+    """
+    try:
+        result = subprocess.run(
+            [
+                _GH_BINARY,
+                "pr",
+                "checks",
+                str(pr_number),
+                "--required",
+                "--json",
+                "bucket,name",
+            ],
+            cwd=str(repo_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("gh pr checks timed out after %ss for PR #%d", timeout_seconds, pr_number)
+        return ("error", [f"gh pr checks timed out after {timeout_seconds}s"])
+    except OSError as exc:
+        # FileNotFoundError (gh not installed), PermissionError, etc.
+        log.warning("gh pr checks failed for PR #%d: %s", pr_number, exc)
+        return ("error", [str(exc)])
+
+    # ``gh pr checks --json bucket,name`` always emits a JSON array on
+    # stdout when it ran at all — even when at least one check failed
+    # (exit 1) or is pending (exit 8). We therefore parse the JSON FIRST
+    # and use the buckets as the source of truth; the exit code is only a
+    # fallback when stdout is empty/unparseable.
+    if result.returncode == 8 and not (result.stdout or "").strip():
+        return ("pending", [])
+
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        if result.returncode == 8:
+            return ("pending", [])
+        summary = (result.stderr or "").strip()[:200]
+        return ("error", [summary or f"gh pr checks exit {result.returncode}"])
+    if not isinstance(payload, list):
+        return ("error", ["gh pr checks JSON payload was not a list"])
+    if not payload:
+        # No required checks configured. The verifier has nothing to gate
+        # on; we return "pass" but warn loudly so the operator notices.
+        log.warning(
+            "PR #%d has no required checks configured; treating as pass",
+            pr_number,
+        )
+        return ("pass", [])
+
+    failed: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            return ("error", ["gh pr checks JSON contained a non-object entry"])
+        if item.get("bucket") == "fail":
+            name = item.get("name")
+            failed.append(str(name) if isinstance(name, str) else "<unnamed>")
+    if failed:
+        return ("fail", failed)
+
+    buckets = {str(item.get("bucket")) for item in payload}
+    if buckets == {"pass"}:
+        return ("pass", [])
+    if "pending" in buckets:
+        return ("pending", [])
+    # Any other state (e.g. all "skipping" / "cancel") is conservatively
+    # treated as error so we never mis-classify it as pass.
+    return ("error", ["unexpected bucket states: " + repr(sorted(buckets))])
+
+
 def _tee_stream(
     stream: IO[str],
     prefix: str,
