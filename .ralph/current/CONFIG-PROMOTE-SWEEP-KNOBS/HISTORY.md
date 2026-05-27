@@ -10,3 +10,10 @@
 - Task 6: full suite green — `497 passed, 2 skipped`; `ruff check` + `ruff format --check` + `mypy` all clean; integration tests in `test_loop_integration.py` rewritten to use `dataclasses.replace(cfg, bot_author_email=..., stale_days=...)` instead of the retired env-only path. Commit `86041c3`.
 - Tests: green (`uv run pytest tests/`).
 - Notes: SimpleNamespace stand-in needed in `test_run_sweep_passes_cfg_values_to_sweep_config` because the lambda from the plan returned `None` and `_run_sweep` accesses `.pbis_scanned` on the result.
+
+## Iteration 2 — 2026-05-27T09:00:00+00:00 — PR created
+
+- PR: https://github.com/emp3thy/ralph/pull/30
+- Branch: ralph/CONFIG-PROMOTE-SWEEP-KNOBS
+- Title: CONFIG-PROMOTE-SWEEP-KNOBS: promote bot_author_email + stale_days to TOML
+
