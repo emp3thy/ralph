@@ -203,11 +203,15 @@ def find_pbi_directory(repo: Path, pbi_id: str) -> Path | None:
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
+    # Strip both ``\r`` and ``\n`` so Windows CRLF-encoded files (and
+    # any file checked out under ``core.autocrlf=true``) still match the
+    # ``---`` fence — ``rstrip("\n")`` alone leaves ``"---\r"`` and
+    # rejects the file as missing a frontmatter fence.
     lines = text.splitlines(keepends=True)
-    if not lines or lines[0].rstrip("\n") != "---":
+    if not lines or lines[0].rstrip("\r\n") != "---":
         raise QueueWriterError("file does not start with a YAML frontmatter fence ('---')")
     for idx in range(1, len(lines)):
-        if lines[idx].rstrip("\n") == "---":
+        if lines[idx].rstrip("\r\n") == "---":
             frontmatter = "".join(lines[1:idx])
             body = "".join(lines[idx + 1 :])
             return frontmatter, body

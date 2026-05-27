@@ -192,6 +192,25 @@ def test_read_frontmatter_rejects_file_without_fence(tmp_path: Path) -> None:
     assert "frontmatter" in str(exc.value).lower()
 
 
+def test_read_frontmatter_handles_crlf_line_endings(tmp_path: Path) -> None:
+    """Regression: BugBot PR #35 flagged that ``_split_frontmatter``
+    used ``rstrip("\\n")`` on each line, so under Windows CRLF
+    (``"---\\r\\n"``) the fence check compared ``"---\\r"`` against
+    ``"---"`` and raised "file does not start with a YAML frontmatter
+    fence". Affects any PBI checked out with ``core.autocrlf=true``.
+    Fix uses ``rstrip("\\r\\n")``."""
+    entry = tmp_path / "PBI.md"
+    # Write the file with explicit CRLF so the test fails on the old
+    # code regardless of host platform / autocrlf setting.
+    entry.write_bytes(
+        b"---\r\nid: WI-CRLF\r\ntype: feature\r\nseverity: normal\r\n---\r\n\r\n# Body\r\n"
+    )
+    fm, body = read_frontmatter(entry)
+    assert fm["id"] == "WI-CRLF"
+    assert fm["severity"] == "normal"
+    assert "# Body" in body
+
+
 def test_append_history_creates_or_extends_history_md(tmp_path: Path) -> None:
     pbi_dir = tmp_path / "WI-5"
     pbi_dir.mkdir()
