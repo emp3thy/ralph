@@ -37,3 +37,11 @@
 - Tests: `uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -q` → 55 passed.
 - Lint: `uv run ruff check` on changed files → All checks passed. `uv run ruff format --check` → 4 files already formatted. `uv run mypy ralph_executor/config.py ralph_executor/setup_cmds.py` → no issues.
 - Notes: Pyright "function ... is not accessed" warnings on the new field's assignment are spurious (constructor uses it); same for pyright noise about pytest fixture params — pre-existing pattern across the file.
+
+## Iteration 5 — 2026-05-27T23:00:00+00:00
+
+- Task 5: Added `merge_state: str = ""` field to `PrSnapshot` (after `url`, default-valued so existing constructors in `test_decide_action.py` / `test_feedback_pbi.py` keep compiling).
+- Task 5: Threaded `merge_state=str(show_dict.get("mergeable_state") or "")` into `pr_state.fetch`'s `PrSnapshot(...)` call. `or ""` collapses `None` (async-pending) AND missing key into the empty sentinel.
+- Task 5: Three new tests in `tests/executor/sweep/test_pr_state.py` — clean carries verbatim, `null` → "", missing → "". Kept `SHOW_PAYLOAD_MERGED` constant unchanged (avoids semantically wrong "merged completed PR with clean mergeable_state" in unrelated tests); per-test overrides instead.
+- Tests: `uv run pytest tests/executor/sweep/test_pr_state.py -q` → 9 passed. Full `tests/executor/sweep/` → 70 passed (no regressions).
+- Lint: `ruff check` clean on touched files. `ruff format` reformatted `test_pr_state.py` (line-fit only). `mypy ralph_executor/sweep/types.py ralph_executor/sweep/pr_state.py` → no issues.

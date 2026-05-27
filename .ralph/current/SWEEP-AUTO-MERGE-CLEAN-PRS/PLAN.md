@@ -9,7 +9,7 @@ track per-iteration progress.
 - [x] Task 2 — `merge_pr.py` skill script + tests (incl. `put_rest`, `RaceError`).
 - [x] Task 3 — `SKILL.md` documents `merge_pr`.
 - [x] Task 4 — `ExecutorConfig.auto_merge_clean_prs` (defaults < TOML < env) + tests.
-- [ ] Task 5 — `PrSnapshot.merge_state` + `pr_state.fetch` parse + tests.
+- [x] Task 5 — `PrSnapshot.merge_state` + `pr_state.fetch` parse + tests.
 - [ ] Task 6 — `Action.MERGE_PR` + `decide_action` predicate + tests.
 - [ ] Task 7 — Runner dispatch branch + `_invoke_merge_pr` helper.
 - [ ] Task 8 — Wire flag through `loop._run_sweep`.
