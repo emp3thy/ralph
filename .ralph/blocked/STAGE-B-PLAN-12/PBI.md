@@ -3,7 +3,7 @@ id: STAGE-B-PLAN-12
 type: feature
 status: current
 severity: normal
-attempts: 0
+attempts: 1
 created_at: 2026-05-25T19:46:00+00:00
 updated_at: 2026-05-27T16:37:25+00:00
 depends_on: ["STAGE-B-PLAN-08", "STAGE-B-PLAN-11"]
