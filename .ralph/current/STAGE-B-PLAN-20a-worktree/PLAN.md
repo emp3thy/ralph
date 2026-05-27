@@ -111,6 +111,8 @@ When `not cfg.use_worktrees`: fall through to today's behaviour (single checkout
 
 Commit: `feat(loop): worktree-mode claim creates per-PBI work tree`
 
+- [x] Task 3 complete (iteration 3, 2026-05-27, commit d969b73)
+
 ### Task 4 — refactor `_run_ralph` to spawn Claude with worktree paths
 
 ```python
