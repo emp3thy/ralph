@@ -212,7 +212,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/__init__.py` with exactly the content below. This module is the contract every individual check obeys. The frozen dataclasses are deliberate — checks must not mutate the context, and the runner must not mutate results after collection.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/__init__.py` with exactly the content below. This module is the contract every individual check obeys. The frozen dataclasses are deliberate — checks must not mutate the context, and the runner must not mutate results after collection.
 
   ```python
   """Check protocol and registry for the ``ralph-doctor`` skill.
@@ -283,13 +283,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   """Map of ``RALPH_GIT_HOST`` value to the host-auth check module name."""
   ```
 
-- [ ] 2. Verify mypy is clean on the new file:
+- [x] 2. Verify mypy is clean on the new file:
   ```
   uv run mypy --config-file pyproject.toml skills/ralph-doctor
   ```
   Expected: no errors.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/__init__.py
   git commit -m "feat(ralph-doctor): define CheckResult / CheckContext / REGISTRY contract"
