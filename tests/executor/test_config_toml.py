@@ -38,6 +38,9 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_HALT_WEBHOOK",
         "RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
         "RALPH_PR_CHECK_POLL_INTERVAL_SECONDS",
+        "RALPH_USE_WORKTREES",
+        "RALPH_ADO_AUTHOR_EMAIL",
+        "RALPH_STALE_DAYS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -230,6 +233,30 @@ def test_env_wins_over_toml_for_pr_check_poll_knobs(
     assert cfg.pr_check_poll_interval_seconds == 0.25
 
 
+def test_use_worktrees_default_true(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.use_worktrees is True
+
+
+def test_use_worktrees_toml_false(clean_env: Path) -> None:
+    _write_toml(clean_env, "use_worktrees = false\n")
+    cfg = load_config()
+    assert cfg.use_worktrees is False
+
+
+def test_use_worktrees_env_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_toml(clean_env, "use_worktrees = false\n")
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "true")
+    cfg = load_config()
+    assert cfg.use_worktrees is True
+
+
+def test_use_worktrees_toml_wrong_type_raises(clean_env: Path) -> None:
+    _write_toml(clean_env, 'use_worktrees = "yes"\n')
+    with pytest.raises(ConfigError, match="use_worktrees must be a boolean"):
+        load_config()
+
+
 def test_toml_invalid_log_level_raises(clean_env: Path) -> None:
     _write_toml(clean_env, 'log_level = "VERBOSE"\n')
     with pytest.raises(ConfigError, match="log_level"):
@@ -247,3 +274,68 @@ def test_toml_array_of_tables_treated_as_unknown_key(
         cfg = load_config()
     assert cfg.queue_branch == "ralph-queue"
     assert any("entries" in rec.message for rec in caplog.records)
+
+
+def test_sweep_knobs_picked_up_from_toml(clean_env: Path) -> None:
+    """bot_author_email + stale_days flow from TOML into ExecutorConfig
+    (the env-var read in loop._run_sweep is being retired)."""
+    _write_toml(
+        clean_env,
+        """
+        bot_author_email = "ralph-bot@example.com"
+        stale_days = 7
+        """,
+    )
+    cfg = load_config()
+    assert cfg.bot_author_email == "ralph-bot@example.com"
+    assert cfg.stale_days == 7
+
+
+def test_env_wins_over_toml_for_sweep_knobs(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env names keep the historical ``RALPH_ADO_AUTHOR_EMAIL`` /
+    ``RALPH_STALE_DAYS`` spelling for backwards compatibility — operators
+    with these set today see no change."""
+    _write_toml(
+        clean_env,
+        """
+        bot_author_email = "from-toml@example.com"
+        stale_days = 3
+        """,
+    )
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "from-env@example.com")
+    monkeypatch.setenv("RALPH_STALE_DAYS", "10")
+    cfg = load_config()
+    assert cfg.bot_author_email == "from-env@example.com"
+    assert cfg.stale_days == 10
+
+
+def test_sweep_knobs_defaults_when_neither_set(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.bot_author_email == ""
+    assert cfg.stale_days == 3
+
+
+def test_env_string_value_is_stripped(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_resolve_str`` must strip surrounding whitespace before storing
+    the env value. Otherwise a value like ``' ralph@bot.com '`` survives
+    the truthiness guard in consumers and downstream string-equality
+    comparisons (PR-author matching in the sweep) silently fail."""
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "  ralph@bot.com  ")
+    cfg = load_config()
+    assert cfg.bot_author_email == "ralph@bot.com"
+
+
+def test_stale_days_rejected_when_zero_in_toml(clean_env: Path) -> None:
+    _write_toml(clean_env, "stale_days = 0\n")
+    with pytest.raises(ConfigError, match="stale_days must be positive"):
+        load_config()
+
+
+def test_stale_days_rejected_when_negative_in_env(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RALPH_STALE_DAYS", "-1")
+    with pytest.raises(ConfigError, match="stale_days must be positive"):
+        load_config()

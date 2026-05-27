@@ -52,24 +52,24 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Confirm Plans 1, 2, and 3 are merged so the toolchain is wired correctly:
+- [x] 1. Confirm Plans 1, 2, and 3 are merged so the toolchain is wired correctly:
   ```
   uv run pytest tests/test_workspace_samples.py tests/test_ado_client.py tests/skills/test_ralph_add.py -v
   ```
   Expected: every test passes. If any fail, STOP — Plan 11 depends on `scripts.ado_client` (Plan 2) and the `skills/` package layout (Plan 3).
 
-- [ ] 2. Verify `pyproject.toml` already includes `skills` and `tests/skills` in mypy's `files` and pytest's `testpaths`:
+- [x] 2. Verify `pyproject.toml` already includes `skills` and `tests/skills` in mypy's `files` and pytest's `testpaths`:
   ```
   uv run python -c "import tomllib; data=tomllib.load(open('pyproject.toml','rb')); assert 'skills' in data['tool']['mypy']['files'], data['tool']['mypy']['files']; assert 'tests' in data['tool']['pytest']['ini_options']['testpaths']"
   ```
   Expected: exit code 0. If the assertion fails, STOP and rerun Plan 3 task 1.
 
-- [ ] 3. Create `skills/ralph-doctor/scripts/__init__.py` containing exactly:
+- [x] 3. Create `skills/ralph-doctor/scripts/__init__.py` containing exactly:
   ```python
   """Empty package marker."""
   ```
 
-- [ ] 4. Create `skills/ralph-doctor/SKILL.md` with the content below. The frontmatter is the contract Claude Code's Skill tool reads at discovery time. Keep the fenced markdown blocks inside `SKILL.md` (the JSON example, the table) — they are part of the documented contract.
+- [x] 4. Create `skills/ralph-doctor/SKILL.md` with the content below. The frontmatter is the contract Claude Code's Skill tool reads at discovery time. Keep the fenced markdown blocks inside `SKILL.md` (the JSON example, the table) — they are part of the documented contract.
   ````markdown
   ---
   name: ralph-doctor
@@ -197,7 +197,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   ````
   Expected: file is exactly that content; the frontmatter block is bounded by the two `---` fences.
 
-- [ ] 5. Stage and commit:
+- [x] 5. Stage and commit:
   ```
   git add skills/ralph-doctor/SKILL.md skills/ralph-doctor/scripts/__init__.py
   git commit -m "chore(skills): scaffold ralph-doctor skill (SKILL.md, package marker)"
@@ -212,7 +212,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/__init__.py` with exactly the content below. This module is the contract every individual check obeys. The frozen dataclasses are deliberate — checks must not mutate the context, and the runner must not mutate results after collection.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/__init__.py` with exactly the content below. This module is the contract every individual check obeys. The frozen dataclasses are deliberate — checks must not mutate the context, and the runner must not mutate results after collection.
 
   ```python
   """Check protocol and registry for the ``ralph-doctor`` skill.
@@ -283,13 +283,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   """Map of ``RALPH_GIT_HOST`` value to the host-auth check module name."""
   ```
 
-- [ ] 2. Verify mypy is clean on the new file:
+- [x] 2. Verify mypy is clean on the new file:
   ```
   uv run mypy --config-file pyproject.toml skills/ralph-doctor
   ```
   Expected: no errors.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/__init__.py
   git commit -m "feat(ralph-doctor): define CheckResult / CheckContext / REGISTRY contract"
@@ -304,7 +304,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Write `tests/skills/test_ralph_doctor.py` covering the runner and every check. The file must contain nine test classes — `TestRunnerExitCodes`, `TestHostDispatch`, `TestPermissionsCheck`, `TestHooksCheck`, `TestSkillsCheck`, `TestMcpCheck`, `TestAuthCheck`, `TestHostStagingCheck`, `TestGithubAuthCheck`, `TestAdoAuthCheck` — and the helpers / fixtures described below. The module-loading fixture intentionally fails first (the runner does not yet exist) — that is the red step.
+- [x] 1. Write `tests/skills/test_ralph_doctor.py` covering the runner and every check. The file must contain nine test classes — `TestRunnerExitCodes`, `TestHostDispatch`, `TestPermissionsCheck`, `TestHooksCheck`, `TestSkillsCheck`, `TestMcpCheck`, `TestAuthCheck`, `TestHostStagingCheck`, `TestGithubAuthCheck`, `TestAdoAuthCheck` — and the helpers / fixtures described below. The module-loading fixture intentionally fails first (the runner does not yet exist) — that is the red step.
 
   Top of file:
   ```python
@@ -516,13 +516,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   - `test_200_means_routing_is_wrong_and_fails` — mock 200 → `fail`; message contains `"200"`.
   - `test_missing_env_var_fails` — `delenv("ADO_PAT")` → `fail`; message contains `ADO_PAT`.
 
-- [ ] 2. Run the new test file. Every test must fail because `check.py` and the check modules do not yet exist:
+- [x] 2. Run the new test file. Every test must fail because `check.py` and the check modules do not yet exist:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: the module-loading fixtures raise `AssertionError: missing entry script at ...` and `AssertionError: missing check module at ...`. This is the red step.
 
-- [ ] 3. Do NOT commit yet. The failing tests are consumed by Tasks 4–12. Holding the commit until Task 4 keeps the repo in a coherent state (red, with the runner missing) rather than red-and-impossible-to-import.
+- [x] 3. Do NOT commit yet. The failing tests are consumed by Tasks 4–12. Holding the commit until Task 4 keeps the repo in a coherent state (red, with the runner missing) rather than red-and-impossible-to-import.
 
 ---
 
@@ -533,7 +533,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/check.py`. The runner has four responsibilities: load the check contract (via `importlib.util.spec_from_file_location` because the directory name contains a hyphen), parse CLI args, read `RALPH_GIT_HOST` and resolve the host-auth check (`github_auth` or `ado_auth`), then iterate `REGISTRY` invoking each check and skipping the non-dispatched host check.
+- [x] 1. Create `skills/ralph-doctor/scripts/check.py`. The runner has four responsibilities: load the check contract (via `importlib.util.spec_from_file_location` because the directory name contains a hyphen), parse CLI args, read `RALPH_GIT_HOST` and resolve the host-auth check (`github_auth` or `ado_auth`), then iterate `REGISTRY` invoking each check and skipping the non-dispatched host check.
 
   Imports + constants + logging setup:
   ```python
@@ -830,13 +830,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
       raise SystemExit(main())
   ```
 
-- [ ] 2. Run the runner-level + host-dispatch tests; per-check tests are still red because their modules are missing:
+- [x] 2. Run the runner-level + host-dispatch tests; per-check tests are still red because their modules are missing:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestRunnerExitCodes tests/skills/test_ralph_doctor.py::TestHostDispatch -v
   ```
   Expected: every `TestRunnerExitCodes` test fails with a `FileNotFoundError` raised inside `_load_check_module` — that is the documented behaviour when a referenced check is missing. The `test_unset_host_returns_two` and `test_unknown_host_returns_two` cases pass (they exit 2 before any check is loaded). The runner itself is correct.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add tests/skills/test_ralph_doctor.py skills/ralph-doctor/scripts/check.py
   git commit -m "feat(ralph-doctor): add runner with host dispatch + failing test suite"
@@ -852,7 +852,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/permissions.py`. Module structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/permissions.py`. Module structure:
   - Module docstring summarising the rule: coverage of `Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `Skill`, plus the host-pure skills `pr` and `workitem-fetch`. An entry covers a tool if it is exactly the tool name, `Tool(...)` (anything between parens), or the global `*`.
   - Imports: `json`, `Path`, plus `CheckContext` / `CheckResult` from `. import` (relative).
   - Module constants:
@@ -871,13 +871,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If either non-empty → `fail` with details `{"missing": missing, "missing_skills": missing_skills, "allow": allow}` and a message naming both lists.
     - Otherwise → `pass` with message `f"permissions.allow covers all {len(REQUIRED_TOOLS)} required tools and {len(REQUIRED_SKILLS)} required skills."` and details `{"required_tools": list(REQUIRED_TOOLS), "required_skills": list(REQUIRED_SKILLS), "allow_entries": len(allow)}`.
 
-- [ ] 2. Run the permissions tests:
+- [x] 2. Run the permissions tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestPermissionsCheck -v
   ```
   Expected: every test passes. If any fail, fix the check — do NOT change the tests.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/permissions.py
   git commit -m "feat(ralph-doctor): implement permissions check"
@@ -892,7 +892,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/hooks.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/hooks.py`. Structure:
   - Module docstring: scans every `command` string in `settings.json["hooks"]` for interactive indicators. Matches on `async: true` hooks downgrade from error to warn (async hooks cannot block claude but are still a smell).
   - Module constant:
     ```python
@@ -910,13 +910,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - Else if `async_offences` non-empty → return `severity="warn"`, `status="fail"`, message listing async offences, `details={"async": async_offences}`.
     - Otherwise → `severity="error"`, `status="pass"`, message `"No hook calls AskUserQuestion or blocks on stdin."`, `details={"hooks_checked": len(flattened)}`.
 
-- [ ] 2. Run the hooks tests:
+- [x] 2. Run the hooks tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestHooksCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/hooks.py
   git commit -m "feat(ralph-doctor): implement hooks check (AskUserQuestion / stdin scan)"
@@ -931,7 +931,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/skills.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/skills.py`. Structure:
   - Module docstring: heuristic substring scan over `SKILL.md` body and `scripts/*.py`. Markdown regions wrapped with `<!-- ralph-doctor: ignore -->` ... `<!-- /ralph-doctor: ignore -->` are dropped before the search. Python lines containing `# noqa: ralph-doctor` are dropped.
   - Module constants:
     ```python
@@ -949,13 +949,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If offences non-empty: dedupe + sort. Derive a short list of skill names from the offending paths (the immediate parent directory if `parent.name == "scripts"`, otherwise the parent itself). Return `severity="error"`, `status="fail"`, message naming the skills, `details={"offending_files": offences}`.
     - Otherwise: `pass` with message `f"No installed skill calls AskUserQuestion in its main path (scanned {skills_seen} skill(s))."` and `details={"skills_scanned": skills_seen}`.
 
-- [ ] 2. Run the skills tests:
+- [x] 2. Run the skills tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestSkillsCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/skills.py
   git commit -m "feat(ralph-doctor): implement skills check (AskUserQuestion scan)"
@@ -970,7 +970,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/mcp.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/mcp.py`. Structure:
   - Module docstring: walks `mcpServers` from settings.json AND any sibling `.mcp.json`. Flags any server whose `command`, `args`, or `env` contains an OAuth indicator.
   - Module constant:
     ```python
@@ -989,13 +989,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If offenders non-empty → `fail` with message listing each offender + the matched needle, `details={"offenders": offenders, "total_servers": len(servers)}`.
     - Otherwise → `pass` with message `f"All {len(servers)} MCP server(s) use non-interactive auth."` and `details={"total_servers": len(servers)}`.
 
-- [ ] 2. Run the MCP tests:
+- [x] 2. Run the MCP tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestMcpCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/mcp.py
   git commit -m "feat(ralph-doctor): implement mcp check (no OAuth on cold start)"
@@ -1010,7 +1010,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/auth.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/auth.py`. Structure:
   - Module docstring: POSTs a tiny single-message body to `/v1/messages/count_tokens` — the endpoint requires the API key but does not consume quota. 2xx → pass; non-2xx → fail. Under `RALPH_USE_BEDROCK=1`, probes Bedrock via boto3.
   - Module constants:
     ```python
@@ -1043,13 +1043,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     return _anthropic_probe()
     ```
 
-- [ ] 2. Run the auth tests:
+- [x] 2. Run the auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestAuthCheck -v
   ```
   Expected: every test passes. `responses` intercepts the POST to `https://api.anthropic.com/v1/messages/count_tokens`.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/auth.py
   git commit -m "feat(ralph-doctor): implement auth check (Anthropic + Bedrock cold start)"
@@ -1064,7 +1064,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/host_staging.py`. This check is the "did the executor stage the right skill bundle" gate — it always runs regardless of `RALPH_GIT_HOST`. The check reads the YAML frontmatter of `<skills_dir>/pr/SKILL.md` and `<skills_dir>/workitem-fetch/SKILL.md` and asserts the frontmatter `name:` value equals `pr-<host>` and `workitem-fetch-<host>` respectively. Both skills are required; either missing or mismatched → fail.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/host_staging.py`. This check is the "did the executor stage the right skill bundle" gate — it always runs regardless of `RALPH_GIT_HOST`. The check reads the YAML frontmatter of `<skills_dir>/pr/SKILL.md` and `<skills_dir>/workitem-fetch/SKILL.md` and asserts the frontmatter `name:` value equals `pr-<host>` and `workitem-fetch-<host>` respectively. Both skills are required; either missing or mismatched → fail.
 
   Structure:
   - Module docstring: explains the staging contract. The executor's `host_select.py` (Plan 7) copies or symlinks `skills/pr-<host>/` to `~/.claude/skills/pr/` and likewise for `workitem-fetch`. The frontmatter `name:` field is the load-bearing signal — Claude Code reads it at skill discovery time, and the doctor reads it here to verify the staging step worked.
@@ -1102,13 +1102,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
       and `details={"offences": offences, "git_host": context.git_host, "skills_dir": str(context.skills_dir)}`.
     - Otherwise → `pass` with message `f"Staged 'pr' and 'workitem-fetch' skills match RALPH_GIT_HOST={context.git_host}."` and `details={"checked": [...names...], "git_host": context.git_host}`.
 
-- [ ] 2. Run the host_staging tests:
+- [x] 2. Run the host_staging tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestHostStagingCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/host_staging.py
   git commit -m "feat(ralph-doctor): implement host_staging check (frontmatter vs RALPH_GIT_HOST)"
@@ -1123,7 +1123,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/github_auth.py`. The check probes GitHub's REST API to prove (a) the PAT works at all (`GET /user`) and (b) the PAT has scopes covering the `/repos/...` surface that the `pr-github` skill needs (`GET /repos/{owner}/test-permissions` — a sentinel repo name; 404 means "auth and scopes work, this repo just doesn't exist", which is exactly the cheap proof we want).
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/github_auth.py`. The check probes GitHub's REST API to prove (a) the PAT works at all (`GET /user`) and (b) the PAT has scopes covering the `/repos/...` surface that the `pr-github` skill needs (`GET /repos/{owner}/test-permissions` — a sentinel repo name; 404 means "auth and scopes work, this repo just doesn't exist", which is exactly the cheap proof we want).
 
   Structure:
   - Module docstring: explains the two-step probe. References the GitHub REST docs for `GET /user` (documented as the standard auth-test endpoint) and `GET /repos/{owner}/{repo}` (returns 404 for non-existent repos when scopes are sufficient; 403 when scopes are insufficient).
@@ -1162,13 +1162,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - Step 2: call `_repo_scope_probe`. If `not ok` → `fail` with message `f"GH_TOKEN auth ok (/user returned 2xx) but scope probe failed: {scope_msg}"`, details `{"step": "repo_scope", "status_code": scope_status, "owner": owner}`.
     - Otherwise → `pass` with message `f"GitHub auth resolved (/user 2xx; /repos/{owner}/{TEST_REPO_NAME} scope probe: {scope_msg})."` and details `{"user_status": user_status, "scope_status": scope_status, "owner": owner}`.
 
-- [ ] 2. Run the github_auth tests:
+- [x] 2. Run the github_auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestGithubAuthCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/github_auth.py
   git commit -m "feat(ralph-doctor): implement github_auth check (Phase 1: /user + scope probe)"
@@ -1183,7 +1183,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/ado_auth.py`. The check goes one level below `AdoClient` (Plan 2) and uses `requests` directly — `AdoClient.get` raises on 404, but the doctor needs 404-as-success. This file is the relocated, renamed `checks/ado.py` from earlier drafts; the probe logic is unchanged.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/ado_auth.py`. The check goes one level below `AdoClient` (Plan 2) and uses `requests` directly — `AdoClient.get` raises on 404, but the doctor needs 404-as-success. This file is the relocated, renamed `checks/ado.py` from earlier drafts; the probe logic is unchanged.
 
   Structure:
   - Module docstring: probes the ADO PR show endpoint against a non-existent PR ID. 404 → pass (PAT auth + project routing both work). Any other status / network failure → fail. Requires `ADO_PAT`, `ADO_ORG_URL`, `ADO_PROJECT`, `ADO_REPOSITORY`. This check runs only when `RALPH_GIT_HOST=ado`; the runner skips it otherwise.
@@ -1203,13 +1203,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If `response.status_code == 404` → `pass` with message `f"ADO PAT works (404 on non-existent PR {NON_EXISTENT_PR_ID}, as expected)."` and `details={"status_code": 404, "org": org, "project": project, "repo": repo}`.
     - Otherwise → `fail` with message `f"ADO probe returned {status} (expected 404); body preview: {preview!r}"` (preview is the first 200 chars of `response.text`, or `"<empty>"`), and `details={"status_code": status, "url": url}`.
 
-- [ ] 2. Run the ado_auth tests:
+- [x] 2. Run the ado_auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestAdoAuthCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/ado_auth.py
   git commit -m "feat(ralph-doctor): implement ado_auth check (Phase 2 relocated; PAT 404 probe)"
@@ -1224,19 +1224,19 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Run the full skill test file:
+- [x] 1. Run the full skill test file:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: every test (TestRunnerExitCodes + TestHostDispatch + TestPermissionsCheck + TestHooksCheck + TestSkillsCheck + TestMcpCheck + TestAuthCheck + TestHostStagingCheck + TestGithubAuthCheck + TestAdoAuthCheck) passes. If any fail, STOP and fix the check or runner — do NOT change the tests.
 
-- [ ] 2. Run the full project test suite to confirm no regression:
+- [x] 2. Run the full project test suite to confirm no regression:
   ```
   uv run pytest -v
   ```
   Expected: every test in the repo passes.
 
-- [ ] 3. Run the lint / type / format gates:
+- [x] 3. Run the lint / type / format gates:
   ```
   uv run ruff check skills/ralph-doctor tests/skills/test_ralph_doctor.py
   uv run ruff format --check skills/ralph-doctor tests/skills/test_ralph_doctor.py
@@ -1244,20 +1244,20 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   ```
   Expected: all three commands pass with zero findings. Fix any inline; this is the conventions self-review step.
 
-- [ ] 4. Smoke the runner end-to-end against this developer's real `~/.claude/settings.json` (offline checks only). The developer's local laptop is Phase 1 — set `RALPH_GIT_HOST=github`:
+- [x] 4. Smoke the runner end-to-end against this developer's real `~/.claude/settings.json` (offline checks only). The developer's local laptop is Phase 1 — set `RALPH_GIT_HOST=github`:
   ```
   RALPH_GIT_HOST=github uv run python skills/ralph-doctor/scripts/check.py --skip auth,github_auth,host_staging
   ```
   Expected: JSON document on stdout with `summary.passes >= 4`; human summary on stderr listing each check; exit code 0 if the local config is ralph-safe. If it returns non-zero, that's a real finding — record it (the doctor is doing its job) but do NOT change the doctor to ignore it.
 
-- [ ] 5. Smoke the host-dispatcher behaviour (no real env needed — settings.json missing → exit 2 is expected, but we're checking the host dispatch wins first):
+- [x] 5. Smoke the host-dispatcher behaviour (no real env needed — settings.json missing → exit 2 is expected, but we're checking the host dispatch wins first):
   ```
   uv run python skills/ralph-doctor/scripts/check.py
   echo "exit=$?"
   ```
   Expected: exit 2; stderr contains `RALPH_GIT_HOST is not set` and the pointer to the orchestrator file.
 
-- [ ] 6. Stage and commit any format / lint fixes from step 3 (skip if none):
+- [x] 6. Stage and commit any format / lint fixes from step 3 (skip if none):
   ```
   git add -A
   git commit -m "chore(ralph-doctor): apply ruff format + lint fixes"
@@ -1269,19 +1269,19 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 This gate corresponds to the orchestrator's verification table for Plan 11.
 
-- [ ] 1. From the ralph repo root, run:
+- [x] 1. From the ralph repo root, run:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: every test passes.
 
-- [ ] 2. Run the wider gate from the orchestrator:
+- [x] 2. Run the wider gate from the orchestrator:
   ```
   uv run ruff check . && uv run ruff format --check . && uv run mypy --config-file pyproject.toml ralph_executor scripts skills && uv run pytest
   ```
   Expected: every gate passes.
 
-- [ ] 3. Confirm the skill directory layout matches the file structure in this plan:
+- [x] 3. Confirm the skill directory layout matches the file structure in this plan:
   ```
   ls -1 skills/ralph-doctor/
   ls -1 skills/ralph-doctor/scripts/
@@ -1292,14 +1292,14 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   - `skills/ralph-doctor/scripts/`: `__init__.py`, `check.py`, `checks`
   - `skills/ralph-doctor/scripts/checks/`: `__init__.py`, `permissions.py`, `hooks.py`, `skills.py`, `mcp.py`, `auth.py`, `host_staging.py`, `github_auth.py`, `ado_auth.py`
 
-- [ ] 4. Sanity-check the host dispatcher fails fast on unset `RALPH_GIT_HOST`:
+- [x] 4. Sanity-check the host dispatcher fails fast on unset `RALPH_GIT_HOST`:
   ```
   uv run python skills/ralph-doctor/scripts/check.py
   echo "exit_code=$?"
   ```
   Expected: stderr contains `RALPH_GIT_HOST is not set`; final shell line shows `exit_code=2`.
 
-- [ ] 5. Sanity-check exit code 1 on a deliberately broken settings.json under the github host:
+- [x] 5. Sanity-check exit code 1 on a deliberately broken settings.json under the github host:
   ```
   echo '{"permissions":{"allow":["Bash"]}}' > /tmp/bad_settings.json
   RALPH_GIT_HOST=github GH_TOKEN=fake GH_OWNER=fake \
@@ -1313,7 +1313,7 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   ```
   Expected: JSON shows `"ok": false` and `"exit_code": 1`; the final shell line shows `exit_code=1`.
 
-- [ ] 6. Sanity-check that staging mismatch is caught — build a tiny skills tree where `pr/SKILL.md` claims `name: pr-ado` while `RALPH_GIT_HOST=github`:
+- [x] 6. Sanity-check that staging mismatch is caught — build a tiny skills tree where `pr/SKILL.md` claims `name: pr-ado` while `RALPH_GIT_HOST=github`:
   ```
   STAGE=$(mktemp -d)
   mkdir -p "$STAGE/pr" "$STAGE/workitem-fetch"
@@ -1331,7 +1331,7 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   ```
   Expected: JSON shows the `host_staging` entry with `status: fail` and message containing `pr-ado` (the actual) and `pr-github` (the expected); `exit_code=1`.
 
-- [ ] 7. Open a PR:
+- [x] 7. Open a PR:
   ```
   git push -u origin HEAD
   gh pr create --title "feat(ralph-doctor): preflight skill (Plan 11)" --body "$(cat <<'EOF'

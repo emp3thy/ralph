@@ -49,7 +49,7 @@ All tasks ≥ 90%. Pre-flight checks (line numbers, fixture names, library usage
 **Files:**
 - Modify: `tests/skills/test_pr_github.py` (append at end of file)
 
-- [ ] **Step 1.1: Add the test fixture helpers**
+- [x] **Step 1.1: Add the test fixture helpers**
 
 Append to the end of `tests/skills/test_pr_github.py`:
 
@@ -98,7 +98,7 @@ def _run_lookup(
     )
 ```
 
-- [ ] **Step 1.2: Add the test cases**
+- [x] **Step 1.2: Add the test cases**
 
 Append these tests after the helpers:
 
@@ -261,7 +261,7 @@ def test_lookup_by_branch_github_500_exits_3() -> None:
     assert "github error" in result.stderr
 ```
 
-- [ ] **Step 1.3: Run the new tests and verify they fail**
+- [x] **Step 1.3: Run the new tests and verify they fail**
 
 ```bash
 uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
@@ -269,7 +269,7 @@ uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
 
 Expected: **9 FAILs** — `FileNotFoundError` or similar because `lookup_by_branch.py` doesn't exist yet.
 
-- [ ] **Step 1.4: Commit**
+- [x] **Step 1.4: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add tests/skills/test_pr_github.py
@@ -283,7 +283,7 @@ git -C /c/Users/gethi/source/ralph commit -m "test(pr-github): failing tests for
 **Files:**
 - Create: `skills/pr-github/scripts/lookup_by_branch.py`
 
-- [ ] **Step 2.1: Scaffold the script**
+- [x] **Step 2.1: Scaffold the script**
 
 Create `skills/pr-github/scripts/lookup_by_branch.py` with the imports and argparse shape that mirrors `show.py`:
 
@@ -355,7 +355,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 ```
 
-- [ ] **Step 2.2: Add the PR-state mapping helper**
+- [x] **Step 2.2: Add the PR-state mapping helper**
 
 Append to the same file:
 
@@ -378,7 +378,7 @@ def _map_pr_state(raw_state: str, merged_at: str | None) -> str:
     raise FatalError(f"unexpected GitHub PR state: {raw_state!r}")
 ```
 
-- [ ] **Step 2.3: Add the lookup function**
+- [x] **Step 2.3: Add the lookup function**
 
 ```python
 def _lookup_pr(
@@ -439,7 +439,7 @@ def _lookup_branch(client: Any, repo: str, branch: str) -> bool:
     return True
 ```
 
-- [ ] **Step 2.4: Add the main entry point**
+- [x] **Step 2.4: Add the main entry point**
 
 ```python
 def main(argv: list[str] | None = None) -> int:
@@ -473,7 +473,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2.5: Run the failing tests and verify they now pass**
+- [x] **Step 2.5: Run the failing tests and verify they now pass**
 
 ```bash
 uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
@@ -481,7 +481,7 @@ uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
 
 Expected: **9 PASS**.
 
-- [ ] **Step 2.6: Run ruff + mypy on the new file**
+- [x] **Step 2.6: Run ruff + mypy on the new file**
 
 ```bash
 uv run ruff check skills/pr-github/scripts/lookup_by_branch.py
@@ -490,7 +490,7 @@ uv run mypy --strict skills/pr-github/scripts/lookup_by_branch.py
 
 Expected: all green. If mypy complains about `client: Any` — that's intentional; `load_client()` returns an internal dataclass. If it asks for an import, satisfy it minimally without changing the runtime shape.
 
-- [ ] **Step 2.7: Commit**
+- [x] **Step 2.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add skills/pr-github/scripts/lookup_by_branch.py
@@ -505,7 +505,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(pr-github): add lookup_by_bra
 - Modify: `ralph_executor/sweep/types.py` (append at end)
 - Create: `tests/executor/sweep/test_reconcile.py`
 
-- [ ] **Step 3.1: Add types to `sweep/types.py`**
+- [x] **Step 3.1: Add types to `sweep/types.py`**
 
 Append to `ralph_executor/sweep/types.py`:
 
@@ -539,7 +539,7 @@ class ReconcileReport:
 
 (Note: `Mapping` import is needed; `from collections.abc import Mapping` already added inline above. If `Mapping` is already imported at the top of types.py, drop the inline import.)
 
-- [ ] **Step 3.2: Run mypy to confirm the types load**
+- [x] **Step 3.2: Run mypy to confirm the types load**
 
 ```bash
 uv run mypy --strict ralph_executor/sweep/types.py
@@ -547,7 +547,7 @@ uv run mypy --strict ralph_executor/sweep/types.py
 
 Expected: green.
 
-- [ ] **Step 3.3: Create the failing reconcile test file**
+- [x] **Step 3.3: Create the failing reconcile test file**
 
 Create `tests/executor/sweep/test_reconcile.py`:
 
@@ -961,7 +961,7 @@ def test_reconcile_all_skips_dirs_with_pr_link(
     assert "HEALTHY" not in report.actions
 ```
 
-- [ ] **Step 3.4: Run the failing tests**
+- [x] **Step 3.4: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/sweep/test_reconcile.py -v
@@ -969,7 +969,7 @@ uv run pytest tests/executor/sweep/test_reconcile.py -v
 
 Expected: **all FAIL** at collection time — `ImportError: cannot import 'reconcile' from 'ralph_executor.sweep'`.
 
-- [ ] **Step 3.5: Commit**
+- [x] **Step 3.5: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/types.py tests/executor/sweep/test_reconcile.py
@@ -983,7 +983,7 @@ git -C /c/Users/gethi/source/ralph commit -m "test(sweep): failing tests for rec
 **Files:**
 - Create: `ralph_executor/sweep/reconcile.py`
 
-- [ ] **Step 4.1: Write the module skeleton**
+- [x] **Step 4.1: Write the module skeleton**
 
 Create `ralph_executor/sweep/reconcile.py`:
 
@@ -1044,7 +1044,7 @@ class _LookupResult:
     branch_exists: bool | None
 ```
 
-- [ ] **Step 4.2: Add the subprocess invocation + JSON parser**
+- [x] **Step 4.2: Add the subprocess invocation + JSON parser**
 
 Append to the same file:
 
@@ -1114,7 +1114,7 @@ def _invoke_lookup(
     )
 ```
 
-- [ ] **Step 4.3: Add the per-orphan reconcile function**
+- [x] **Step 4.3: Add the per-orphan reconcile function**
 
 Append to the same file:
 
@@ -1221,7 +1221,7 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat()
 ```
 
-- [ ] **Step 4.4: Add `reconcile_all`**
+- [x] **Step 4.4: Add `reconcile_all`**
 
 Append:
 
@@ -1266,7 +1266,7 @@ def reconcile_all(
     return ReconcileReport(actions=actions, errors=errors)
 ```
 
-- [ ] **Step 4.5: Run the failing tests**
+- [x] **Step 4.5: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/sweep/test_reconcile.py -v
@@ -1276,7 +1276,7 @@ Expected: **all PASS**.
 
 If `test_reconcile_orphan_invokes_lookup_with_correct_args` fails because the argv order differs: the test asserts `--branch` and `--include-branch-check` are present and that the branch value follows `--branch`. The implementation's argv builder in Step 4.2 satisfies both. If something else moved, update the implementation to match the test contract (the test is the spec).
 
-- [ ] **Step 4.6: Run ruff + mypy**
+- [x] **Step 4.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check ralph_executor/sweep/reconcile.py
@@ -1285,7 +1285,7 @@ uv run mypy --strict ralph_executor/sweep/reconcile.py
 
 Expected: green.
 
-- [ ] **Step 4.7: Commit**
+- [x] **Step 4.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/reconcile.py
@@ -1300,7 +1300,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(sweep): add reconcile.py for 
 - Modify: `ralph_executor/sweep/runner.py:201-206`
 - Modify: `tests/executor/sweep/test_runner.py` (existing missing-PR-LINK test)
 
-- [ ] **Step 5.1: Find the existing "missing PR-LINK.md" test**
+- [x] **Step 5.1: Find the existing "missing PR-LINK.md" test**
 
 ```bash
 grep -n "PR-LINK.md is missing" tests/executor/sweep/test_runner.py
@@ -1308,7 +1308,7 @@ grep -n "PR-LINK.md is missing" tests/executor/sweep/test_runner.py
 
 If a test exists asserting the old error string, note its name. Update it in Step 5.4.
 
-- [ ] **Step 5.2: Replace the `run()` loop body in `runner.py`**
+- [x] **Step 5.2: Replace the `run()` loop body in `runner.py`**
 
 In `ralph_executor/sweep/runner.py`, find the `run()` function (around line 194). Replace the per-PBI loop body (currently lines 201–206):
 
@@ -1359,7 +1359,7 @@ with:
 
 The local import is intentional: `reconcile.py` imports `SweepContext` from `runner.py`, so importing reconcile at module-load time creates a cycle. Local import inside `run()` breaks it without restructuring.
 
-- [ ] **Step 5.3: Verify the import-cycle hypothesis quickly**
+- [x] **Step 5.3: Verify the import-cycle hypothesis quickly**
 
 Run:
 
@@ -1369,7 +1369,7 @@ uv run python -c "from ralph_executor.sweep import runner, reconcile; print('ok'
 
 Expected: `ok`. If `ImportError: cannot import name 'SweepContext'`, the cycle is real and the local import is necessary. If the line prints `ok` with a top-level import too, you can move the import up — but the local-import shape is correct either way.
 
-- [ ] **Step 5.4: Update or remove the legacy missing-PR-LINK test in test_runner.py**
+- [x] **Step 5.4: Update or remove the legacy missing-PR-LINK test in test_runner.py**
 
 If Step 5.1 found a test that asserts `"PR-LINK.md is missing; cannot determine PR id"` in sweep errors, rewrite it to:
 
@@ -1425,7 +1425,7 @@ def test_run_reconciles_orphan_when_pr_link_missing(
 
 If Step 5.1 found NO matching test (this codebase may not have one), skip this step and proceed.
 
-- [ ] **Step 5.5: Run the sweep test module**
+- [x] **Step 5.5: Run the sweep test module**
 
 ```bash
 uv run pytest tests/executor/sweep/ -v
@@ -1433,14 +1433,14 @@ uv run pytest tests/executor/sweep/ -v
 
 Expected: all green.
 
-- [ ] **Step 5.6: Run ruff + mypy on the touched files**
+- [x] **Step 5.6: Run ruff + mypy on the touched files**
 
 ```bash
 uv run ruff check ralph_executor/sweep/runner.py
 uv run mypy --strict ralph_executor/sweep/runner.py
 ```
 
-- [ ] **Step 5.7: Commit**
+- [x] **Step 5.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/runner.py tests/executor/sweep/test_runner.py
@@ -1455,7 +1455,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(sweep): wire reconcile into r
 - Modify: `ralph_executor/cli.py` (around line 165, after `scaffold_parser`)
 - Create: `tests/executor/test_cli_reconcile.py`
 
-- [ ] **Step 6.1: Write the failing CLI test**
+- [x] **Step 6.1: Write the failing CLI test**
 
 Create `tests/executor/test_cli_reconcile.py`:
 
@@ -1548,7 +1548,7 @@ def test_reconcile_dry_run_flag_flows_through(
     assert captured_calls == [True]
 ```
 
-- [ ] **Step 6.2: Run failing tests**
+- [x] **Step 6.2: Run failing tests**
 
 ```bash
 uv run pytest tests/executor/test_cli_reconcile.py -v
@@ -1556,7 +1556,7 @@ uv run pytest tests/executor/test_cli_reconcile.py -v
 
 Expected: FAIL — `argparse error: invalid choice: 'reconcile'` (or similar).
 
-- [ ] **Step 6.3: Add the subparser in `cli.py`**
+- [x] **Step 6.3: Add the subparser in `cli.py`**
 
 In `ralph_executor/cli.py`, find the end of the `scaffold_parser` block (around line 175–180). Add a new subparser after it:
 
@@ -1587,7 +1587,7 @@ In `ralph_executor/cli.py`, find the end of the `scaffold_parser` block (around 
     )
 ```
 
-- [ ] **Step 6.4: Add the dispatch + import in cli.py**
+- [x] **Step 6.4: Add the dispatch + import in cli.py**
 
 At the top of `cli.py`, add the imports for reconcile_all and SweepContext:
 
@@ -1672,7 +1672,7 @@ Add the `ReconcileReport` import alongside the existing imports:
 from ralph_executor.sweep.types import ReconcileReport
 ```
 
-- [ ] **Step 6.5: Run the failing tests**
+- [x] **Step 6.5: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/test_cli_reconcile.py -v
@@ -1682,14 +1682,14 @@ Expected: **PASS**.
 
 If a test fails because `prepare_host_environment` isn't easily mockable for the test fixture: add a `_skip_host_prep` shortcut for tests by allowing `cfg.git_host == "fake"` to bypass real staging. Or, simpler, monkeypatch `ralph_executor.cli.prepare_host_environment` in the test to return a `Path`.
 
-- [ ] **Step 6.6: Run ruff + mypy**
+- [x] **Step 6.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check ralph_executor/cli.py
 uv run mypy --strict ralph_executor/cli.py
 ```
 
-- [ ] **Step 6.7: Commit**
+- [x] **Step 6.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/cli.py tests/executor/test_cli_reconcile.py

@@ -16,8 +16,10 @@ dist/
 # the queue state is the whole purpose of this branch. The same line on
 # main DOES ignore it. Per-branch .gitignore divergence is by design.
 # But .ralph/state/ is per-checkout LOCAL state (events.db, halt sentinel,
-# sweep cache) — it must NOT be tracked even on ralph-queue.
+# sweep cache) — it must NOT be tracked even on ralph-queue. .ralph-work/
+# is per-checkout worktree state (Stage-B two-worktree mode) — also local.
 .ralph/state/
+.ralph-work/
 .worktrees/
 .superpowers/
 

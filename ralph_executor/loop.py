@@ -27,7 +27,6 @@ import overrides in production; the loop itself stays untouched.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import time
 from collections.abc import Iterator
@@ -59,8 +58,32 @@ from ralph_executor.safety import (
     open_log,
 )
 from ralph_executor.types import PBI
+from ralph_executor.worktree import (
+    ensure_worktree,
+    queue_worktree_path,
+    remove_worktree,
+    work_worktree_path,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _queue_repo_root(cfg: ExecutorConfig) -> Path:
+    """Repo root that owns ``.ralph/`` (events.db, sentinel, blocked/, …).
+
+    In worktree mode ``.ralph/`` lives in the queue worktree, not the
+    primary checkout (which is typically on ``main`` and has no
+    ``.ralph/`` directory). Every operation that reads or writes under
+    ``.ralph/`` — opening the event log, moving PBIs to ``.ralph/blocked/``,
+    handling STUCK.md, checking/writing the halt sentinel — must route
+    through this helper. Otherwise the side-effects silently land in the
+    primary checkout's working tree, where they are never committed or
+    pushed and become invisible after a process restart.
+    """
+    if cfg.use_worktrees:
+        return queue_worktree_path(cfg.repo_path)
+    return cfg.repo_path
+
 
 IterationOutcome = Literal[
     "idle",
@@ -96,17 +119,21 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
     directly from the filesystem so it can stay isolated from the queue
     abstraction.
 
-    Production-safety: the sweep needs ``RALPH_ADO_AUTHOR_EMAIL`` (to skip
-    Ralph-authored PR comments so the loop doesn't feed back into itself)
-    and a PR-skill scripts directory matching the configured git host. If
-    either is missing the sweep is skipped with a WARNING — the loop must
-    keep running rather than abort, since pre-Plan-8 deployments and the
-    bulk of the executor test suite don't set these.
+    Production-safety: the sweep needs ``cfg.bot_author_email`` (used to
+    skip ralph-authored PR comments so the loop doesn't feed back into
+    itself) and a PR-skill scripts directory matching the configured git
+    host. If either is missing the sweep is skipped with a WARNING — the
+    loop must keep running rather than abort, since pre-Plan-8 deployments
+    and the bulk of the executor test suite don't set the author email.
+    Validation of ``cfg.stale_days`` (must be positive) lives in
+    ``config.load_config``; this function trusts the value.
     """
     del source  # sweep walks the filesystem directly
-    ralph_email = os.environ.get("RALPH_ADO_AUTHOR_EMAIL", "").strip()
-    if not ralph_email:
-        log.warning("sweep: RALPH_ADO_AUTHOR_EMAIL is not set; skipping sweep this iteration")
+    if not cfg.bot_author_email:
+        log.warning(
+            "sweep: bot_author_email is not set (TOML key 'bot_author_email' "
+            "or env RALPH_ADO_AUTHOR_EMAIL); skipping sweep this iteration"
+        )
         return
 
     scripts_path = _pr_skill_scripts_path(cfg)
@@ -117,32 +144,13 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         )
         return
 
-    raw_days = os.environ.get("RALPH_STALE_DAYS", "3").strip() or "3"
-    try:
-        stale_days = int(raw_days)
-    except ValueError:
-        log.warning(
-            "sweep: RALPH_STALE_DAYS=%r is not an integer; falling back to 3",
-            raw_days,
-        )
-        stale_days = 3
-    # SweepConfig.__post_init__ rejects stale_threshold <= 0 — without
-    # this guard, RALPH_STALE_DAYS=0 (or negative) would surface as an
-    # uncaught ValueError from __post_init__ that aborts iterate_once.
-    if stale_days <= 0:
-        log.warning(
-            "sweep: RALPH_STALE_DAYS=%d is not positive; falling back to 3",
-            stale_days,
-        )
-        stale_days = 3
-
     from ralph_executor.sweep import run as run_sweep
     from ralph_executor.sweep.runner import SweepConfig, SweepContext
 
     sweep_cfg = SweepConfig(
-        ralph_author_email=ralph_email,
+        ralph_author_email=cfg.bot_author_email,
         max_attempts=cfg.max_attempts,
-        stale_threshold=timedelta(days=stale_days),
+        stale_threshold=timedelta(days=cfg.stale_days),
         now=datetime.now(tz=UTC),
     )
     sweep_ctx = SweepContext(
@@ -189,7 +197,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
     it without dependency-injection (reconciliation #9).
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         events = event_log.recent(window=timedelta(hours=72), now=now)
     finally:
@@ -201,7 +209,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
         "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
         len(signals),
     )
-    halt_and_acknowledge(repo=cfg.repo_path, signals=signals, now=now)
+    halt_and_acknowledge(repo=_queue_repo_root(cfg), signals=signals, now=now)
     return True
 
 
@@ -211,6 +219,15 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
 
 
 def _ensure_on_queue_branch(cfg: ExecutorConfig) -> None:
+    """Make the primary checkout's HEAD match ``cfg.queue_branch``.
+
+    In worktree mode the queue worktree owns ``cfg.queue_branch`` and
+    git refuses to check the same branch out in two worktrees, so this
+    is a no-op — callers that need to read ``.ralph/`` use the queue
+    worktree path instead.
+    """
+    if cfg.use_worktrees:
+        return
     if git_ops.current_branch(cfg.repo_path) != cfg.queue_branch:
         git_ops.checkout(cfg.repo_path, cfg.queue_branch)
 
@@ -236,13 +253,21 @@ def _persist_iteration_writes(
     iteration. No-ops cleanly when the index ends up empty and when the
     PBI was already moved out of current/ by a sibling code path.
 
+    In worktree mode (``cfg.use_worktrees=True``) all git operations run
+    against the long-lived queue worktree at
+    ``<repo>/.ralph-work/queue/`` — no branch switching on the primary
+    checkout. Legacy single-checkout mode keeps the original behaviour
+    (``_ensure_on_queue_branch`` swaps the primary to ``cfg.queue_branch``
+    before staging).
+
     Emits ``FILE_TOUCHED`` to ``event_log`` when a new commit lands and
     the diff is non-empty. The cycle detector reserves the event for
     future per-iteration rules (no current rule reads it; emit for
     forward compatibility).
     """
     _ensure_on_queue_branch(cfg)
-    pbi_dir = cfg.repo_path / ".ralph" / "current" / pbi_id
+    queue_repo = queue_worktree_path(cfg.repo_path) if cfg.use_worktrees else cfg.repo_path
+    pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
     if not pbi_dir.is_dir():
         # PBI was moved out of current/ by handle_stuck or
         # move_current_to_pending_pr — nothing to persist here.
@@ -250,15 +275,15 @@ def _persist_iteration_writes(
     # Use add_all_changes so deletions of tracked files (e.g. Claude
     # removing a resolved STUCK.md) are staged too — bare `git add <dir>`
     # would skip them and leave index + working tree divergent.
-    git_ops.add_all_changes(cfg.repo_path, pbi_dir)
-    head_before = git_ops.rev_parse_head(cfg.repo_path)
+    git_ops.add_all_changes(queue_repo, pbi_dir)
+    head_before = git_ops.rev_parse_head(queue_repo)
     message = f"chore(queue): persist iteration writes for {pbi_id}"
-    head_after = git_ops.commit_index(cfg.repo_path, message)
+    head_after = git_ops.commit_index(queue_repo, message)
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
-        git_ops.push(cfg.repo_path, cfg.queue_branch)
+        git_ops.push(queue_repo, cfg.queue_branch)
         if event_log is not None:
-            files = git_ops.diff_names(cfg.repo_path, head_before, head_after)
+            files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:
                 recorded_at = now if now is not None else datetime.now(tz=UTC)
                 event_log.append(
@@ -273,6 +298,13 @@ def _persist_iteration_writes(
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
     log.debug("pulling %s", cfg.queue_branch)
+    if cfg.use_worktrees:
+        # Materialise (or reuse) the queue worktree before pulling so the
+        # very first iteration on a fresh repo still has a path to update.
+        queue_wt = queue_worktree_path(cfg.repo_path)
+        ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
+        git_ops.pull(queue_wt, cfg.queue_branch)
+        return
     _ensure_on_queue_branch(cfg)
     git_ops.pull(cfg.repo_path, cfg.queue_branch)
 
@@ -287,10 +319,48 @@ def _feature_branch_name(pbi: PBI) -> str:
     return f"ralph/{pbi.id}"
 
 
+def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
+    """Remove the per-PBI work worktree on a terminal iteration outcome.
+
+    Called when the PBI leaves ``current/`` (pr_created → pending-pr,
+    handle_stuck → blocked, max-attempts → blocked). The feature branch
+    ``ralph/<PBI-ID>`` is preserved so pending-pr PBIs keep a branch to
+    point the PR at; only the working directory at
+    ``<repo>/.ralph-work/repo-<PBI-id>/`` is torn down.
+
+    No-op in legacy single-checkout mode. Tolerant of removal failures —
+    an orphan worktree is recoverable (operator can ``git worktree
+    prune``), but raising here would obscure the real terminal outcome
+    the iteration is reporting.
+    """
+    if not cfg.use_worktrees:
+        return
+    work_wt = work_worktree_path(cfg.repo_path, pbi_id)
+    try:
+        remove_worktree(cfg.repo_path, work_wt)
+    except Exception:
+        log.warning(
+            "failed to remove work worktree at %s; orphan left for manual prune",
+            work_wt,
+            exc_info=True,
+        )
+
+
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
-    Sequence (matches the spec's "Branch dance"):
+    Worktree mode (``cfg.use_worktrees=True``):
+      1. Ensure the long-lived queue worktree at
+         ``<repo>/.ralph-work/queue/`` is on ``cfg.queue_branch``.
+      2. ``git fetch origin`` so ``origin/<main_branch>`` and any
+         existing ``origin/ralph/<PBI-ID>`` ref are current.
+      3. ``move_inbox_to_current`` operates against the queue worktree
+         (movements._move resolves the path via ``cfg.use_worktrees``).
+      4. Materialise the per-PBI work worktree at
+         ``<repo>/.ralph-work/repo-<PBI-ID>/`` on ``ralph/<PBI-ID>``,
+         forked from ``origin/<main_branch>`` when the branch is new.
+
+    Legacy single-checkout mode (``cfg.use_worktrees=False``):
       1. ``move_inbox_to_current`` (commits + pushes on ralph-queue,
          emits ``PBI_OPENED`` to the event log for the cycle detector).
       2. ``git pull main``.
@@ -300,7 +370,10 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
-    event_log = open_log(cfg.repo_path)
+    if cfg.use_worktrees:
+        return _claim_pbi_worktree(cfg, pbi)
+
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
             cfg,
@@ -320,6 +393,42 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         git_ops.checkout_new(cfg.repo_path, branch)
     # Return to the queue branch so .ralph/ is visible on disk.
     git_ops.checkout(cfg.repo_path, cfg.queue_branch)
+    return moved
+
+
+def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
+    """Worktree-mode implementation of ``_claim_pbi``.
+
+    The primary checkout's branch is never touched. ``.ralph/`` reads
+    and writes go through the queue worktree; code edits go through the
+    per-PBI work worktree.
+    """
+    queue_wt = queue_worktree_path(cfg.repo_path)
+    ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
+    # Update remote-tracking refs so the work worktree can fork from a
+    # current ``origin/<main_branch>``. We deliberately do NOT advance the
+    # local ``<main_branch>`` ref — keeping main untouched avoids fighting
+    # the primary checkout when the operator happens to have main checked
+    # out there.
+    git_ops.fetch(cfg.repo_path)
+    event_log = open_log(_queue_repo_root(cfg))
+    try:
+        moved = move_inbox_to_current(
+            cfg,
+            pbi,
+            event_log=event_log,
+            now=datetime.now(tz=UTC),
+        )
+    finally:
+        event_log.close()
+    branch = _feature_branch_name(moved)
+    work_wt = work_worktree_path(cfg.repo_path, moved.id)
+    ensure_worktree(
+        cfg.repo_path,
+        worktree_path=work_wt,
+        branch=branch,
+        create_branch_from=f"origin/{cfg.main_branch}",
+    )
     return moved
 
 
@@ -374,10 +483,20 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     ``PR_GREEN_THEN_RED`` event.
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         # --- Spawn Claude ------------------------------------------------
-        outcome = spawn_claude_p(cfg, pbi)
+        if cfg.use_worktrees:
+            work_wt = work_worktree_path(cfg.repo_path, pbi.id)
+            pbi_dir_in_queue = queue_worktree_path(cfg.repo_path) / ".ralph" / "current" / pbi.id
+            outcome = spawn_claude_p(
+                cfg,
+                pbi,
+                cwd=work_wt,
+                pbi_dir=pbi_dir_in_queue,
+            )
+        else:
+            outcome = spawn_claude_p(cfg, pbi)
         log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
 
         # --- Plan 9: bump attempt counter ONLY on failure outcomes -------
@@ -402,7 +521,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                         payload={"reason": str(exc), "source": "max-attempts"},
                     )
                 )
-                target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
+                target = _queue_repo_root(cfg) / ".ralph" / "blocked" / pbi.id
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     # shutil.move would silently move pbi.path INSIDE the existing
@@ -413,6 +532,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                         f"cannot move {pbi.path} to {target}: target already exists"
                     ) from exc
                 shutil.move(str(pbi.path), str(target))
+                _cleanup_work_worktree(cfg, pbi.id)
                 dummy = ClaudeOutcome(
                     kind="error",
                     pr_url=None,
@@ -441,6 +561,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 touched_files=touched,
                 now=now,
             )
+            _cleanup_work_worktree(cfg, pbi.id)
             return outcome, IterationResult(
                 outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
             )
@@ -448,7 +569,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
         if outcome.kind == "stuck":
             # --- Plan 9 Layer 1: STUCK.md detection ----------------------
             stuck_outcome = handle_stuck(
-                repo=cfg.repo_path,
+                repo=_queue_repo_root(cfg),
                 pbi_dir=pbi.path,
                 now=datetime.now(tz=UTC),
                 event_log=event_log,
@@ -456,6 +577,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             if stuck_outcome is not None:
                 event_log.append(stuck_outcome.event)
                 log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
+                _cleanup_work_worktree(cfg, pbi.id)
                 return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
             # Claude reported stuck but no STUCK.md present -- fall through
             # to partial (the PBI stays in current/ for the next iteration).
@@ -480,12 +602,13 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
     """
     # --- Plan 9 Layer 3: refuse to start while sentinel is active --------
-    status = check_halt_sentinel(cfg.repo_path)
+    queue_repo = _queue_repo_root(cfg)
+    status = check_halt_sentinel(queue_repo)
     if status == HaltStatus.HALTED:
         raise HaltedError(
             meta_bug_id="(see .ralph/state/halted)",
-            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            meta_bug_path=queue_repo / ".ralph" / "blocked",
+            sentinel_path=queue_repo / ".ralph" / "state" / "halted",
         )
 
     _pull_queue(cfg)
@@ -501,7 +624,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # inside the PBI dir. The move_current_to_* paths handle their
         # own commits via git mv, but partial/error outcomes leave the
         # PBI in current/ with dirty files that would otherwise be lost.
-        event_log = open_log(cfg.repo_path)
+        event_log = open_log(_queue_repo_root(cfg))
         try:
             _persist_iteration_writes(
                 cfg,
@@ -516,8 +639,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             # raise HaltedError so the caller knows the loop is frozen.
             raise HaltedError(
                 meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
             )
         return result
 
@@ -531,8 +654,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         if _check_cycle_detector(cfg, source):
             raise HaltedError(
                 meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
             )
         return IterationResult(outcome="idle", pbi_id=None)
 
@@ -543,8 +666,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     if _check_cycle_detector(cfg, source):
         raise HaltedError(
             meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+            sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
         )
     return IterationResult(outcome="claimed", pbi_id=claimed.id)
 
