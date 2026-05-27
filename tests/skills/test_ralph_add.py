@@ -255,6 +255,49 @@ def test_attachment_with_path_traversal_name_is_stripped_to_basename(
     assert "escape-attempt.bin" not in siblings
 
 
+def test_work_item_id_with_path_traversal_is_rejected(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for second BugBot finding on PR #25: a hostile / buggy
+    fetcher emitting ``{\"id\": \"../../evil\"}`` must NOT escape the
+    .ralph/inbox/ directory. Same defence applied to attachment names
+    earlier in this PR — extended to the work-item id."""
+    # Fetcher document with a traversing id.
+    doc: dict[str, object] = {
+        "id": "../../escape-attempt",
+        "type": "feature",
+        "severity": "normal",
+        "title": "x",
+        "body_markdown": "x",
+        "acceptance_markdown": "- x.",
+        "repro_steps_markdown": "",
+        "attachments": [],
+        "child_ids": [],
+        "parent_id": None,
+        "source_url": "https://example.invalid/issues/x",
+        "source_host": "github",
+        "raw": {},
+    }
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
+    assert exit_code == 0  # sanitizer reduces to plain basename
+    capsys.readouterr()
+
+    _git(git_repo, "checkout", "ralph-queue")
+    # Basename "escape-attempt" lands under .ralph/inbox/, NOT in repo root.
+    assert (git_repo / ".ralph" / "inbox" / "escape-attempt").is_dir()
+    # No file/dir named "evil" or "escape-attempt" appears outside inbox.
+    repo_root_names = {p.name for p in git_repo.iterdir()}
+    assert "escape-attempt" not in repo_root_names
+    assert "evil" not in repo_root_names
+
+
 def test_dry_run_with_expand_children_reports_zero_attachments(
     tmp_path: Path,
     git_repo: Path,

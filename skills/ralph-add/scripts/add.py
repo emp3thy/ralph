@@ -284,6 +284,29 @@ def _render_reproduce(doc: dict[str, Any]) -> str:
     return header + steps + "\n"
 
 
+def _safe_path_component(value: object, *, field: str) -> str:
+    """Strip directory components from a fetcher-supplied string so it is
+    safe to use as a single path component under ``.ralph/inbox/``.
+
+    add.py is host-agnostic; it must not trust that every fetcher (current
+    GitHub, future ADO, third-party) sanitizes names / ids. A hostile or
+    buggy fetcher emitting ``"../../sensitive"`` for either a work-item id
+    or an attachment name would otherwise escape the target directory via
+    Path's join semantics. ``Path(...).name`` reduces any such value to
+    its final path component.
+
+    Raises ``_FatalError`` when the result is empty (e.g. input was
+    ``"../"`` or ``""``) so a degenerate value can't silently become a
+    write to the parent directory itself.
+    """
+    name = Path(str(value)).name
+    if not name:
+        raise _FatalError(
+            f"{field}={value!r} resolves to empty after directory-component stripping"
+        )
+    return name
+
+
 def _render_plan(doc: dict[str, Any]) -> str:
     title = str(doc["title"]).strip()
     pbi_id = str(doc["id"])
@@ -306,7 +329,11 @@ def _write_pbi_directory(
     severity: str,
     parent_id: str | None,
 ) -> Path:
-    pbi_id = str(doc["id"])
+    # Sanitize pbi_id the same way attachment names are — strip
+    # directory components so a fetcher emitting {"id": "../../evil"}
+    # cannot escape .ralph/inbox/. Same class of bug as the attachment
+    # path-traversal that BugBot already flagged earlier in this PR.
+    pbi_id = _safe_path_component(doc["id"], field="id")
     pbi_type = str(doc["type"])
     pbi_dir = base_dir / ".ralph" / "inbox" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
@@ -336,12 +363,7 @@ def _write_pbi_directory(
             # via Path's join semantics. add.py is host-agnostic and must
             # not trust that all fetchers (current GitHub, future ADO,
             # third-party) sanitize names.
-            name = Path(str(att["name"])).name
-            if not name:
-                raise _FatalError(
-                    f"attachment name {att['name']!r} resolves to empty after "
-                    f"directory-component stripping"
-                )
+            name = _safe_path_component(att["name"], field="attachment.name")
             try:
                 payload = base64.b64decode(att["content_base64"], validate=True)
             except (ValueError, TypeError) as exc:
@@ -440,7 +462,12 @@ def main(argv: list[str] | None = None) -> int:
                         parent_id=str(root_doc["id"]),
                     )
                 else:
-                    pbi_dir = repo / ".ralph" / "inbox" / str(child_doc["id"])
+                    pbi_dir = (
+                        repo
+                        / ".ralph"
+                        / "inbox"
+                        / _safe_path_component(child_doc["id"], field="id")
+                    )
                 # Mirror the non-expand path (line 468 below): no files
                 # are written in dry-run, so the reported count must be 0.
                 # Counting them here would make the dry-run JSON output
@@ -469,7 +496,9 @@ def main(argv: list[str] | None = None) -> int:
                     parent_id=None,
                 )
             else:
-                pbi_dir = repo / ".ralph" / "inbox" / str(root_doc["id"])
+                pbi_dir = (
+                    repo / ".ralph" / "inbox" / _safe_path_component(root_doc["id"], field="id")
+                )
             attachments_total = len(root_doc.get("attachments") or []) if not args.dry_run else 0
             first_pbi_for_report = (
                 str(root_doc["id"]),
