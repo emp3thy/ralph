@@ -35,7 +35,11 @@ docker run --rm --entrypoint ralph-executor "${IMAGE}" doctor --json \
 DOCKER_EXIT=$?
 set -e
 
-if [[ "${DOCKER_EXIT}" -eq 127 ]]; then
+if [[ "${DOCKER_EXIT}" -eq 127 && ! -s "${OUT_DIR}/stdout.json" ]]; then
+  # "Binary not present" only if exit 127 AND doctor produced no
+  # output. If stdout.json is populated the doctor ran but a sub-
+  # process (e.g. a shell-out) returned 127 — that's a doctor
+  # failure, not a missing binary.
   echo "preflight: ralph-executor doctor not present in image" >&2
   cat "${OUT_DIR}/stderr.log" >&2 || true
   exit 4

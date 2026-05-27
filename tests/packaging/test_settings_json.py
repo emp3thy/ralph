@@ -72,6 +72,18 @@ def test_deny_list_blocks_obvious_footguns(settings: dict[str, Any]) -> None:
     assert "Bash(sudo *)" in deny
 
 
+def test_deny_list_blocks_curl_wget_both_schemes(settings: dict[str, Any]) -> None:
+    """Regression: BugBot PR #39 flagged that deny patterns only
+    blocked http://*; curl/wget over https:// was unrestricted —
+    secret exfiltration over HTTPS would slip past the only runtime
+    guardrail under dangerouslySkipPermissions: true."""
+    deny = settings.get("permissions", {}).get("deny", [])
+    assert "Bash(curl http://*)" in deny
+    assert "Bash(curl https://*)" in deny
+    assert "Bash(wget http://*)" in deny
+    assert "Bash(wget https://*)" in deny
+
+
 def test_v2_memory_permissions_present_but_commented(settings: dict[str, Any]) -> None:
     reserved = settings.get("_v2_memory_mcp_permissions_commented_out")
     assert isinstance(reserved, list)
