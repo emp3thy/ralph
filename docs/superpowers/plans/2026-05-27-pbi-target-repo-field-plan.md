@@ -174,7 +174,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "test(validate): failing tests for t
 - Modify: `scripts/validate_samples.py:30` (REQUIRED_FRONTMATTER_FIELDS tuple)
 - Modify: `scripts/validate_samples.py:88` (new helper + call site in `_validate_frontmatter`)
 
-- [ ] **Step 2.1: Add `urllib.parse` import**
+- [x] **Step 2.1: Add `urllib.parse` import**
 
 In `scripts/validate_samples.py`, near the top imports, add (if not present):
 
@@ -182,7 +182,7 @@ In `scripts/validate_samples.py`, near the top imports, add (if not present):
 import urllib.parse
 ```
 
-- [ ] **Step 2.2: Add `target_repo` to REQUIRED_FRONTMATTER_FIELDS**
+- [x] **Step 2.2: Add `target_repo` to REQUIRED_FRONTMATTER_FIELDS**
 
 Find the tuple at `scripts/validate_samples.py:30`. Add the new field at the end of the tuple:
 
@@ -198,7 +198,7 @@ REQUIRED_FRONTMATTER_FIELDS: tuple[str, ...] = (
 )
 ```
 
-- [ ] **Step 2.3: Add the validator helper**
+- [x] **Step 2.3: Add the validator helper**
 
 Insert this function near the other validators in `scripts/validate_samples.py` (around line 80, before `_validate_frontmatter`):
 
@@ -226,7 +226,7 @@ def _validate_target_repo(value: object) -> str | None:
     return None
 ```
 
-- [ ] **Step 2.4: Wire the validator into `_validate_frontmatter`**
+- [x] **Step 2.4: Wire the validator into `_validate_frontmatter`**
 
 In `_validate_frontmatter` (around line 88), after the existing per-field validators (after the `attempts` check at line 118 or wherever the last validator sits), add:
 
@@ -240,7 +240,7 @@ In `_validate_frontmatter` (around line 88), after the existing per-field valida
 
 (The `if target_repo is not None` guard ensures the "missing required field" error from the `missing` check on line 96 is the one that fires for absent values, not a duplicate "must be a string" from the validator.)
 
-- [ ] **Step 2.5: Run the tests — verify they pass**
+- [x] **Step 2.5: Run the tests — verify they pass**
 
 ```bash
 uv run pytest tests/scripts/test_validate_samples.py -v
@@ -248,7 +248,7 @@ uv run pytest tests/scripts/test_validate_samples.py -v
 
 Expected: 8 PASS.
 
-- [ ] **Step 2.6: Run ruff + mypy**
+- [x] **Step 2.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check scripts/validate_samples.py tests/scripts/test_validate_samples.py
@@ -257,7 +257,7 @@ uv run mypy --strict scripts/validate_samples.py
 
 Expected: green.
 
-- [ ] **Step 2.7: Commit**
+- [x] **Step 2.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add scripts/validate_samples.py

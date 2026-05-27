@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import urllib.parse
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ REQUIRED_FRONTMATTER_FIELDS: tuple[str, ...] = (
     "attempts",
     "created_at",
     "updated_at",
+    "target_repo",
 )
 
 ALLOWED_TYPES: frozenset[str] = frozenset({"feature", "bug", "pr-feedback"})
@@ -82,6 +84,27 @@ def split_frontmatter(text: str) -> str | None:
     for idx in range(1, len(lines)):
         if lines[idx] == "---":
             return "\n".join(lines[1:idx])
+    return None
+
+
+def _validate_target_repo(value: object) -> str | None:
+    """Return error message or None if value is a valid target_repo URL.
+
+    Accepts HTTPS URLs with at least 2 non-empty path segments (owner + name).
+    Tolerates trailing ``.git`` via the generic path check. No host whitelist —
+    works for GitHub (``https://github.com/owner/name``) and Azure DevOps
+    (``https://dev.azure.com/org/proj/_git/repo``) alike.
+    """
+    if not isinstance(value, str):
+        return f"target_repo must be a string, got {type(value).__name__}"
+    if not value.startswith("https://"):
+        return f"target_repo must be an HTTPS URL, got {value!r}"
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.netloc:
+        return f"target_repo URL has no host: {value!r}"
+    path_segments = [p for p in parsed.path.split("/") if p]
+    if len(path_segments) < 2:
+        return f"target_repo URL must include owner + name path: {value!r}"
     return None
 
 
@@ -156,6 +179,12 @@ def _validate_frontmatter(frontmatter: Mapping[str, Any]) -> list[str]:
         errors.append(f"id must be a string, got {type(pbi_id).__name__}")
     elif isinstance(pbi_id, str) and not pbi_id.strip():
         errors.append("id must be a non-empty string")
+
+    target_repo = frontmatter.get("target_repo")
+    if target_repo is not None:
+        err = _validate_target_repo(target_repo)
+        if err is not None:
+            errors.append(err)
 
     return errors
 
