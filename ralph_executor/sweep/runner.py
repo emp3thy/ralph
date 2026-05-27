@@ -380,7 +380,12 @@ def _emit_feedback_pbi(
     if target_dir.exists():
         raise _SweepPbiError(f"feedback PBI {target_dir} already exists; refusing to overwrite")
     # Wrap the file IO so EXDEV / EACCES / ENOSPC become _SweepPbiError
-    # rather than escaping run()'s per-PBI isolation.
+    # rather than escaping run()'s per-PBI isolation. On failure, tear
+    # down any partial target_dir — otherwise the guard above
+    # (`if target_dir.exists()`) blocks every subsequent sweep with
+    # "already exists; refusing to overwrite", AND the sidecar never
+    # advances so next_round computes the same path on every retry,
+    # permanently stranding the PBI in pending-pr/.
     try:
         target_dir.mkdir(parents=True)
         (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
@@ -388,6 +393,7 @@ def _emit_feedback_pbi(
         (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
         (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
     except OSError as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
         raise _SweepPbiError(f"failed to write feedback PBI {target_dir}: {exc}") from exc
 
     new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}

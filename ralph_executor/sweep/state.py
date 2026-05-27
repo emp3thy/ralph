@@ -78,11 +78,24 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
             sweep_dt = None
     else:
         sweep_dt = None
-    return SweepSidecar(
-        last_feedback_sweep=sweep_dt,
-        last_feedback_round=int(raw.get("last_feedback_round", 0) or 0),
-        last_seen_comment_ids=frozenset(str(x) for x in (raw.get("last_seen_comment_ids") or [])),
-    )
+    # A manually-edited sidecar with wrong-type values (e.g.
+    # last_feedback_round="abc", last_seen_comment_ids=42) would
+    # otherwise raise ValueError / TypeError from int() / iteration
+    # and escape every per-PBI guard. Treat as corrupt → default.
+    try:
+        return SweepSidecar(
+            last_feedback_sweep=sweep_dt,
+            last_feedback_round=int(raw.get("last_feedback_round", 0) or 0),
+            last_seen_comment_ids=frozenset(
+                str(x) for x in (raw.get("last_seen_comment_ids") or [])
+            ),
+        )
+    except (ValueError, TypeError):
+        return SweepSidecar(
+            last_feedback_sweep=None,
+            last_feedback_round=0,
+            last_seen_comment_ids=frozenset(),
+        )
 
 
 def write_sidecar(pbi_dir: Path, sidecar: SweepSidecar) -> None:
