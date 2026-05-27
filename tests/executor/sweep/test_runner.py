@@ -474,6 +474,94 @@ def test_sweep_does_not_emit_pr_green_then_red_on_first_observation(
     assert all(e.kind != EventType.PR_GREEN_THEN_RED for e in events)
 
 
+class _FlakyEventLog:
+    """EventLog double whose append() raises a configured exception.
+
+    Used by the resilience tests below to assert that the sweep does
+    NOT abort when EventLog.append() fails — per BugBot review on
+    PR #34, an uncaught append() failure aborts the whole sweep and,
+    for the post-MOVE_TO_DONE emit path, permanently loses the
+    PR_MERGED + PBI_CLOSED events.
+    """
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.append_calls = 0
+
+    def append(self, event: object) -> None:
+        self.append_calls += 1
+        raise self._exc
+
+    def close(self) -> None:
+        pass
+
+    def recent(self, *, window: object, now: object) -> list[object]:
+        return []
+
+
+def test_sweep_continues_when_pr_merged_emit_raises(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Regression: an EventLog.append() failure on the post-move emit must
+    NOT abort the sweep. The PBI has already been moved to done/, so
+    re-raising would leave it stranded AND wipe progress on every other
+    PBI in the same tick. Log a warning and continue."""
+    import sqlite3
+
+    pbi = make_pending_pbi("WI-FLAKY1", pr_id=3100)
+    register_pr(monkeypatch, 3100, status="completed", ci_status="succeeded")
+    flaky = _FlakyEventLog(sqlite3.OperationalError("disk I/O error"))
+
+    with caplog.at_level("WARNING", logger="ralph_executor.sweep.runner"):
+        result = run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=flaky))  # type: ignore[arg-type]
+
+    # PBI was moved before the emit, so the move stands.
+    assert not pbi.exists()
+    assert (queue_root / "done" / "WI-FLAKY1").is_dir()
+    # Sweep completed cleanly with the PBI counted as a successful action.
+    assert result.pbis_scanned == 1
+    assert len(result.actions) == 1
+    # The failure was logged so the operator can see it.
+    assert any(
+        "PR_MERGED" in rec.message and "WI-FLAKY1" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_sweep_continues_when_pr_green_then_red_emit_raises(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same as above for the pre-move emit. The PBI has not been moved
+    yet, so the subsequent dispatch (MOVE_TO_INBOX_RETRY for failed CI
+    on attempts < max) must still proceed."""
+    import sqlite3
+
+    pbi = make_pending_pbi("WI-FLAKY2", pr_id=3200)
+    _seed_sidecar(pbi, last_ci_status="succeeded")
+    register_pr(monkeypatch, 3200, status="active", ci_status="failed")
+    flaky = _FlakyEventLog(sqlite3.OperationalError("disk I/O error"))
+
+    with caplog.at_level("WARNING", logger="ralph_executor.sweep.runner"):
+        result = run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=flaky))  # type: ignore[arg-type]
+
+    assert result.pbis_scanned == 1
+    # Dispatch still ran: PBI moved to inbox/ for retry.
+    assert not pbi.exists()
+    assert (queue_root / "inbox" / "WI-FLAKY2").is_dir()
+    assert any(
+        "PR_GREEN_THEN_RED" in rec.message and "WI-FLAKY2" in rec.message
+        for rec in caplog.records
+    )
+
+
 def test_regression_cascade_trips_with_pr_merged_then_matching_green_then_red(
     queue_root: Path,
     fake_ado_pr_skill: Path,

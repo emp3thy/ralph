@@ -510,26 +510,43 @@ def _emit_pr_merged_and_pbi_closed(
     pr_url = snapshot.url
     signature = signature_from_text(pr_url) if pr_url else ""
     now = ctx.config.now
-    ctx.event_log.append(
-        Event(
-            kind=EventType.PR_MERGED,
-            recorded_at=now,
-            pbi_id=pbi_id,
-            payload={
-                "pr_url": pr_url,
-                "signature": signature,
-                "files": [],
-            },
+    # The PBI has already been moved to done/ by the caller; if the
+    # event-log write raises (e.g. sqlite3.Error on flush), there is
+    # NO retry path — the PBI is gone from pending-pr/ and won't be
+    # rescanned. Swallow the exception with a WARNING rather than
+    # letting it propagate uncaught past the per-PBI handler (which
+    # only catches _SweepPbiError) and abort the whole sweep. The
+    # cycle detector's regression_cascade rule will be missing this
+    # pair, but that's a softer failure than a sweep-wide abort that
+    # also masks every other PBI's progress.
+    try:
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PR_MERGED,
+                recorded_at=now,
+                pbi_id=pbi_id,
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature,
+                    "files": [],
+                },
+            )
         )
-    )
-    ctx.event_log.append(
-        Event(
-            kind=EventType.PBI_CLOSED,
-            recorded_at=now,
-            pbi_id=pbi_id,
-            payload={"signature": signature},
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PBI_CLOSED,
+                recorded_at=now,
+                pbi_id=pbi_id,
+                payload={"signature": signature},
+            )
         )
-    )
+    except Exception as exc:
+        log.warning(
+            "sweep: failed to emit PR_MERGED/PBI_CLOSED for %s (PBI already moved "
+            "to done/, no retry path): %s",
+            pbi_id,
+            exc,
+        )
 
 
 def _emit_pr_green_then_red(
@@ -551,18 +568,30 @@ def _emit_pr_green_then_red(
         return
     pr_url = snapshot.url
     signature = signature_from_text(pr_url) if pr_url else ""
-    ctx.event_log.append(
-        Event(
-            kind=EventType.PR_GREEN_THEN_RED,
-            recorded_at=ctx.config.now,
-            pbi_id=pbi_id,
-            payload={
-                "pr_url": pr_url,
-                "signature": signature,
-                "files": [],
-            },
+    # Log-and-continue on event-log failure — same resilience policy as
+    # the rest of the sweep. The PBI has not yet been moved here, so a
+    # missing event only means the cycle detector won't fire its
+    # regression_cascade for this transition; the sweep continues
+    # processing other PBIs and the next tick will re-evaluate state.
+    try:
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PR_GREEN_THEN_RED,
+                recorded_at=ctx.config.now,
+                pbi_id=pbi_id,
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature,
+                    "files": [],
+                },
+            )
         )
-    )
+    except Exception as exc:
+        log.warning(
+            "sweep: failed to emit PR_GREEN_THEN_RED for %s: %s",
+            pbi_id,
+            exc,
+        )
 
 
 def _read_original_summary(pbi_dir: Path) -> str:

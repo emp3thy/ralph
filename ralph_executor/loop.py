@@ -175,7 +175,14 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         )
         result = run_sweep(ctx=sweep_ctx)
     finally:
-        event_log.close()
+        # Wrap close() so a failure here (e.g. sqlite flush error) does
+        # not mask an exception from run_sweep — losing the real cause
+        # makes post-mortem debugging much harder. Log close() failures
+        # at WARNING and let the original (if any) propagate unchanged.
+        try:
+            event_log.close()
+        except Exception as exc:
+            log.warning("sweep: event_log.close() failed: %s", exc)
     log.info(
         "sweep: scanned %d PBIs (actions=%d, errors=%d)",
         result.pbis_scanned,
