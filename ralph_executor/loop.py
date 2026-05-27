@@ -305,7 +305,11 @@ def _persist_iteration_writes(
     head_after = git_ops.commit_index(queue_repo, message)
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
-        git_ops.push(queue_repo, cfg.queue_branch)
+        # push_with_rebase rebases the local persist commit onto a raced
+        # origin/<queue_branch> instead of failing the push outright. The
+        # caller (iterate_once) catches PushRebaseConflict and converts
+        # it to a recoverable LoopResult so the loop keeps running.
+        git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
         if event_log is not None:
             files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:

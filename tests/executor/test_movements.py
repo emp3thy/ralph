@@ -193,6 +193,61 @@ def test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file(
     assert target_file in signal.description
 
 
+def test_move_inbox_to_current_survives_concurrent_remote_advance(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path, tmp_path: Path
+) -> None:
+    """A concurrent push to origin/ralph-queue must not crash the move.
+
+    Without push_with_rebase the second push is rejected as non-FF and
+    GitCommandError propagates. With it, the helper fetches + rebases
+    onto the racing commit and the move's push succeeds.
+    """
+    _populate_inbox(fake_repo)
+
+    # Simulate a concurrent writer: clone the bare remote, add a commit
+    # touching an unrelated file on ralph-queue, push it back.
+    bare_remote = fake_repo.parent / "remote.git"
+    racer = tmp_path / "racer"
+    subprocess.run(
+        ["git", "clone", "--branch", "ralph-queue", str(bare_remote), str(racer)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(racer), "config", "user.email", "r@x"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(racer), "config", "user.name", "r"],
+        check=True,
+        capture_output=True,
+    )
+    (racer / "race.txt").write_text("from-racer\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(racer), "add", "race.txt"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(racer), "commit", "-m", "race: concurrent commit"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(racer), "push", "origin", "ralph-queue"],
+        check=True,
+        capture_output=True,
+    )
+
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+    moved = move_inbox_to_current(cfg_for_repo, pbi)
+    assert moved.status == "current"
+
+    # The racing commit is now part of the queue branch's history.
+    log = _git(fake_repo, "log", "--format=%s", "ralph-queue", "-5").splitlines()
+    assert "race: concurrent commit" in log
+    # And the move's own commit landed on top of (or rebased above) it.
+    assert any("move WI-1234 from inbox to current" in line for line in log)
+
+
 def test_move_uses_branch_from_config(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
     _populate_inbox(fake_repo)
     # Read the PBI while on ralph-queue (where .ralph/ exists), then
