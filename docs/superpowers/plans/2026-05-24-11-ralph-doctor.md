@@ -1064,7 +1064,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/host_staging.py`. This check is the "did the executor stage the right skill bundle" gate — it always runs regardless of `RALPH_GIT_HOST`. The check reads the YAML frontmatter of `<skills_dir>/pr/SKILL.md` and `<skills_dir>/workitem-fetch/SKILL.md` and asserts the frontmatter `name:` value equals `pr-<host>` and `workitem-fetch-<host>` respectively. Both skills are required; either missing or mismatched → fail.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/host_staging.py`. This check is the "did the executor stage the right skill bundle" gate — it always runs regardless of `RALPH_GIT_HOST`. The check reads the YAML frontmatter of `<skills_dir>/pr/SKILL.md` and `<skills_dir>/workitem-fetch/SKILL.md` and asserts the frontmatter `name:` value equals `pr-<host>` and `workitem-fetch-<host>` respectively. Both skills are required; either missing or mismatched → fail.
 
   Structure:
   - Module docstring: explains the staging contract. The executor's `host_select.py` (Plan 7) copies or symlinks `skills/pr-<host>/` to `~/.claude/skills/pr/` and likewise for `workitem-fetch`. The frontmatter `name:` field is the load-bearing signal — Claude Code reads it at skill discovery time, and the doctor reads it here to verify the staging step worked.
@@ -1102,13 +1102,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
       and `details={"offences": offences, "git_host": context.git_host, "skills_dir": str(context.skills_dir)}`.
     - Otherwise → `pass` with message `f"Staged 'pr' and 'workitem-fetch' skills match RALPH_GIT_HOST={context.git_host}."` and `details={"checked": [...names...], "git_host": context.git_host}`.
 
-- [ ] 2. Run the host_staging tests:
+- [x] 2. Run the host_staging tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestHostStagingCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/host_staging.py
   git commit -m "feat(ralph-doctor): implement host_staging check (frontmatter vs RALPH_GIT_HOST)"
