@@ -647,7 +647,23 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     current = source.current_pbi()
     if current is not None:
         # Current occupied → run Ralph on it (attempt counter + spawn).
-        _outcome, result = _run_ralph(cfg, current)
+        # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
+        # ``handle_stuck`` on terminal outcomes, both of which call
+        # ``push_with_rebase`` via ``movements._move``. A concurrent
+        # writer on ``cfg.queue_branch`` can make that push raise
+        # ``PushRebaseConflict`` — without this catch the executor
+        # process would crash, exactly the failure mode this code
+        # path exists to prevent.
+        try:
+            _outcome, result = _run_ralph(cfg, current)
+        except PushRebaseConflict as exc:
+            log.warning(
+                "iterate_once: push conflict during _run_ralph for %s (paths: %s); "
+                "loop will retry next round",
+                current.id,
+                ", ".join(exc.conflict_paths) or "<unknown>",
+            )
+            return IterationResult(outcome="push_conflict", pbi_id=current.id)
         # Restore queue branch so .ralph/ is visible on disk after the call.
         _ensure_on_queue_branch(cfg)
         # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
@@ -704,7 +720,20 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         return IterationResult(outcome="idle", pbi_id=None)
 
     log.info("claiming PBI %s", picked.id)
-    claimed = _claim_pbi(cfg, picked)
+    # ``_claim_pbi`` invokes ``move_inbox_to_current`` → ``push_with_rebase``.
+    # A concurrent writer on the queue branch can make that push raise
+    # ``PushRebaseConflict``; treat it like the run-Ralph case above
+    # so the loop continues on the next iteration.
+    try:
+        claimed = _claim_pbi(cfg, picked)
+    except PushRebaseConflict as exc:
+        log.warning(
+            "iterate_once: push conflict during _claim_pbi for %s (paths: %s); "
+            "loop will retry next round",
+            picked.id,
+            ", ".join(exc.conflict_paths) or "<unknown>",
+        )
+        return IterationResult(outcome="push_conflict", pbi_id=picked.id)
     # _claim_pbi already returns to queue branch; re-assert for clarity.
     _ensure_on_queue_branch(cfg)
     if _check_cycle_detector(cfg, source):

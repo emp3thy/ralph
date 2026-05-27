@@ -214,6 +214,54 @@ def test_iterate_once_recovers_from_push_conflict(
     assert result.pbi_id == "WI-1234"
 
 
+def test_iterate_once_recovers_from_push_conflict_in_run_ralph(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: BugBot PR #36 flagged that the existing PushRebaseConflict
+    catch only wraps `_persist_iteration_writes`. `_run_ralph` reaches
+    into `move_current_to_pending_pr` / `handle_stuck`, both of which
+    invoke `push_with_rebase`. A conflict during those movement paths
+    must also be caught — otherwise the executor crashes on the exact
+    failure mode this PR claims to handle."""
+    from ralph_executor.git_ops import PushRebaseConflict
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim WI-1234
+
+    def _raise_conflict(cfg: ExecutorConfig, pbi: object) -> tuple[ClaudeOutcome, object]:
+        raise PushRebaseConflict(("pending-pr/WI-1234/PBI.md",))
+
+    monkeypatch.setattr("ralph_executor.loop._run_ralph", _raise_conflict)
+
+    result = iterate_once(cfg_for_repo)
+    assert result.outcome == "push_conflict"
+    assert result.pbi_id == "WI-1234"
+
+
+def test_iterate_once_recovers_from_push_conflict_in_claim_pbi(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same regression for the claim path: `_claim_pbi` invokes
+    `move_inbox_to_current` → `push_with_rebase`. A concurrent writer
+    can race the claim push, and the loop must keep running."""
+    from ralph_executor.git_ops import PushRebaseConflict
+
+    _populate_inbox(fake_repo)
+
+    def _raise_conflict(cfg: ExecutorConfig, pbi: object) -> object:
+        raise PushRebaseConflict(("inbox/WI-1234/PBI.md",))
+
+    monkeypatch.setattr("ralph_executor.loop._claim_pbi", _raise_conflict)
+
+    result = iterate_once(cfg_for_repo)
+    assert result.outcome == "push_conflict"
+    assert result.pbi_id == "WI-1234"
+
+
 def test_partial_outcome_does_not_increment_attempts(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
