@@ -117,6 +117,11 @@ class GitHubClient:
     def put_rest(self, path: str, body: dict[str, Any]) -> Any:
         url = f"{GITHUB_API}{path}"
         response = self.session.put(url, headers=self._headers(), json=body, timeout=30)
+        if response.status_code in (405, 409):
+            raise RaceError(
+                f"GitHub REST PUT {response.request.url} returned HTTP "
+                f"{response.status_code}: " + GitHubClient._summarise_body(response)
+            )
         return self._read_rest_response(response)
 
     def graphql(
@@ -155,12 +160,6 @@ class GitHubClient:
 
     @staticmethod
     def _read_rest_response(response: requests.Response) -> Any:
-        if response.status_code in (405, 409):
-            raise RaceError(
-                f"GitHub REST {response.request.method} "
-                f"{response.request.url} returned HTTP "
-                f"{response.status_code}: " + GitHubClient._summarise_body(response)
-            )
         if response.status_code >= 400:
             raise HttpError(
                 f"GitHub REST {response.request.method} "
