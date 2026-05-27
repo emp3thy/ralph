@@ -55,3 +55,13 @@
   - STUCK.md never had the `.ralph/current/...` prefix in the file (it was always referred to by basename); preamble covers it.
 - Tests: full `pytest` suite green (454 passed, 2 skipped — opt-in prompt smoke). `tests/test_prompt_structure.py` 30/30 passed. `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
 - Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits. Commit: `2ee88b6 docs(prompt): switch PBI-file references to $RALPH_PBI_DIR` on `ralph/STAGE-B-PLAN-20a-worktree`.
+
+## Iteration 6 — 2026-05-27T15:00:00+00:00
+
+- Step: Task 6 — `_persist_iteration_writes` now routes its `git add` / `commit` / `push` through the queue worktree when `cfg.use_worktrees=True`. Computes `queue_repo = queue_worktree_path(cfg.repo_path) if cfg.use_worktrees else cfg.repo_path` at function entry and uses that for the `pbi_dir` lookup and every `git_ops.*` call (including the `diff_names` used for the `FILE_TOUCHED` payload). Legacy single-checkout path keeps `cfg.repo_path` exactly as before. `_ensure_on_queue_branch(cfg)` is still called first — it already no-ops in worktree mode (iteration 3), so it costs nothing and keeps the legacy semantics intact.
+- Design notes:
+  - Same shape as `movements._queue_repo` (iteration 3): single-line ternary at the top, then every git op uses the chosen path. Did not extract a shared helper — two call sites is below the threshold where indirection pays for itself, and the loop module already imports `queue_worktree_path` directly.
+  - Updated the function docstring with the worktree-vs-legacy paragraph so future readers do not have to re-derive the routing from the body.
+  - No new tests this iteration — the existing `test_iterate_once_persists_claude_history_writes_on_partial`, `test_persist_iteration_writes_excludes_state_dir`, `test_file_touched_event_emitted_on_iteration_commit`, and `test_file_touched_skipped_on_empty_commit` all cover the legacy path (`cfg_for_repo` sets `use_worktrees=False`). Worktree-mode persist coverage lands with Task 9.
+- Tests: full `uv run --no-sync pytest` green (454 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
+- Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits (the executor's `_persist_iteration_writes` mirrors them onto ralph-queue). Commit: `49fd914 refactor(loop): _persist_iteration_writes operates on queue worktree` on `ralph/STAGE-B-PLAN-20a-worktree`.

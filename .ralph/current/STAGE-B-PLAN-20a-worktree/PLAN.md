@@ -161,6 +161,8 @@ Single-checkout path stays unchanged.
 
 Commit: `refactor(loop): _persist_iteration_writes operates on queue worktree`
 
+- [x] Task 6 complete (iteration 6, 2026-05-27, commit 49fd914)
+
 ### Task 7 — worktree cleanup on PBI completion
 
 When PBI moves to pending-pr / blocked / done, remove the per-PBI work tree:
