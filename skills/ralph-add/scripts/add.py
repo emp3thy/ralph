@@ -28,6 +28,16 @@ ATTACHMENT_SUBDIR = "attachments"
 ALLOWED_SEVERITIES = ("critical", "high", "normal", "low")
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.queue_writer import (  # noqa: E402
+    QueueWriterError,
+    checkout_queue_branch,
+    commit_paths,
+    ensure_git_repo,
+    push,
+)
 
 _SCHEMA_PATH = _REPO_ROOT / "skills" / "workitem-fetch-github" / "scripts" / "schema.py"
 
@@ -392,47 +402,6 @@ def _write_pbi_directory(
     return pbi_dir
 
 
-def _run_git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _ensure_git_repo(repo: Path) -> None:
-    if not (repo / ".git").exists():
-        raise _FatalError(f"{repo} is not a git repository (no .git/ directory)")
-
-
-def _checkout_queue_branch(repo: Path, branch: str) -> None:
-    local_branches = _run_git(repo, "branch", "--list", branch)
-    if local_branches.strip():
-        _run_git(repo, "checkout", branch)
-    else:
-        remote_branches = _run_git(repo, "branch", "-r", "--list", f"origin/{branch}")
-        if remote_branches.strip():
-            _run_git(repo, "checkout", "-b", branch, f"origin/{branch}")
-        else:
-            raise _FatalError(
-                f"branch {branch!r} not found locally or as origin/{branch}; "
-                "run docs/runbooks/ralph-queue-setup.md first"
-            )
-
-
-def _commit_pbi(repo: Path, pbi_dir: Path, message: str) -> str:
-    _run_git(repo, "add", str(pbi_dir.relative_to(repo)))
-    _run_git(repo, "commit", "-m", message)
-    return _run_git(repo, "rev-parse", "HEAD")
-
-
-def _push(repo: Path, branch: str) -> None:
-    _run_git(repo, "push", "origin", branch)
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     try:
@@ -447,13 +416,13 @@ def main(argv: list[str] | None = None) -> int:
         repo = Path(args.repo).resolve()
         if not repo.is_dir():
             raise _FatalError(f"--repo path does not exist: {repo}")
-        _ensure_git_repo(repo)
+        ensure_git_repo(repo)
 
         fetcher = _resolve_fetcher()
         work_item_arg = _normalise_work_item_arg(args.work_item)
 
         if not args.dry_run:
-            _checkout_queue_branch(repo, args.branch)
+            checkout_queue_branch(repo, args.branch)
 
         root_doc = _invoke_fetcher(fetcher, work_item_arg)
         severity_override = args.severity
@@ -508,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                     message = (
                         f"feat(ralph-queue): add {child_doc['id']} (child of {root_doc['id']})"
                     )
-                    last_commit_sha = _commit_pbi(repo, pbi_dir, message)
+                    last_commit_sha = commit_paths(repo, [pbi_dir], message)
         else:
             severity = severity_override or str(root_doc["severity"])
             if not args.dry_run:
@@ -529,15 +498,15 @@ def main(argv: list[str] | None = None) -> int:
                 str(pbi_dir.relative_to(repo)).replace("\\", "/"),
             )
             if not args.dry_run:
-                last_commit_sha = _commit_pbi(
+                last_commit_sha = commit_paths(
                     repo,
-                    pbi_dir,
+                    [pbi_dir],
                     f"feat(ralph-queue): add {root_doc['id']}",
                 )
 
         if not args.dry_run and not args.no_push:
             print(f"pushing {args.branch} to origin...", file=sys.stderr)
-            _push(repo, args.branch)
+            push(repo, args.branch)
             pushed = True
 
         assert first_pbi_for_report is not None
@@ -559,6 +528,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0
     except _FatalError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:
