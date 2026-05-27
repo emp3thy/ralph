@@ -102,22 +102,22 @@ class TestSignatureRecurrence:
 
 class TestWhackAMole:
     def test_trips_when_close_rate_matches_create_rate(self, now: datetime) -> None:
-        # Five new bugs and four closures inside the 4h window -- close/create
-        # ratio is 0.8, above the 0.7 threshold.
+        # Twelve new bugs and ten closures inside the 4h window -- close/create
+        # ratio is 0.83, above the 0.7 threshold; opens hit the 12-open minimum.
         events: list[Event] = []
-        for i in range(5):
+        for i in range(12):
             events.append(
                 make_event(
                     kind=EventType.PBI_OPENED,
-                    recorded_at=offset(now, minutes=-(200 - i * 10)),
+                    recorded_at=offset(now, minutes=-(230 - i * 10)),
                     pbi_id=f"BUG-OPEN-{i}",
                 )
             )
-        for i in range(4):
+        for i in range(10):
             events.append(
                 make_event(
                     kind=EventType.PBI_CLOSED,
-                    recorded_at=offset(now, minutes=-(190 - i * 10)),
+                    recorded_at=offset(now, minutes=-(220 - i * 10)),
                     pbi_id=f"BUG-CLOSE-{i}",
                 )
             )
@@ -138,7 +138,7 @@ class TestWhackAMole:
         assert evaluate_whack_a_mole(events, now) is None
 
     def test_does_not_trip_below_minimum_volume(self, now: datetime) -> None:
-        # One open + one close is below the rule's minimum (>=3 opens).
+        # One open + one close is below the rule's minimum (>=12 opens).
         events = _events(
             [
                 make_event(

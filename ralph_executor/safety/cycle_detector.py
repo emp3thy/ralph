@@ -27,7 +27,7 @@ from ralph_executor.safety.events import Event, EventType
 
 SIGNATURE_RECURRENCE_WINDOW = timedelta(hours=24)
 WHACK_A_MOLE_WINDOW = timedelta(hours=4)
-WHACK_A_MOLE_MIN_OPENS = 3
+WHACK_A_MOLE_MIN_OPENS = 12
 WHACK_A_MOLE_RATIO_THRESHOLD = 0.7
 SAME_FILE_WINDOW = timedelta(hours=24)
 SAME_FILE_MIN_PRS = 10
