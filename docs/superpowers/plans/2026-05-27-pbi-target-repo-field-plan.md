@@ -627,7 +627,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "feat(scripts): single-use migration
 - Modify: `samples/*/PBI.md` (and any `BUG.md` / `FEEDBACK.md`) by hand
 - Modify: `tests/scripts/test_validate_samples.py` (add the regression sweep)
 
-- [ ] **Step 5.1: Pre-flight — check what samples exist**
+- [x] **Step 5.1: Pre-flight — check what samples exist**
 
 ```bash
 find /c/Users/gethi/ralph-queue/samples -name '*.md' -type f 2>&1 | head -20
@@ -635,7 +635,7 @@ find /c/Users/gethi/ralph-queue/samples -name '*.md' -type f 2>&1 | head -20
 
 Take note of each path. Each gets a `target_repo: https://github.com/emp3thy/ralph` line added to its frontmatter, before the closing `---` fence.
 
-- [ ] **Step 5.2: Edit the samples**
+- [x] **Step 5.2: Edit the samples**
 
 For each sample file from Step 5.1, open it and insert the line just before the closing frontmatter fence. Example, if `samples/feature-pbi/PBI.md` looks like:
 
@@ -664,7 +664,7 @@ target_repo: https://github.com/emp3thy/ralph
 
 Use the Edit tool on each sample file. Do NOT run the migration script over `samples/` — direct edits keep the diff reviewable.
 
-- [ ] **Step 5.3: Run the migration script against the live queue**
+- [~] **Step 5.3: Run the migration script against the live queue** — deferred to a separate ralph-queue commit; `.ralph/` is gitignored on the feature branch (see iter 5 HISTORY note). Script is idempotent so the queue-branch run can happen later.
 
 ```bash
 cd /c/Users/gethi/ralph-queue
@@ -684,7 +684,7 @@ N updated, 0 skipped, 0 errors.
 
 If any file reports `error: ...`, investigate before continuing. The most likely cause is a malformed frontmatter fence — fix the source file and re-run (script is idempotent).
 
-- [ ] **Step 5.4: Add the validation regression test**
+- [x] **Step 5.4: Add the validation regression test**
 
 Append to `tests/scripts/test_validate_samples.py`:
 
@@ -737,7 +737,7 @@ def test_all_live_pbis_have_target_repo() -> None:
     assert not failures, failures
 ```
 
-- [ ] **Step 5.5: Run the regression test**
+- [x] **Step 5.5: Run the regression test**
 
 ```bash
 uv run pytest tests/scripts/test_validate_samples.py::test_all_live_pbis_have_target_repo -v
@@ -745,7 +745,7 @@ uv run pytest tests/scripts/test_validate_samples.py::test_all_live_pbis_have_ta
 
 Expected: PASS. If FAIL, the failure list pinpoints which file(s) are missing the field — re-run Step 5.3's migration or hand-edit the offending sample.
 
-- [ ] **Step 5.6: Commit migration + samples + regression test**
+- [x] **Step 5.6: Commit migration + samples + regression test**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add .ralph/ samples/ tests/scripts/test_validate_samples.py

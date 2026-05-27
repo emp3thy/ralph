@@ -27,3 +27,12 @@
 - Tests: `tests/scripts/test_migrate_pbis.py` 5/5 green. `ruff check` + `mypy --strict scripts/migrate_pbis_to_target_repo.py` clean. Did not run full suite this iteration — same 6 collateral failures from iteration 3 are expected (Task 5/6 still pending).
 - Notes: feature branch commits per iteration 1 convention (plan's `git -C ralph-queue` instructions remain stale).
 - Next iteration: Task 5 (run migration against `.ralph/`, edit `samples/`, add `test_all_live_pbis_have_target_repo` regression sweep).
+
+## Iteration 5 — 2026-05-27T21:45:00Z
+
+- Step Task 5: added `target_repo: https://github.com/emp3thy/ralph` to the three canonical sample entries (`samples/feature-WI-1234/PBI.md`, `samples/bug-deploy-rosa-irsa-2026-05-23/BUG.md`, `samples/pr-feedback-WI-1234-r2/FEEDBACK.md`); added the regression sweep `test_all_live_pbis_have_target_repo` in `tests/scripts/test_validate_samples.py` that walks `.ralph/{inbox,current,pending-pr,done,blocked}/` + `samples/` for PBI/BUG/FEEDBACK files and asserts the target_repo validator emits no errors; updated `_write_feature_pbi` helper + the single-null fixture in `tests/test_workspace_samples.py` to include the new field. Applied `ruff format` on the leftover migration files from iter 4 so the repo-wide format check is now clean.
+- Step 5.3 (live `.ralph/` migration) deferred: `.ralph/` is gitignored on the feature branch; only the `ralph-queue` branch carries the live queue PBIs. Running the migration belongs in a queue-branch commit outside this PR. Migration script is idempotent, so the later queue-branch run is safe.
+- Tests: `pytest tests/scripts/test_validate_samples.py tests/test_workspace_samples.py` 25/25 green. Full suite: 640 passed, 2 skipped, 1 failure remaining — `tests/skills/test_ralph_add.py::test_generated_pbi_passes_plan1_validator` (ralph-add doesn't yet write `target_repo`; scoped to Task 6). Down from 6 collateral failures in iter 3.
+- `ruff check .` + `ruff format --check .` both clean repo-wide.
+- Notes: queue-branch migration deferred but acknowledged in plan Step 5.3 with explanation. Memory note recorded: `.ralph/` gitignored on feature branches means migration scripts targeting it must run on ralph-queue separately.
+- Next iteration: Task 6 (`skills/ralph-add/scripts/add.py` — `_derive_target_repo` helper, `--target-repo` flag, write field into PBI frontmatter at creation).
