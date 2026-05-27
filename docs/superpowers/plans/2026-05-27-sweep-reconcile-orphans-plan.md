@@ -505,7 +505,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(pr-github): add lookup_by_bra
 - Modify: `ralph_executor/sweep/types.py` (append at end)
 - Create: `tests/executor/sweep/test_reconcile.py`
 
-- [ ] **Step 3.1: Add types to `sweep/types.py`**
+- [x] **Step 3.1: Add types to `sweep/types.py`**
 
 Append to `ralph_executor/sweep/types.py`:
 
@@ -539,7 +539,7 @@ class ReconcileReport:
 
 (Note: `Mapping` import is needed; `from collections.abc import Mapping` already added inline above. If `Mapping` is already imported at the top of types.py, drop the inline import.)
 
-- [ ] **Step 3.2: Run mypy to confirm the types load**
+- [x] **Step 3.2: Run mypy to confirm the types load**
 
 ```bash
 uv run mypy --strict ralph_executor/sweep/types.py
@@ -547,7 +547,7 @@ uv run mypy --strict ralph_executor/sweep/types.py
 
 Expected: green.
 
-- [ ] **Step 3.3: Create the failing reconcile test file**
+- [x] **Step 3.3: Create the failing reconcile test file**
 
 Create `tests/executor/sweep/test_reconcile.py`:
 
@@ -961,7 +961,7 @@ def test_reconcile_all_skips_dirs_with_pr_link(
     assert "HEALTHY" not in report.actions
 ```
 
-- [ ] **Step 3.4: Run the failing tests**
+- [x] **Step 3.4: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/sweep/test_reconcile.py -v
@@ -969,7 +969,7 @@ uv run pytest tests/executor/sweep/test_reconcile.py -v
 
 Expected: **all FAIL** at collection time — `ImportError: cannot import 'reconcile' from 'ralph_executor.sweep'`.
 
-- [ ] **Step 3.5: Commit**
+- [x] **Step 3.5: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/types.py tests/executor/sweep/test_reconcile.py
