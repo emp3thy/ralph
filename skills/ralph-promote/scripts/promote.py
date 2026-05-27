@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         entry_file = _resolve_entry_file(pbi_dir)
 
         frontmatter, body = read_frontmatter(entry_file)
-        previous_severity = str(frontmatter.get("severity", ""))
+        working_severity = str(frontmatter.get("severity", ""))
 
         # Idempotency check reads HEAD's frontmatter, not the working
         # tree's. A previous invocation that wrote the new severity to
@@ -150,7 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         if head_text is not None:
             head_front, _ = parse_frontmatter_text(head_text, source=f"HEAD:{rel_entry}")
             head_severity = str(head_front.get("severity", ""))
-        if head_severity == args.severity and previous_severity == args.severity:
+        # ``previous_severity`` is what HISTORY.md + the commit message
+        # report. In the partial-failure retry case the working tree
+        # already shows the new value, so we'd write a misleading
+        # "high -> high" entry. Prefer HEAD's committed severity when
+        # it exists; fall back to the working tree only when HEAD does
+        # not yet contain the file (fresh PBI just added).
+        previous_severity = head_severity if head_text is not None else working_severity
+        if head_severity == args.severity and working_severity == args.severity:
             print(
                 f"PBI {args.pbi_id} already has severity={args.severity!r}; nothing to do.",
                 file=sys.stderr,

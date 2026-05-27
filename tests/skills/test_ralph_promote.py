@@ -381,3 +381,15 @@ def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
     )
     head_after = _git(git_repo, "rev-parse", "ralph-queue")
     assert head_after != head_before, "a new commit must land on ralph-queue"
+    # BugBot round-2 (PR #35): previous_severity for audit must come
+    # from HEAD, not from the dirty working tree. The retry case would
+    # otherwise log "high -> high" in HISTORY + the commit subject.
+    assert payload["previous_severity"] == "normal", (
+        "previous_severity must reflect HEAD's committed value, not the "
+        "working tree value (which was already 'high' from the failed run)"
+    )
+    history = (git_repo / ".ralph" / "inbox" / "WI-650" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "normal -> high" in history
+    assert "high -> high" not in history
+    subject = _git(git_repo, "log", "-1", "--pretty=%s", "ralph-queue").strip()
+    assert "(normal -> high)" in subject, f"commit subject wrong: {subject}"
