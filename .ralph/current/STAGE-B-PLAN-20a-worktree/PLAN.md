@@ -82,6 +82,8 @@ Add to `_TOML_KNOWN_KEYS`. Resolve via `_resolve_bool`. Operators on legacy sing
 
 Commit: `feat(config): use_worktrees TOML/env knob`
 
+- [x] Task 2 complete (iteration 2, 2026-05-27, commit 78877b2)
+
 ### Task 3 — refactor `_claim_pbi`
 
 When `cfg.use_worktrees`:
