@@ -45,6 +45,25 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # Seed the writable /home/ralph emptyDir with the baked
+      # .claude/skills/ tree before the main container starts —
+      # without this initContainer the emptyDir mount over
+      # /home/ralph would shadow every baked skill and Claude Code
+      # would find none of them at runtime.
+      initContainers:
+        - name: seed-home
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "cp -a /home/ralph/. /seed/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: home
+              mountPath: /seed
       containers:
         - name: ralph-executor
           image: __IMAGE__

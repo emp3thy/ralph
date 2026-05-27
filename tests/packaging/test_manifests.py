@@ -40,6 +40,37 @@ def test_deployment_is_non_root_with_limits() -> None:
     assert "ralph-secrets" in ref_secret
 
 
+def test_deployment_seeds_home_via_init_container() -> None:
+    """Regression: BugBot PR #39 flagged that the emptyDir at
+    /home/ralph wipes the baked .claude/skills/ tree at runtime.
+    Fix uses an initContainer to copy the baked /home/ralph into
+    the volume before the main container starts, so skills remain
+    visible AND the writable home survives readOnlyRootFilesystem."""
+    docs = _load(MANIFESTS / "ralph-deployment.yaml")
+    pod_spec = docs[0]["spec"]["template"]["spec"]
+    init = pod_spec.get("initContainers") or []
+    assert len(init) == 1, f"expected 1 init container, got {len(init)}"
+    seed = init[0]
+    assert seed["name"] == "seed-home"
+    # initContainer mounts the same emptyDir at /seed and copies the
+    # baked /home/ralph contents into it.
+    mounts = {m["mountPath"]: m["name"] for m in seed.get("volumeMounts", [])}
+    assert mounts.get("/seed") == "home"
+    assert "/home/ralph/." in " ".join(seed["command"])
+    assert "/seed/" in " ".join(seed["command"])
+
+
+def test_job_seeds_home_via_init_container() -> None:
+    """Same regression as the deployment test — the Job manifest has
+    the same emptyDir-over-/home/ralph problem; it needs the same
+    seed-home initContainer."""
+    docs = _load(MANIFESTS / "ralph-job.yaml")
+    pod_spec = docs[0]["spec"]["template"]["spec"]
+    init = pod_spec.get("initContainers") or []
+    assert len(init) == 1
+    assert init[0]["name"] == "seed-home"
+
+
 def test_deployment_does_not_set_ralph_git_host_env() -> None:
     """RALPH_GIT_HOST is baked into the image, not set in the
     manifest. If the manifest tries to set it, ENV order rules

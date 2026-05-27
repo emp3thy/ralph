@@ -45,6 +45,27 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # Seed the writable /home/ralph emptyDir with the baked
+      # .claude/skills/ tree before the main container starts. The
+      # main container has readOnlyRootFilesystem: true, so it needs
+      # a writable home for Claude Code's session state — but the
+      # raw emptyDir mount over /home/ralph would shadow the baked
+      # skills. Copy the image's /home/ralph into the volume first
+      # so the main container sees skills AND has a writable home.
+      initContainers:
+        - name: seed-home
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "cp -a /home/ralph/. /seed/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: home
+              mountPath: /seed
       containers:
         - name: ralph-executor
           # Replaced at deploy time. The tag MUST include the
