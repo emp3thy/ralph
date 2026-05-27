@@ -579,6 +579,66 @@ def test_sweep_continues_when_pr_green_then_red_emit_raises(
     )
 
 
+def test_run_deletes_stale_current_with_done_sibling(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+) -> None:
+    """run() deletes a current/<id>/ orphan whose sibling lives in done/."""
+    # Orphan in current/ (HISTORY.md only — the feature-branch-replay shape).
+    orphan = queue_root / "current" / "MERGED-PBI"
+    orphan.mkdir()
+    (orphan / "HISTORY.md").write_text("# iter 1\n", encoding="utf-8")
+    # Sibling in done/ (real PBI metadata).
+    done = queue_root / "done" / "MERGED-PBI"
+    done.mkdir()
+    (done / "PBI.md").write_text("---\nid: MERGED-PBI\n---\n", encoding="utf-8")
+
+    result = run(ctx=_ctx(queue_root, fake_ado_pr_skill))
+
+    assert not orphan.exists(), "stale current/ entry must be deleted"
+    assert done.exists(), "sibling in done/ must be left alone"
+    assert result.errors == ()
+
+
+def test_run_keeps_active_current_claim(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+) -> None:
+    """run() does not touch a real active claim (PBI.md present)."""
+    claim = queue_root / "current" / "ACTIVE"
+    claim.mkdir()
+    (claim / "PBI.md").write_text("---\nid: ACTIVE\n---\n", encoding="utf-8")
+    (claim / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+
+    run(ctx=_ctx(queue_root, fake_ado_pr_skill))
+
+    assert claim.exists()
+    assert (claim / "PBI.md").is_file()
+    assert (claim / "PLAN.md").is_file()
+
+
+def test_run_surfaces_no_sibling_warning(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """current/<id>/ with no sibling and no PBI.md gets a WARNING but is
+    not deleted — paranoia fallback."""
+    orphan = queue_root / "current" / "MYSTERY"
+    orphan.mkdir()
+    (orphan / "HISTORY.md").write_text("hand-written\n", encoding="utf-8")
+
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="ralph_executor.sweep.runner")
+    run(ctx=_ctx(queue_root, fake_ado_pr_skill))
+
+    assert orphan.exists()
+    assert any(
+        "MYSTERY" in rec.message and "operator review" in rec.message for rec in caplog.records
+    ), caplog.text
+
+
 def test_regression_cascade_trips_with_pr_merged_then_matching_green_then_red(
     queue_root: Path,
     fake_ado_pr_skill: Path,

@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import Any
 
 from ralph_executor.sweep.runner import SweepContext
-from ralph_executor.sweep.types import ReconcileAction, ReconcileReport
+from ralph_executor.sweep.types import (
+    CurrentReconcileAction,
+    CurrentReconcileReport,
+    ReconcileAction,
+    ReconcileReport,
+)
 
 log = logging.getLogger(__name__)
 
@@ -260,3 +265,108 @@ def reconcile_all(
             log.warning("reconcile: failed for %s: %s", pbi_id, err)
 
     return ReconcileReport(actions=actions, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Stale current/ reconciliation
+# ---------------------------------------------------------------------------
+#
+# Background: feature branches commit ``.ralph/current/<id>/HISTORY.md``
+# during iteration. When the feature PR squash-merges into ``main``, that
+# file lands on main. Subsequent ``merge main into ralph-queue`` commits
+# resurrect ``current/<id>/HISTORY.md`` on the queue branch, undoing the
+# ``move current to pending-pr`` ``git mv`` from the original cycle. The
+# orphan never gets cleaned up because the pending-pr reconcile pass only
+# scans ``pending-pr/``. This pass closes that gap by deleting any
+# ``current/<id>/`` that lacks ``PBI.md`` AND has a sibling somewhere
+# else in the queue.
+
+
+_CURRENT_SIBLING_PRECEDENCE: tuple[tuple[str, CurrentReconcileAction], ...] = (
+    ("done", CurrentReconcileAction.DELETED_DONE_SIBLING),
+    ("blocked", CurrentReconcileAction.DELETED_BLOCKED_SIBLING),
+    ("pending-pr", CurrentReconcileAction.DELETED_PENDING_SIBLING),
+)
+
+
+def reconcile_stale_current_one(
+    pbi_dir: Path,
+    ctx: SweepContext,
+    *,
+    dry_run: bool = False,
+) -> CurrentReconcileAction:
+    """Decide and (unless dry_run) apply the disposition for one
+    ``.ralph/current/<id>/`` directory.
+
+    Decision table (spec):
+      - has PBI.md → KEEP_ACTIVE_CLAIM (never delete an active claim)
+      - no PBI.md AND sibling exists in done/   → DELETED_DONE_SIBLING
+      - no PBI.md AND sibling exists in blocked/ → DELETED_BLOCKED_SIBLING
+      - no PBI.md AND sibling exists in pending-pr/ → DELETED_PENDING_SIBLING
+      - no PBI.md AND no sibling → KEEP_NO_SIBLING (leave + caller warns)
+
+    Raises ReconcileError on shutil.rmtree OSError.
+    """
+    if (pbi_dir / "PBI.md").is_file():
+        return CurrentReconcileAction.KEEP_ACTIVE_CLAIM
+
+    pbi_id = pbi_dir.name
+    queue_root = ctx.queue_root
+
+    for state, action in _CURRENT_SIBLING_PRECEDENCE:
+        sibling = queue_root / state / pbi_id
+        if sibling.is_dir():
+            if not dry_run:
+                _rmtree_dir(pbi_dir)
+            return action
+
+    return CurrentReconcileAction.KEEP_NO_SIBLING
+
+
+def _rmtree_dir(path: Path) -> None:
+    """``shutil.rmtree`` wrapped to surface OSError as ReconcileError.
+
+    Matches ``_move_dir``'s OSError-to-ReconcileError contract so callers
+    can treat both move and delete failures uniformly.
+    """
+    try:
+        shutil.rmtree(str(path))
+    except OSError as exc:
+        raise ReconcileError(f"failed to delete {path}: {exc}") from exc
+
+
+def reconcile_stale_current_all(
+    ctx: SweepContext,
+    *,
+    dry_run: bool = False,
+) -> CurrentReconcileReport:
+    """Iterate ``.ralph/current/`` and reconcile every entry.
+
+    Per-PBI failures are captured in ``report.errors`` without aborting.
+    Non-directory entries (``.gitkeep``, etc.) are skipped.
+    """
+    current_dir = ctx.queue_root / "current"
+    actions: dict[str, CurrentReconcileAction] = {}
+    errors: dict[str, str] = {}
+
+    if not current_dir.is_dir():
+        return CurrentReconcileReport(actions={}, errors={})
+
+    for entry in sorted(current_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        pbi_id = entry.name
+        try:
+            action = reconcile_stale_current_one(entry, ctx, dry_run=dry_run)
+            actions[pbi_id] = action
+            log.info(
+                "reconcile-current: %s -> %s%s",
+                pbi_id,
+                action.value,
+                " (dry-run)" if dry_run else "",
+            )
+        except ReconcileError as err:
+            errors[pbi_id] = str(err)
+            log.warning("reconcile-current: failed for %s: %s", pbi_id, err)
+
+    return CurrentReconcileReport(actions=actions, errors=errors)

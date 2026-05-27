@@ -125,3 +125,25 @@ class ReconcileReport:
 
     actions: Mapping[str, ReconcileAction]
     errors: Mapping[str, str]
+
+
+class CurrentReconcileAction(StrEnum):
+    DELETED_DONE_SIBLING = "deleted_done_sibling"
+    DELETED_BLOCKED_SIBLING = "deleted_blocked_sibling"
+    DELETED_PENDING_SIBLING = "deleted_pending_sibling"
+    KEEP_ACTIVE_CLAIM = "keep_active_claim"
+    KEEP_NO_SIBLING = "keep_no_sibling"
+
+
+@dataclass(frozen=True)
+class CurrentReconcileReport:
+    """Aggregate of reconcile_stale_current_all over .ralph/current/.
+
+    ``actions`` maps each scanned PBI id to its chosen action (including
+    KEEP outcomes — full audit of what was inspected).
+    ``errors`` carries human-readable error strings for PBIs that
+    raised ReconcileError during rmtree.
+    """
+
+    actions: Mapping[str, CurrentReconcileAction]
+    errors: Mapping[str, str]
