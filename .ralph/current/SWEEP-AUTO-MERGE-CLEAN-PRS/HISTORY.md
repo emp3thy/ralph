@@ -9,3 +9,11 @@
 - Tests: `uv run pytest tests/skills/test_pr_github.py -k show` → 14 passed.
 - Lint: `ruff check` clean. `ruff format` applied (one minor reflow inside `output` dict). `mypy skills/pr-github/scripts/show.py` → no issues.
 - Notes: pyright "unreachable code" diagnostic on `show.py:209` is pre-existing (annotation-driven narrowing of `pr: dict[str, Any]`). Not in scope.
+
+## Iteration 2 — 2026-05-27T21:30:00+00:00
+
+- Task 2: Added `put_rest` + `RaceError` + `handle_race_error` to `skills/pr-github/scripts/_common.py`. `_read_rest_response` now raises `RaceError` on 405/409 (additive — grep confirmed no existing call site relied on those codes). Updated module docstring + `__all__`.
+- Task 2: Created `skills/pr-github/scripts/merge_pr.py` (7th sub-op). argparse choices for `--merge-method` (merge|squash|rebase, default squash). `PUT /repos/{owner}/{repo}/pulls/{n}/merge`. Exit chain: `FatalError → 2`, `RaceError → 4`, `HttpError → 3`.
+- Task 2: Added `merge_pr_module` fixture + 9 test cases in `tests/skills/test_pr_github.py` (happy path, optional commit fields, 405 race, 409 race, 422 error, 500 error, bad merge method via argparse, missing env, malformed pr-id).
+- Tests: `uv run pytest tests/skills/test_pr_github.py -k merge_pr` → 9 passed. Full `tests/skills/` → 194 passed.
+- Lint: `ruff check .` clean (only pre-existing noqa-format warnings in `ralph-doctor`). `ruff format` applied to `test_pr_github.py`. `mypy skills` → no issues.
