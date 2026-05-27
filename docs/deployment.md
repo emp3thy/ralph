@@ -257,8 +257,15 @@ Pipelines instead, this YAML is functionally equivalent
         steps:
           - checkout: self
             fetchDepth: 0
+          # Capture the version ONCE so build + preflight + push all
+          # tag the same image. Using $(Build.SourceVersion) in the
+          # push step (full SHA) while the build step uses the short
+          # SHA would push an untested image and discard the
+          # preflighted one.
           - bash: |
-              export RALPH_VERSION="$(git rev-parse --short HEAD)"
+              VERSION="$(git rev-parse --short HEAD)"
+              echo "##vso[task.setvariable variable=RALPH_VERSION]$VERSION"
+              export RALPH_VERSION="$VERSION"
               IMG=$(bash scripts/build_image.sh --host github)
               echo "##vso[task.setvariable variable=IMAGE]$IMG"
             displayName: 'Build image'
@@ -269,7 +276,7 @@ Pipelines instead, this YAML is functionally equivalent
             condition: succeeded()
             env:
               RALPH_REGISTRY: $(RALPH_REGISTRY)
-              RALPH_VERSION: $(Build.SourceVersion)
+              RALPH_VERSION: $(RALPH_VERSION)
 
       - job: build_ado
         displayName: 'Build (ado)'
@@ -278,7 +285,9 @@ Pipelines instead, this YAML is functionally equivalent
           - checkout: self
             fetchDepth: 0
           - bash: |
-              export RALPH_VERSION="$(git rev-parse --short HEAD)"
+              VERSION="$(git rev-parse --short HEAD)"
+              echo "##vso[task.setvariable variable=RALPH_VERSION]$VERSION"
+              export RALPH_VERSION="$VERSION"
               IMG=$(bash scripts/build_image.sh --host ado)
               echo "##vso[task.setvariable variable=IMAGE]$IMG"
             displayName: 'Build image'
@@ -289,7 +298,7 @@ Pipelines instead, this YAML is functionally equivalent
             condition: succeeded()
             env:
               RALPH_REGISTRY: $(RALPH_REGISTRY)
-              RALPH_VERSION: $(Build.SourceVersion)
+              RALPH_VERSION: $(RALPH_VERSION)
 
 ## Runtime-staging alternative (single image, host chosen at startup)
 
