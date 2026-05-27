@@ -1,11 +1,11 @@
 ---
 id: RALPH-PBI-TARGET-REPO-FIELD
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T00:03:00+00:00
-updated_at: 2026-05-27T19:55:19+00:00
+updated_at: 2026-05-27T20:59:08+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---
