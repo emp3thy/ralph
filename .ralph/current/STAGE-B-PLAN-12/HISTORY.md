@@ -44,3 +44,16 @@ Working around the denial by using `Bash` heredoc / `Set-Content` would be a del
 
 Any one of the following:
 ...[truncated]
+
+---
+
+## Iteration 2 — 2026-05-27T19:01:04Z
+
+- Task 2 (Bake `.claude/settings.json` + write `tests/packaging/test_settings_json.py`) — all 4 steps complete.
+- Created `.claude/settings.json` verbatim from plan (dangerouslySkipPermissions=true, model `claude-opus-4-7`, full permissions.allow with canonical `Skill(pr)` / `Skill(workitem-fetch)` entries, deny list of footguns, `_v2_memory_mcp_permissions_commented_out` reserved key).
+- JSON parses via `uv run python -c "import json; json.load(open('.claude/settings.json'))"`.
+- Created `tests/packaging/test_settings_json.py` with the 6 prescribed tests. Deviation from plan-verbatim: typed the fixture return as `dict[str, Any]` (plan said `dict[str, object]`) — verbatim version failed `uv run mypy` at lines `perms.get(...)` (object has no attribute "get"). The PBI acceptance gate requires mypy clean; `dict[str, Any]` is the minimal lift. The fixture body also annotates the local `data: dict[str, Any] = json.load(fh)` to silence `no-any-return`.
+- Tests: 6 passed (`uv run pytest tests/packaging/test_settings_json.py -v`).
+- Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 105 files formatted, `uv run mypy ralph_executor scripts skills tests` clean (102 files).
+- Plan checkboxes for Task 2 (steps 1–4) ticked.
+- Notes: Next iteration starts Task 3 (Dockerfile + `.dockerignore` + `tests/packaging/test_dockerfile.py`).
