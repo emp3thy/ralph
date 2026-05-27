@@ -68,3 +68,14 @@
 - Tests: `uv run --no-sync pytest tests/executor/test_loop_integration.py -v` → 4 passed. Full suite `uv run --no-sync pytest` → 438 passed, 2 skipped.
 - Toolchain (full PBI gate): `ruff check .` clean, `ruff format --check .` clean (74 files), `mypy ralph_executor scripts skills tests` clean (74 source files).
 - Notes: Task 8 next — push branch, open PR via `pr` skill. All PLAN tasks complete.
+
+## Iteration 7 — 2026-05-27T06:00:00+00:00 — PR created
+
+- Task 8: ran final verification gate (`uv run pytest tests/executor/sweep/ -v` → 38 passed; full suite → 438 passed, 2 skipped; `ruff check .` / `ruff format --check .` / `mypy ralph_executor scripts skills tests` all clean) and the public-surface import smoke (`from ralph_executor.sweep import run, SweepResult` and `from ralph_executor.sweep.runner import SweepConfig, SweepContext` both resolve). Pushed `ralph/STAGE-B-PLAN-08`. Opened PR via `gh pr create` (the staged `pr-github` skill needs `GH_TOKEN` + `GH_OWNER` and was already exercised by tests/skills — using `gh` here matches recent in-repo PR convention #21–#24).
+- PR: !27
+- Branch: ralph/STAGE-B-PLAN-08
+- Title: STAGE-B-PLAN-08: add sweep logic (pending-pr observer + PR-feedback generation)
+- URL: https://github.com/emp3thy/ralph/pull/27
+- Plan deviations (intentional):
+  - Skipped Plan Task 8 step 3 (orchestrator doc update) — `docs/superpowers/plans/2026-05-24-00-orchestrator.md`'s "Plan inventory" table doesn't yet have a status column (Plan 12 territory per the plan's own note); no edit required.
+- All PLAN.md tasks (1-8) complete. Acceptance criteria: pytest green, ruff green, mypy green, PR opened against main from ralph/STAGE-B-PLAN-08. PBI complete.
