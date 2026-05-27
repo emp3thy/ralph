@@ -14,4 +14,4 @@ track per-iteration progress.
 - [x] Task 7 — Runner dispatch branch + `_invoke_merge_pr` helper.
 - [x] Task 8 — Wire flag through `loop._run_sweep`.
 - [x] Task 9 — Conftest shim + runner tests.
-- [ ] Task 10 — Full-suite green (`uv run pytest`, `ruff check`, `ruff format --check`, `mypy`) + ship PR.
+- [x] Task 10 — Full-suite green (`uv run pytest`, `ruff check`, `ruff format --check`, `mypy`) + ship PR.

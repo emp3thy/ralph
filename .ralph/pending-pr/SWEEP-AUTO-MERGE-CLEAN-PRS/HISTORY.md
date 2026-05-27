@@ -85,3 +85,19 @@
 - Lint: `uv run ruff check tests/executor/sweep/` → All checks passed. `uv run ruff format` applied to both touched files (line-fit only).
 - mypy: `uv run mypy ralph_executor tests/executor/sweep/` → 35 source files, no issues.
 - Notes: Existing `_FlakyEventLog` already had pyright "not accessed" warnings on its `event/window/now` stub params — pre-existing pattern, not in scope. The `_ctx_with_auto_merge` helper builds a fresh `SweepConfig` rather than `dataclasses.replace`-ing on `_config()` because `SweepConfig` is frozen and the existing `_config()` factory is the simpler pattern for the single new flag.
+
+## Iteration 10 — 2026-05-27T21:49:07+00:00 — PR ship
+
+- Task 10: Full-suite gates green.
+  - `uv run pytest -q` → 743 passed, 4 skipped (shellcheck + opt-in prompt-smoke).
+  - `uv run ruff check .` → All checks passed!
+  - `uv run ruff format --check .` → 122 files already formatted.
+  - `uv run mypy ralph_executor scripts skills tests` → no issues in 116 source files.
+- Task 10: Ticked PLAN.md Task 10 box.
+- Next: push `ralph/SWEEP-AUTO-MERGE-CLEAN-PRS`, open PR via `gh pr create`, append PR-created sub-entry below.
+
+## Iteration 10 — 2026-05-27T21:49:07+00:00 — PR created
+
+- PR: !41 — https://github.com/emp3thy/ralph/pull/41
+- Branch: ralph/SWEEP-AUTO-MERGE-CLEAN-PRS
+- Title: SWEEP-AUTO-MERGE-CLEAN-PRS: sweep auto-merges clean PRs (TOML-gated)
