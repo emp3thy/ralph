@@ -366,7 +366,17 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     event_log = open_log(cfg.repo_path)
     try:
         # --- Spawn Claude ------------------------------------------------
-        outcome = spawn_claude_p(cfg, pbi)
+        if cfg.use_worktrees:
+            work_wt = work_worktree_path(cfg.repo_path, pbi.id)
+            pbi_dir_in_queue = queue_worktree_path(cfg.repo_path) / ".ralph" / "current" / pbi.id
+            outcome = spawn_claude_p(
+                cfg,
+                pbi,
+                cwd=work_wt,
+                pbi_dir=pbi_dir_in_queue,
+            )
+        else:
+            outcome = spawn_claude_p(cfg, pbi)
         log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
 
         # --- Plan 9: bump attempt counter ONLY on failure outcomes -------

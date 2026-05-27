@@ -61,13 +61,19 @@ class ClaudeOutcome:
     duration_seconds: float
 
 
-def _build_argv(cfg: ExecutorConfig, pbi: PBI) -> list[str]:
+def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path) -> list[str]:
     """Compose the argv passed to the ``claude`` binary.
 
     ``-p`` puts Claude in non-interactive print mode. The PBI directory
     path is forwarded both as an argument (the standing PROMPT.md tells
     Ralph to read it) and via the ``RALPH_PBI_DIR`` environment variable
     (which test stand-ins use to locate the PBI on disk).
+
+    ``pbi_dir`` is the absolute on-disk path Claude should read/write.
+    In legacy single-checkout mode it equals ``pbi.path``; in worktree
+    mode it points into the queue worktree (``.ralph-work/queue/.ralph/
+    current/<id>/``) rather than the work worktree where Claude's cwd
+    is rooted.
 
     ``--output-format stream-json --verbose`` makes Claude emit one
     line-delimited JSON event per step (system init, assistant message,
@@ -91,7 +97,7 @@ def _build_argv(cfg: ExecutorConfig, pbi: PBI) -> list[str]:
         "-p",
         (
             "Read ./prompt/PROMPT.md and work the PBI in "
-            f"{pbi.path}. Follow the standing instructions."
+            f"{pbi_dir}. Follow the standing instructions."
         ),
     ]
     return argv
@@ -416,7 +422,13 @@ def _tee_stream(
         err_slot.append(exc)
 
 
-def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
+def spawn_claude_p(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    cwd: Path | None = None,
+    pbi_dir: Path | None = None,
+) -> ClaudeOutcome:
     """Run ``claude -p`` against the PBI and return a classified outcome.
 
     Tees Claude's stdout and stderr to the executor's logger live (so the
@@ -424,15 +436,39 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     accumulating the streams into ``outcome.stdout`` / ``outcome.stderr``
     for the classifier and downstream diagnostics.
 
+    ``cwd`` overrides the subprocess working directory; defaults to
+    ``cfg.repo_path`` for legacy single-checkout setups. In worktree
+    mode the loop passes the per-PBI work worktree path so Claude's
+    relative paths resolve against the code tree.
+
+    ``pbi_dir`` overrides the on-disk PBI directory the spawned Claude
+    reads/writes; defaults to ``pbi.path`` for legacy mode. In worktree
+    mode the loop passes the absolute path under the queue worktree so
+    Claude finds ``.ralph/current/<id>/`` even though its cwd is the
+    work worktree. The value is forwarded both as the ``RALPH_PBI_DIR``
+    environment variable and as the path substituted into the prompt.
+
+    Both overrides are validated as existing directories before exec so
+    a misconfigured worktree fails fast with a clear error rather than
+    crashing the spawned Claude with a confusing read failure.
+
     On KeyboardInterrupt or any other exception from ``proc.wait()``, the
     child process is killed and the tee threads are joined before the
     exception propagates — otherwise the non-daemon I/O threads would
     block interpreter shutdown indefinitely on a pipe read that nobody
     can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
-    argv = _build_argv(cfg, pbi)
+    effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
+    effective_cwd = Path(cwd) if cwd is not None else cfg.repo_path
+    if not effective_pbi_dir.is_dir():
+        raise FileNotFoundError(
+            f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
+        )
+    if not effective_cwd.is_dir():
+        raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
+    argv = _build_argv(cfg, pbi_dir=effective_pbi_dir)
     env = os.environ.copy()
-    env["RALPH_PBI_DIR"] = str(pbi.path)
+    env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
     # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
     # Empty string breaks claude CLI's OAuth fallback — leave it absent
     # so the claude CLI picks up its own OAuth session.
@@ -442,7 +478,7 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
     start = time.monotonic()
     proc = subprocess.Popen(
         argv,
-        cwd=str(cfg.repo_path),
+        cwd=str(effective_cwd),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -515,7 +551,7 @@ def spawn_claude_p(cfg: ExecutorConfig, pbi: PBI) -> ClaudeOutcome:
                 interval_seconds=cfg.pr_check_poll_interval_seconds,
             )
     return classify_outcome(
-        pbi_dir=pbi.path,
+        pbi_dir=effective_pbi_dir,
         stdout=stdout_text,
         stderr=stderr_text,
         exit_code=returncode,
