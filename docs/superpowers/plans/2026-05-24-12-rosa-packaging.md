@@ -1746,35 +1746,35 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 This task is the Phase 1 verification gate: **prove both `--host github` and `--host ado` produce buildable images**. Phase 2 work (ado skills) must be present for the ado build; if it is not, document the gate as "Phase 1 verified for github, Phase 2 blocked on Plans 3/5".
 
-- [ ] 1. Build the Phase 1 (github) image:
+- [ ] 1. [SKIPPED — docker not installed in executor environment] Build the Phase 1 (github) image:
   ```
   IMG_GH=$(bash scripts/build_image.sh --host github)
   echo "Built ${IMG_GH}"
   ```
   Expected: build succeeds; tag ends in `-github`.
 
-- [ ] 2. Build the Phase 2 (ado) image:
+- [ ] 2. [SKIPPED — docker not installed in executor environment] Build the Phase 2 (ado) image:
   ```
   IMG_ADO=$(bash scripts/build_image.sh --host ado)
   echo "Built ${IMG_ADO}"
   ```
   Expected: build succeeds; tag ends in `-ado`. **If this fails with "skills/pr-ado not found" or similar**, that's expected before Plans 3/5 Phase 2 lands. Note the gap in the PR description and proceed with Phase 1 only.
 
-- [ ] 3. Verify both images carry the right `RALPH_GIT_HOST` env:
+- [ ] 3. [SKIPPED — docker not installed in executor environment] Verify both images carry the right `RALPH_GIT_HOST` env:
   ```
   docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${IMG_GH}" | grep RALPH_GIT_HOST
   docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${IMG_ADO}" | grep RALPH_GIT_HOST
   ```
   Expected: `RALPH_GIT_HOST=github` for the first; `RALPH_GIT_HOST=ado` for the second.
 
-- [ ] 4. Verify both images carry the `ralph.git-host` OCI label:
+- [ ] 4. [SKIPPED — docker not installed in executor environment] Verify both images carry the `ralph.git-host` OCI label:
   ```
   docker inspect --format='{{index .Config.Labels "ralph.git-host"}}' "${IMG_GH}"
   docker inspect --format='{{index .Config.Labels "ralph.git-host"}}' "${IMG_ADO}"
   ```
   Expected: prints `github` then `ado`.
 
-- [ ] 5. Run preflight against each image. The doctor probes the host indicated by the baked env:
+- [ ] 5. [SKIPPED — docker not installed in executor environment] Run preflight against each image. The doctor probes the host indicated by the baked env:
   ```
   bash scripts/preflight.sh "${IMG_GH}"
   bash scripts/preflight.sh "${IMG_ADO}"
@@ -1782,14 +1782,14 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   Expected (against Plan 11's real doctor): exit 0 for each.
   Expected (against the Task 1 stub doctor): exit 0 for each.
 
-- [ ] 6. Confirm the runtime user is `ralph` (10001) inside each image:
+- [ ] 6. [SKIPPED — docker not installed in executor environment] Confirm the runtime user is `ralph` (10001) inside each image:
   ```
   docker run --rm --entrypoint id "${IMG_GH}" -u
   docker run --rm --entrypoint id "${IMG_ADO}" -u
   ```
   Expected: prints `10001` for each.
 
-- [ ] 7. Confirm the canonical skill paths exist inside each image:
+- [ ] 7. [SKIPPED — docker not installed in executor environment] Confirm the canonical skill paths exist inside each image:
   ```
   docker run --rm --entrypoint ls "${IMG_GH}" /root/.claude/skills/pr/
   docker run --rm --entrypoint ls "${IMG_GH}" /root/.claude/skills/workitem-fetch/
@@ -1798,12 +1798,12 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   ```
   Expected: each path lists at least `SKILL.md` (the contents differ by host but both have the canonical filename).
 
-- [ ] 8. Confirm `.claude/settings.json` is present:
+- [ ] 8. [SKIPPED — docker not installed in executor environment] Confirm `.claude/settings.json` is present:
   ```
   docker run --rm --entrypoint cat "${IMG_GH}" /etc/ralph/.claude/settings.json | head -5
   ```
 
-- [ ] 9. Confirm Claude Code CLI is installed:
+- [ ] 9. [SKIPPED — docker not installed in executor environment] Confirm Claude Code CLI is installed:
   ```
   docker run --rm --entrypoint claude "${IMG_GH}" --version || true
   ```
@@ -1815,9 +1815,9 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Write `.github/workflows/ralph-image.yml` with the exact content from the "CI workflow" section above. The workflow uses a `matrix` over `[github, ado]` so each push builds both host images.
+- [x] 1. Write `.github/workflows/ralph-image.yml` with the exact content from the "CI workflow" section above. The workflow uses a `matrix` over `[github, ado]` so each push builds both host images.
 
-- [ ] 2. Parse the YAML to confirm validity:
+- [x] 2. Parse the YAML to confirm validity:
   ```
   uv run python -c "
   import yaml
@@ -1828,7 +1828,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   "
   ```
 
-- [ ] 3. Validate with `actionlint` if available:
+- [ ] 3. [SKIPPED — actionlint not installed in executor environment] Validate with `actionlint` if available:
   ```
   actionlint .github/workflows/ralph-image.yml 2>&1 || echo "actionlint not present; skipping"
   ```
