@@ -212,10 +212,18 @@ def _load_toml_overrides(repo_path: Path) -> Mapping[str, Any]:
 def _resolve_str(
     *, name: str, env_name: str, toml_value: Any, default: str, source_label: str
 ) -> str:
-    """env > toml > default for a string-valued knob."""
+    """env > toml > default for a string-valued knob.
+
+    Env values are stripped so downstream consumers never see surrounding
+    whitespace. Without this, a value like
+    ``RALPH_ADO_AUTHOR_EMAIL=' ralph@bot.com '`` survives the truthiness
+    guards in consumers (the string is non-empty) and string-equality
+    comparisons (e.g. PR-author matching in the sweep) silently fail.
+    Mirrors the strip already done in ``_resolve_repo_path``.
+    """
     env_value = os.environ.get(env_name)
     if env_value and env_value.strip():
-        return env_value
+        return env_value.strip()
     if toml_value is None:
         return default
     if not isinstance(toml_value, str):

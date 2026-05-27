@@ -317,6 +317,16 @@ def test_sweep_knobs_defaults_when_neither_set(clean_env: Path) -> None:
     assert cfg.stale_days == 3
 
 
+def test_env_string_value_is_stripped(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_resolve_str`` must strip surrounding whitespace before storing
+    the env value. Otherwise a value like ``' ralph@bot.com '`` survives
+    the truthiness guard in consumers and downstream string-equality
+    comparisons (PR-author matching in the sweep) silently fail."""
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "  ralph@bot.com  ")
+    cfg = load_config()
+    assert cfg.bot_author_email == "ralph@bot.com"
+
+
 def test_stale_days_rejected_when_zero_in_toml(clean_env: Path) -> None:
     _write_toml(clean_env, "stale_days = 0\n")
     with pytest.raises(ConfigError, match="stale_days must be positive"):
