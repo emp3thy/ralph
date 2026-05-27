@@ -120,12 +120,17 @@ def _invoke_lookup(
 
 
 def _resolve_repo_name(ctx: SweepContext) -> str:
-    """Extract the GitHub repo name from ``ctx.queue_root``.
+    """Return the GitHub/ADO repo name for ``lookup_by_branch --repo``.
 
-    The queue_root is ``<repo>/.ralph``, so its parent is the repo
-    checkout. The directory name is the repo name (ralph's
-    one-PBI-per-feature-branch convention).
+    Prefer the explicit ``ctx.repo_name`` (always correct under both
+    single-checkout and two-worktree mode). Fall back to deriving from
+    ``ctx.queue_root.parent.name`` only when it is empty — this fallback
+    exists for old callers and tests that construct ``SweepContext``
+    without setting ``repo_name`` and are still on the single-checkout
+    layout where ``queue_root`` is ``<repo>/.ralph``.
     """
+    if ctx.repo_name:
+        return ctx.repo_name
     return ctx.queue_root.parent.name
 
 
