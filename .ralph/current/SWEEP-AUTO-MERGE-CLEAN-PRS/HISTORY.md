@@ -73,3 +73,15 @@
 - Tests: `uv run pytest tests/executor/test_loop.py tests/executor/test_loop_integration.py -q` → 35 passed.
 - Lint: `uv run ruff check` on touched files → clean. `uv run ruff format --check` → already formatted. `uv run mypy ralph_executor/loop.py` → no issues.
 - Notes: No change to `ralph_executor/cli.py::reconcile`'s `SweepConfig(...)` — that path drives `reconcile_all` (orphan/race reconciliation), not `run_sweep`, and the `decide_action` predicate is dormant there since `auto_merge_clean_prs` defaults to False. If a future PBI wires reconcile to merge, the explicit-False default is the right starting state.
+
+## Iteration 9 — 2026-05-28T01:00:00+00:00
+
+- Task 9: Added `merge_pr.py` shim to `fake_ado_pr_skill` in `tests/executor/sweep/conftest.py`. Driven by `SHIM_MERGE_PR_<pr_id>_EXIT` env var (default exit 0); prints a small JSON payload and exits with the configured code.
+- Task 9: Extended `register_pr` with `mergeable_state: str = "unknown"` kwarg threaded into the `show` payload dict. Existing call sites unaffected (default `"unknown"` is not `"clean"`, so the new `decide_action` predicate stays dormant).
+- Task 9: Added `register_merge_pr_exit(monkeypatch, pr_id, exit_code)` helper next to `register_pr`.
+- Task 9: Added `_ctx_with_auto_merge` helper in `tests/executor/sweep/test_runner.py` — builds a `SweepContext` whose embedded `SweepConfig` has `auto_merge_clean_prs=True`.
+- Task 9: Three new test cases at the bottom of `test_runner.py` — `test_auto_merge_clean_pr_lands_in_done` (shim exit 0 → PBI in `done/`, HISTORY.md carries "PR auto-merged by sweep"), `test_auto_merge_race_keeps_pbi_in_pending` (shim exit 4 → PBI stays + INFO log contains "merge_pr refused"), `test_auto_merge_github_error_keeps_pbi_in_pending` (shim exit 3 → PBI stays + WARNING log contains "merge_pr GitHub error").
+- Tests: `uv run pytest tests/executor/sweep/test_runner.py -q` → 26 passed (23 prior + 3 new). Full `tests/executor/sweep/` → 77 passed.
+- Lint: `uv run ruff check tests/executor/sweep/` → All checks passed. `uv run ruff format` applied to both touched files (line-fit only).
+- mypy: `uv run mypy ralph_executor tests/executor/sweep/` → 35 source files, no issues.
+- Notes: Existing `_FlakyEventLog` already had pyright "not accessed" warnings on its `event/window/now` stub params — pre-existing pattern, not in scope. The `_ctx_with_auto_merge` helper builds a fresh `SweepConfig` rather than `dataclasses.replace`-ing on `_config()` because `SweepConfig` is frozen and the existing `_config()` factory is the simpler pattern for the single new flag.
