@@ -407,3 +407,66 @@ def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
     )
     subject = _git(git_repo, "log", "-1", "--pretty=%s", "ralph-queue").strip()
     assert "(normal -> high)" in subject, f"commit subject wrong: {subject}"
+
+
+def test_promote_appends_history_when_prior_crash_was_between_write_and_append(
+    git_repo: Path,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-4. Previous attempt crashed
+    BETWEEN ``write_frontmatter`` (severity written to disk) and
+    ``append_history`` (HISTORY entry never written). Retry then:
+      working_severity == args.severity  → skipped the write (correct)
+      AND skipped append_history (WRONG — HISTORY has no entry)
+    The severity change committed but the audit trail was missing.
+    Fix gates append_history on HISTORY.md content, not working tree."""
+    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-660", pbi_type="feature", severity="normal")
+
+    _git(git_repo, "checkout", "ralph-queue")
+    # Seed write_frontmatter but NOT append_history — simulates the
+    # crash window between those two calls.
+    entry = pbi_dir / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    text = text.replace("severity: normal", "severity: high")
+    entry.write_text(text, encoding="utf-8")
+    # HISTORY.md is left EMPTY (no entry from prior attempt).
+    history_path = pbi_dir / "HISTORY.md"
+    assert history_path.read_text(encoding="utf-8").strip() == ""
+
+    exit_code = promote_module.main(
+        [
+            "--pbi-id",
+            "WI-660",
+            "--severity",
+            "high",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["commit_sha"] != ""
+    history = (git_repo / ".ralph" / "inbox" / "WI-660" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "normal -> high" in history, (
+        f"HISTORY must record the audit even when the prior crash was "
+        f"between write_frontmatter and append_history; got:\n{history}"
+    )
+    # And still no duplicate when re-running again.
+    exit_code = promote_module.main(
+        [
+            "--pbi-id",
+            "WI-660",
+            "--severity",
+            "high",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    history2 = (git_repo / ".ralph" / "inbox" / "WI-660" / "HISTORY.md").read_text(encoding="utf-8")
+    assert history2.count("severity: normal -> high") == 1, (
+        f"second run must not duplicate the entry; got:\n{history2}"
+    )

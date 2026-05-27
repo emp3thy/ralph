@@ -213,22 +213,38 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
+        action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
+        # Gate each side-effect on its own observable state. The previous
+        # `not is_retry` umbrella missed two partial-failure shapes:
+        # (a) prior crash AFTER write_frontmatter but BEFORE append_history
+        #     left the working tree at the destination's status but the
+        #     HISTORY entry missing — re-running with `if not is_retry`
+        #     also skipped the append, losing the audit trail forever;
+        # (b) prior crash AFTER append_history but BEFORE _move_directory
+        #     (e.g. destination already exists) left HISTORY with the
+        #     entry while old_path was still in blocked/ — re-running with
+        #     `not is_retry` re-appended a duplicate.
         if not is_retry:
             entry_file = _resolve_entry_file(old_path)
             frontmatter, body = read_frontmatter(entry_file)
-            frontmatter["status"] = args.destination
-            frontmatter["updated_at"] = _now_iso()
-            if args.destination == "inbox":
-                frontmatter["attempts"] = 0
-            write_frontmatter(entry_file, frontmatter, body)
+            if frontmatter.get("status") != args.destination:
+                frontmatter["status"] = args.destination
+                frontmatter["updated_at"] = _now_iso()
+                if args.destination == "inbox":
+                    frontmatter["attempts"] = 0
+                write_frontmatter(entry_file, frontmatter, body)
 
-            action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
-            append_history(
-                old_path,
-                actor="ralph-triage",
-                action=action_name,
-                detail=args.note,
+            history_file = old_path / "HISTORY.md"
+            history_text = (
+                history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
             )
+            if args.note not in history_text:
+                append_history(
+                    old_path,
+                    actor="ralph-triage",
+                    action=action_name,
+                    detail=args.note,
+                )
 
             _move_directory(old_path, new_path)
 

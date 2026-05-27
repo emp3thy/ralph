@@ -199,23 +199,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        # Only write + append HISTORY when the working tree actually
-        # needs changing. In the partial-failure retry case the working
-        # tree already has the new severity AND HISTORY.md already
-        # carries the entry from the prior failed run; redoing either
-        # would either no-op (write) or duplicate the audit (append).
+        # Gate write + append independently. Working-tree severity tells
+        # us whether the frontmatter still needs writing; HISTORY.md's
+        # content tells us whether the audit entry is already there.
+        # A previous crash BETWEEN write_frontmatter and append_history
+        # leaves working_severity == args.severity (no need to re-write)
+        # but HISTORY.md missing the entry — gating both on the working
+        # tree alone would lose the audit trail forever.
         if working_severity != args.severity:
             frontmatter["severity"] = args.severity
             frontmatter["updated_at"] = _now_iso()
             write_frontmatter(entry_file, frontmatter, body)
+
+        history_file = pbi_dir / "HISTORY.md"
+        history_detail = f"severity: {previous_severity} -> {args.severity}"
+        history_text = history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
+        if history_detail not in history_text:
             append_history(
                 pbi_dir,
                 actor="ralph-promote",
                 action="promote",
-                detail=f"severity: {previous_severity} -> {args.severity}",
+                detail=history_detail,
             )
-
-        history_file = pbi_dir / "HISTORY.md"
         commit_sha = commit_paths(
             repo,
             [entry_file, history_file],
