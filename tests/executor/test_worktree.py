@@ -20,6 +20,7 @@ from ralph_executor.worktree import (
     ensure_worktree,
     list_worktrees,
     remove_worktree,
+    work_worktree_path,
     worktree_branch,
 )
 
@@ -132,6 +133,19 @@ def test_remove_worktree_cleans_up_and_prunes(worktree_repo: Path) -> None:
 
     assert not target.exists(), "worktree directory still present after remove"
     assert target.resolve() not in _registered_worktree_paths(worktree_repo)
+
+
+def test_work_worktree_path_takes_clone_root(tmp_path: Path) -> None:
+    """``work_worktree_path`` resolves under the target's clone root, not
+    ralph's repo, and drops the legacy ``repo-`` prefix so the path shape
+    matches the multi-repo PBI acceptance criterion
+    ``<clone_root>/.ralph-work/<pbi_id>``."""
+    clone_root = tmp_path / "clones" / "emp3thy-ralph"
+    clone_root.mkdir(parents=True)
+
+    result = work_worktree_path(clone_root, "PBI-XYZ")
+
+    assert result == clone_root / ".ralph-work" / "PBI-XYZ"
 
 
 def test_remove_worktree_tolerates_missing(worktree_repo: Path) -> None:

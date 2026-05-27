@@ -357,7 +357,7 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
     handle_stuck → blocked, max-attempts → blocked). The feature branch
     ``ralph/<PBI-ID>`` is preserved so pending-pr PBIs keep a branch to
     point the PR at; only the working directory at
-    ``<repo>/.ralph-work/repo-<PBI-id>/`` is torn down.
+    ``<clone-root>/.ralph-work/<PBI-id>/`` is torn down.
 
     No-op in legacy single-checkout mode. Tolerant of removal failures —
     an orphan worktree is recoverable (operator can ``git worktree
@@ -366,6 +366,8 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
     """
     if not cfg.use_worktrees:
         return
+    # TASK 7 TODO: swap cfg.repo_path for the target clone_root once
+    # _claim_pbi threads TargetClone through to teardown.
     work_wt = work_worktree_path(cfg.repo_path, pbi_id)
     try:
         remove_worktree(cfg.repo_path, work_wt)
@@ -453,6 +455,8 @@ def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     finally:
         event_log.close()
     branch = _feature_branch_name(moved)
+    # TASK 7 TODO: swap cfg.repo_path for the target clone_root once
+    # _claim_pbi parses pbi.target_repo and runs ensure_clone first.
     work_wt = work_worktree_path(cfg.repo_path, moved.id)
     ensure_worktree(
         cfg.repo_path,
@@ -518,6 +522,8 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     try:
         # --- Spawn Claude ------------------------------------------------
         if cfg.use_worktrees:
+            # TASK 7 TODO: swap cfg.repo_path for pbi.work_worktree's
+            # clone root once iterate_once threads TargetClone through.
             work_wt = work_worktree_path(cfg.repo_path, pbi.id)
             pbi_dir_in_queue = queue_worktree_path(cfg.repo_path) / ".ralph" / "current" / pbi.id
             outcome = spawn_claude_p(
