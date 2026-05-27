@@ -970,7 +970,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/mcp.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/mcp.py`. Structure:
   - Module docstring: walks `mcpServers` from settings.json AND any sibling `.mcp.json`. Flags any server whose `command`, `args`, or `env` contains an OAuth indicator.
   - Module constant:
     ```python
@@ -989,13 +989,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If offenders non-empty → `fail` with message listing each offender + the matched needle, `details={"offenders": offenders, "total_servers": len(servers)}`.
     - Otherwise → `pass` with message `f"All {len(servers)} MCP server(s) use non-interactive auth."` and `details={"total_servers": len(servers)}`.
 
-- [ ] 2. Run the MCP tests:
+- [x] 2. Run the MCP tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestMcpCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/mcp.py
   git commit -m "feat(ralph-doctor): implement mcp check (no OAuth on cold start)"
