@@ -1,11 +1,11 @@
 ---
 id: CONFIG-PROMOTE-BASH-TIMEOUT
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T00:01:00+00:00
-updated_at: 2026-05-27T18:31:34+00:00
+updated_at: 2026-05-27T18:43:09+00:00
 depends_on: ["CONFIG-PROMOTE-SWEEP-KNOBS"]
 ---
 
