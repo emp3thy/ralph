@@ -55,3 +55,12 @@
 - PR: #31 — https://github.com/emp3thy/ralph/pull/31
 - Branch: ralph/SWEEP-RECONCILE-ORPHANS
 - Title: SWEEP-RECONCILE-ORPHANS: sweep auto-reconciles orphan pending-pr/ entries
+
+## Iteration 9 — 2026-05-27T15:30:00+00:00 — BugBot findings addressed
+
+- PR #31 state at iteration start: OPEN, all 5 checks SUCCESS, MERGEABLE/CLEAN, 2 unresolved BugBot threads.
+- Finding 1 (MEDIUM, `skills/pr-github/scripts/lookup_by_branch.py:91`): `_map_pr_state` raised `FatalError` on unexpected GitHub state, but `main()` only caught `HttpError` → script exited 1 with traceback instead of contracted exit 3. `reconcile.py` then logged spurious `ReconcileError("unexpected exit 1")` instead of the intended `KEEP_API_ERROR` silent retry. Fix: raise `HttpError` (the unexpected state string came from the API response, so it's a host-response problem). Regression test: `test_lookup_by_branch_unexpected_state_exits_3` in `tests/skills/test_pr_github.py`.
+- Finding 2 (LOW, `ralph_executor/cli.py:432`): `_print_reconcile_report` headline `"{len(report.actions)} orphans processed: ... {n_err} errors"` excluded errors from the count — "3 successes + 2 errors" displayed as "3 orphans processed … 2 errors" (counts don't add up). Fix: `total = len(report.actions) + len(report.errors)`, label "attempted". Regression test: `test_reconcile_summary_counts_include_errors` in `tests/executor/test_cli_reconcile.py`.
+- Tests: full suite `uv run pytest tests/` → 517 passed, 2 skipped (opt-in prompt smoke); `ruff check` + `ruff format --check` + `mypy --strict` green on all touched files.
+- Commit: `c5a8735` — fix(reconcile): raise HttpError on unexpected PR state + count errors in summary.
+- Next iteration: push, reply + resolve both review threads, wait for CI green CLEAN, then await merge (or PR-feedback sweep).
