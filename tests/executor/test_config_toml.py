@@ -38,6 +38,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_HALT_WEBHOOK",
         "RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
         "RALPH_PR_CHECK_POLL_INTERVAL_SECONDS",
+        "RALPH_USE_WORKTREES",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -228,6 +229,30 @@ def test_env_wins_over_toml_for_pr_check_poll_knobs(
     cfg = load_config()
     assert cfg.pr_check_poll_max_attempts == 3
     assert cfg.pr_check_poll_interval_seconds == 0.25
+
+
+def test_use_worktrees_default_true(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.use_worktrees is True
+
+
+def test_use_worktrees_toml_false(clean_env: Path) -> None:
+    _write_toml(clean_env, "use_worktrees = false\n")
+    cfg = load_config()
+    assert cfg.use_worktrees is False
+
+
+def test_use_worktrees_env_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_toml(clean_env, "use_worktrees = false\n")
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "true")
+    cfg = load_config()
+    assert cfg.use_worktrees is True
+
+
+def test_use_worktrees_toml_wrong_type_raises(clean_env: Path) -> None:
+    _write_toml(clean_env, 'use_worktrees = "yes"\n')
+    with pytest.raises(ConfigError, match="use_worktrees must be a boolean"):
+        load_config()
 
 
 def test_toml_invalid_log_level_raises(clean_env: Path) -> None:

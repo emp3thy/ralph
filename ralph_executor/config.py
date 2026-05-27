@@ -51,8 +51,11 @@ DEFAULT_CLAUDE_BINARY = "claude"
 # iteration via classify_outcome -> ``partial``.
 DEFAULT_PR_CHECK_POLL_MAX_ATTEMPTS = 6
 DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS = 30.0
+DEFAULT_USE_WORKTREES = True
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
+_FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
 
 # Keys recognised in the TOML config file. Any other top-level key is
 # logged as a warning and ignored — keeps forward compatibility cheap.
@@ -74,6 +77,11 @@ _TOML_KNOWN_KEYS = frozenset(
         # CI-green verifier budget — see DEFAULT_PR_CHECK_POLL_* above.
         "pr_check_poll_max_attempts",
         "pr_check_poll_interval_seconds",
+        # Stage-B knob: opt into the two-worktree execution model. Default
+        # True so new installs get the simpler claim/persist path; legacy
+        # single-checkout setups can opt out with `use_worktrees = false`
+        # in TOML or `RALPH_USE_WORKTREES=0` in the environment.
+        "use_worktrees",
     }
 )
 
@@ -119,6 +127,12 @@ class ExecutorConfig:
     # the classifier returns ``partial`` and the next iteration re-polls.
     pr_check_poll_max_attempts: int
     pr_check_poll_interval_seconds: float
+    # Stage-B execution model. When True, the loop runs each PBI inside a
+    # per-PBI worktree under ``<repo>/.ralph-work/repo-<PBI-id>/`` and
+    # reads/writes ``.ralph/`` from a separate ``<repo>/.ralph-work/queue/``
+    # worktree pinned to ``queue_branch``. When False, behaviour reverts
+    # to the Stage-A single-checkout branch-dance path.
+    use_worktrees: bool = DEFAULT_USE_WORKTREES
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -230,6 +244,35 @@ def _resolve_float(
             f"{source_label}: {name} must be a number, got {type(toml_value).__name__}"
         )
     return float(toml_value)
+
+
+def _resolve_bool(
+    *, name: str, env_name: str, toml_value: Any, default: bool, source_label: str
+) -> bool:
+    """env > toml > default for a boolean-valued knob.
+
+    Env strings parse case-insensitively from a small allow-list (true /
+    false / 1 / 0 / yes / no / on / off). Anything else is a
+    ``ConfigError`` rather than a silent ``bool(s) == True`` coercion.
+    TOML values must be a real bool — strings are rejected to keep config
+    typing honest.
+    """
+    raw_env = os.environ.get(env_name)
+    if raw_env is not None and raw_env.strip() != "":
+        candidate = raw_env.strip().lower()
+        if candidate in _TRUE_STRINGS:
+            return True
+        if candidate in _FALSE_STRINGS:
+            return False
+        allowed = sorted(_TRUE_STRINGS | _FALSE_STRINGS)
+        raise ConfigError(f"{env_name}={raw_env!r} not a boolean (expected one of {allowed})")
+    if toml_value is None:
+        return default
+    if not isinstance(toml_value, bool):
+        raise ConfigError(
+            f"{source_label}: {name} must be a boolean, got {type(toml_value).__name__}"
+        )
+    return toml_value
 
 
 def _resolve_log_level(*, toml_value: Any, default: str, source_label: str) -> int:
@@ -361,6 +404,13 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS,
         source_label=source_label,
     )
+    use_worktrees = _resolve_bool(
+        name="use_worktrees",
+        env_name="RALPH_USE_WORKTREES",
+        toml_value=toml_overrides.get("use_worktrees"),
+        default=DEFAULT_USE_WORKTREES,
+        source_label=source_label,
+    )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -378,4 +428,5 @@ def load_config() -> ExecutorConfig:
         halt_webhook=halt_webhook,
         pr_check_poll_max_attempts=pr_check_poll_max_attempts,
         pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
+        use_worktrees=use_worktrees,
     )

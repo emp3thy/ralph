@@ -33,6 +33,7 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_LOG_LEVEL",
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
+        "RALPH_USE_WORKTREES",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -48,6 +49,7 @@ def test_load_config_uses_defaults(env_minimal: Path) -> None:
     assert cfg.iteration_sleep_seconds == 30.0
     assert cfg.claude_binary == "claude"
     assert cfg.anthropic_api_key == "fake-key"
+    assert cfg.use_worktrees is True
 
 
 def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_minimal: Path) -> None:
@@ -140,6 +142,30 @@ def test_load_config_invalid_max_attempts(
 def test_load_config_invalid_log_level(monkeypatch: pytest.MonkeyPatch, env_minimal: Path) -> None:
     monkeypatch.setenv("RALPH_LOG_LEVEL", "VERBOSE")
     with pytest.raises(ConfigError, match="RALPH_LOG_LEVEL"):
+        load_config()
+
+
+def test_load_config_use_worktrees_env_true(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "true")
+    cfg = load_config()
+    assert cfg.use_worktrees is True
+
+
+def test_load_config_use_worktrees_env_false(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "false")
+    cfg = load_config()
+    assert cfg.use_worktrees is False
+
+
+def test_load_config_use_worktrees_env_invalid(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "maybe")
+    with pytest.raises(ConfigError, match="RALPH_USE_WORKTREES"):
         load_config()
 
 
