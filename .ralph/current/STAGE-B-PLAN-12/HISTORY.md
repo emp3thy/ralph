@@ -57,3 +57,17 @@ Any one of the following:
 - Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 105 files formatted, `uv run mypy ralph_executor scripts skills tests` clean (102 files).
 - Plan checkboxes for Task 2 (steps 1–4) ticked.
 - Notes: Next iteration starts Task 3 (Dockerfile + `.dockerignore` + `tests/packaging/test_dockerfile.py`).
+
+## Iteration 3 — 2026-05-27T19:35:00Z
+
+- Task 3 (Dockerfile + `.dockerignore` + `tests/packaging/test_dockerfile.py`) — steps 1–4 complete. Steps 5–6 (sanity-check `docker build` rejects missing/invalid `RALPH_GIT_HOST`) NOT exercised: `docker` is not installed in this executor environment (`docker --version` → `command not found`). Static parser tests cover the guard lines (`test_dockerfile_fails_on_empty_ralph_git_host` asserts the `test -n "${RALPH_GIT_HOST}"` line is present); the runtime build-time guard will be exercised by Task 6 (end-to-end image smoke) on a host that has docker.
+- Wrote `Dockerfile` verbatim from plan.
+- Wrote `.dockerignore` verbatim from plan.
+- Wrote `tests/packaging/test_dockerfile.py` with two minor deviations from plan-verbatim:
+  1. Fixture opens the Dockerfile in text mode (`"r", encoding="utf-8"`) rather than binary (`"rb"`) — the `types-dockerfile-parse` stub types `fileobj` as `IO[str] | None`, so plan-verbatim `"rb"` fails `uv run mypy` with `arg-type` error. Text mode is functionally equivalent for `DockerfileParser` and the minimal lift to keep the PBI's mypy-clean acceptance gate.
+  2. Long assert message in `test_no_inline_secrets` reformatted by `uv run ruff format` (collapsed multi-line `f"…"` to single line). Auto-format only; no semantic change.
+- Added `types-dockerfile-parse>=2.0.0.20260508` to `[dependency-groups].dev` so mypy resolves stubs for `dockerfile_parse`. `uv sync` installed it.
+- Tests: 11 passed (`uv run pytest tests/packaging/test_dockerfile.py -v`).
+- Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 106 files clean, `uv run mypy ralph_executor scripts skills tests` clean (103 files), `uv run pytest` 632 passed / 2 skipped (opt-in).
+- Plan checkboxes for Task 3 steps 1–4 ticked. Steps 5–6 left unchecked with `docker` unavailability noted above.
+- Notes: Next iteration starts Task 4 (k8s manifests + `tests/packaging/test_manifests.py`).
