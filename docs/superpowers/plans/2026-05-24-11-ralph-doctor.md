@@ -1183,7 +1183,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/ado_auth.py`. The check goes one level below `AdoClient` (Plan 2) and uses `requests` directly — `AdoClient.get` raises on 404, but the doctor needs 404-as-success. This file is the relocated, renamed `checks/ado.py` from earlier drafts; the probe logic is unchanged.
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/ado_auth.py`. The check goes one level below `AdoClient` (Plan 2) and uses `requests` directly — `AdoClient.get` raises on 404, but the doctor needs 404-as-success. This file is the relocated, renamed `checks/ado.py` from earlier drafts; the probe logic is unchanged.
 
   Structure:
   - Module docstring: probes the ADO PR show endpoint against a non-existent PR ID. 404 → pass (PAT auth + project routing both work). Any other status / network failure → fail. Requires `ADO_PAT`, `ADO_ORG_URL`, `ADO_PROJECT`, `ADO_REPOSITORY`. This check runs only when `RALPH_GIT_HOST=ado`; the runner skips it otherwise.
@@ -1203,13 +1203,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If `response.status_code == 404` → `pass` with message `f"ADO PAT works (404 on non-existent PR {NON_EXISTENT_PR_ID}, as expected)."` and `details={"status_code": 404, "org": org, "project": project, "repo": repo}`.
     - Otherwise → `fail` with message `f"ADO probe returned {status} (expected 404); body preview: {preview!r}"` (preview is the first 200 chars of `response.text`, or `"<empty>"`), and `details={"status_code": status, "url": url}`.
 
-- [ ] 2. Run the ado_auth tests:
+- [x] 2. Run the ado_auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestAdoAuthCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/ado_auth.py
   git commit -m "feat(ralph-doctor): implement ado_auth check (Phase 2 relocated; PAT 404 probe)"
