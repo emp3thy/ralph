@@ -41,7 +41,22 @@ if [[ "${DOCKER_EXIT}" -eq 127 ]]; then
   exit 4
 fi
 
+# Distinguish "docker itself failed" (exit 3) from "doctor ran and
+# judged the image bad" (exit 2). Docker reports image/runtime
+# problems via exit 125 (daemon error / usage error), 126 (entrypoint
+# not executable), 127 (entrypoint not found — already handled), or
+# 128+ (signal-based). Stdout will be EMPTY in those cases since
+# ralph-doctor never wrote its JSON report; use that as the
+# discriminator so CI can tell "could not start the container" apart
+# from "doctor failed".
 if [[ "${DOCKER_EXIT}" -ne 0 ]]; then
+  if [[ "${DOCKER_EXIT}" -eq 125 || "${DOCKER_EXIT}" -eq 126 \
+        || ! -s "${OUT_DIR}/stdout.json" ]]; then
+    echo "preflight: docker could not run the container (exit ${DOCKER_EXIT})" >&2
+    echo "--- docker stderr ---" >&2
+    cat "${OUT_DIR}/stderr.log" >&2 || true
+    exit 3
+  fi
   echo "preflight: doctor failed with exit ${DOCKER_EXIT}" >&2
   echo "--- doctor stdout ---" >&2
   cat "${OUT_DIR}/stdout.json" >&2 || true

@@ -5,6 +5,7 @@ assert structural properties so failures show up in pytest
 rather than in a 5-minute CI build.
 """
 
+import io
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,9 @@ DOCKERFILE = Path(__file__).resolve().parents[2] / "Dockerfile"
 @pytest.fixture(scope="module")
 def parser() -> DockerfileParser:
     assert DOCKERFILE.exists(), f"missing {DOCKERFILE}"
-    dfp = DockerfileParser(fileobj=DOCKERFILE.open("r", encoding="utf-8"))
-    return dfp
+    # Feed the parser from an in-memory buffer so no file handle
+    # leaks across the module-scoped fixture's lifetime.
+    return DockerfileParser(fileobj=io.StringIO(DOCKERFILE.read_text(encoding="utf-8")))
 
 
 def test_dockerfile_has_two_stages(parser: DockerfileParser) -> None:
@@ -52,11 +54,12 @@ def test_dockerfile_fails_on_empty_ralph_git_host(parser: DockerfileParser) -> N
 def test_dockerfile_copies_host_specific_skills(parser: DockerfileParser) -> None:
     contents = DOCKERFILE.read_text(encoding="utf-8")
     # Each host's skills must be copied twice — once to /opt/ralph/skills
-    # (audit) and once to /root/.claude/skills (canonical name).
+    # (audit) and once to /home/ralph/.claude/skills (canonical name,
+    # under the ralph user's home so the runtime UID can traverse).
     assert "skills/pr-${RALPH_GIT_HOST}/" in contents
     assert "skills/workitem-fetch-${RALPH_GIT_HOST}/" in contents
-    assert "/root/.claude/skills/pr/" in contents
-    assert "/root/.claude/skills/workitem-fetch/" in contents
+    assert "/home/ralph/.claude/skills/pr/" in contents
+    assert "/home/ralph/.claude/skills/workitem-fetch/" in contents
 
 
 def test_runtime_image_runs_as_non_root(parser: DockerfileParser) -> None:
