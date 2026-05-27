@@ -1269,19 +1269,19 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 This gate corresponds to the orchestrator's verification table for Plan 11.
 
-- [ ] 1. From the ralph repo root, run:
+- [x] 1. From the ralph repo root, run:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: every test passes.
 
-- [ ] 2. Run the wider gate from the orchestrator:
+- [x] 2. Run the wider gate from the orchestrator:
   ```
   uv run ruff check . && uv run ruff format --check . && uv run mypy --config-file pyproject.toml ralph_executor scripts skills && uv run pytest
   ```
   Expected: every gate passes.
 
-- [ ] 3. Confirm the skill directory layout matches the file structure in this plan:
+- [x] 3. Confirm the skill directory layout matches the file structure in this plan:
   ```
   ls -1 skills/ralph-doctor/
   ls -1 skills/ralph-doctor/scripts/
@@ -1292,14 +1292,14 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   - `skills/ralph-doctor/scripts/`: `__init__.py`, `check.py`, `checks`
   - `skills/ralph-doctor/scripts/checks/`: `__init__.py`, `permissions.py`, `hooks.py`, `skills.py`, `mcp.py`, `auth.py`, `host_staging.py`, `github_auth.py`, `ado_auth.py`
 
-- [ ] 4. Sanity-check the host dispatcher fails fast on unset `RALPH_GIT_HOST`:
+- [x] 4. Sanity-check the host dispatcher fails fast on unset `RALPH_GIT_HOST`:
   ```
   uv run python skills/ralph-doctor/scripts/check.py
   echo "exit_code=$?"
   ```
   Expected: stderr contains `RALPH_GIT_HOST is not set`; final shell line shows `exit_code=2`.
 
-- [ ] 5. Sanity-check exit code 1 on a deliberately broken settings.json under the github host:
+- [x] 5. Sanity-check exit code 1 on a deliberately broken settings.json under the github host:
   ```
   echo '{"permissions":{"allow":["Bash"]}}' > /tmp/bad_settings.json
   RALPH_GIT_HOST=github GH_TOKEN=fake GH_OWNER=fake \
@@ -1313,7 +1313,7 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   ```
   Expected: JSON shows `"ok": false` and `"exit_code": 1`; the final shell line shows `exit_code=1`.
 
-- [ ] 6. Sanity-check that staging mismatch is caught — build a tiny skills tree where `pr/SKILL.md` claims `name: pr-ado` while `RALPH_GIT_HOST=github`:
+- [x] 6. Sanity-check that staging mismatch is caught — build a tiny skills tree where `pr/SKILL.md` claims `name: pr-ado` while `RALPH_GIT_HOST=github`:
   ```
   STAGE=$(mktemp -d)
   mkdir -p "$STAGE/pr" "$STAGE/workitem-fetch"
@@ -1331,7 +1331,7 @@ This gate corresponds to the orchestrator's verification table for Plan 11.
   ```
   Expected: JSON shows the `host_staging` entry with `status: fail` and message containing `pr-ado` (the actual) and `pr-github` (the expected); `exit_code=1`.
 
-- [ ] 7. Open a PR:
+- [x] 7. Open a PR:
   ```
   git push -u origin HEAD
   gh pr create --title "feat(ralph-doctor): preflight skill (Plan 11)" --body "$(cat <<'EOF'
