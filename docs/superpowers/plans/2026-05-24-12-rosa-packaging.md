@@ -1585,9 +1585,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `scripts/build_image.sh` and `scripts/preflight.sh` with the exact content from the "Build and preflight scripts" section above. LF line endings.
+- [x] 1. Write `scripts/build_image.sh` and `scripts/preflight.sh` with the exact content from the "Build and preflight scripts" section above. LF line endings.
 
-- [ ] 2. Mark both executable:
+- [x] 2. Mark both executable:
   ```
   chmod +x scripts/build_image.sh scripts/preflight.sh
   ```
@@ -1597,13 +1597,13 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   git update-index --chmod=+x scripts/preflight.sh
   ```
 
-- [ ] 3. If `shellcheck` is installed, run it:
+- [ ] 3. If `shellcheck` is installed, run it: [SKIPPED — shellcheck not installed in executor environment; test_script_passes_shellcheck pytest-skips on hosts without it]
   ```
   shellcheck scripts/build_image.sh scripts/preflight.sh
   ```
   Fix any findings before continuing.
 
-- [ ] 4. Smoke-run the build script's help and the missing-host error path:
+- [x] 4. Smoke-run the build script's help and the missing-host error path:
   ```
   bash scripts/build_image.sh --help
   echo "help exit=$?"
@@ -1622,7 +1622,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   Expected: help exit 0; no-host exit 2; bad-host exit 2.
 
-- [ ] 5. Create `tests/packaging/test_scripts.py`:
+- [x] 5. Create `tests/packaging/test_scripts.py`:
   ```python
   """Tests for the bash helper scripts."""
 
@@ -1732,7 +1732,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
           )
   ```
 
-- [ ] 6. Run the script tests:
+- [x] 6. Run the script tests:
   ```
   uv run pytest tests/packaging/test_scripts.py -v
   ```
