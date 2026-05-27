@@ -277,6 +277,29 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         last_feedback_round=sidecar.last_feedback_round,
         config=ctx.config,
     )
+    # Plan 19b Task 3: detect succeeded → failed CI transition and persist
+    # the current terminal CI state into the sidecar before dispatch.
+    # Persisting only "succeeded" / "failed" (NOT "running" / "none" /
+    # "unknown") preserves the last-known terminal state across
+    # intermediate ticks — succeeded → running → failed must still emit.
+    # The pre-dispatch write means the updated sidecar travels with any
+    # subsequent move (MOVE_TO_INBOX_RETRY etc.).
+    if sidecar.last_ci_status == "succeeded" and snapshot.ci_status == "failed":
+        _emit_pr_green_then_red(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
+    if (
+        snapshot.ci_status in {"succeeded", "failed"}
+        and snapshot.ci_status != sidecar.last_ci_status
+    ):
+        sidecar = sidecar_state.SweepSidecar(
+            last_feedback_sweep=sidecar.last_feedback_sweep,
+            last_feedback_round=sidecar.last_feedback_round,
+            last_seen_comment_ids=sidecar.last_seen_comment_ids,
+            last_ci_status=snapshot.ci_status,
+        )
+        try:
+            sidecar_state.write_sidecar(pbi_dir, sidecar)
+        except OSError as exc:
+            raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _dispatch(
         pbi_dir=pbi_dir,
         decision=decision,
@@ -505,6 +528,39 @@ def _emit_pr_merged_and_pbi_closed(
             recorded_at=now,
             pbi_id=pbi_id,
             payload={"signature": signature},
+        )
+    )
+
+
+def _emit_pr_green_then_red(
+    *,
+    pbi_id: str,
+    snapshot: PrSnapshot,
+    ctx: SweepContext,
+) -> None:
+    """Emit PR_GREEN_THEN_RED on a succeeded → failed CI transition.
+
+    Payload shape matches PR_CREATED / PR_MERGED so the cycle detector's
+    ``regression_cascade`` rule can pair a recent merge with a later
+    regression by signature. ``files`` is empty: the PR skill's ``show``
+    op does not expose the file list and adding a second REST call per
+    sweep tick was deemed out of scope for v1 (same reasoning as
+    ``_emit_pr_merged_and_pbi_closed``).
+    """
+    if ctx.event_log is None:
+        return
+    pr_url = snapshot.url
+    signature = signature_from_text(pr_url) if pr_url else ""
+    ctx.event_log.append(
+        Event(
+            kind=EventType.PR_GREEN_THEN_RED,
+            recorded_at=ctx.config.now,
+            pbi_id=pbi_id,
+            payload={
+                "pr_url": pr_url,
+                "signature": signature,
+                "files": [],
+            },
         )
     )
 

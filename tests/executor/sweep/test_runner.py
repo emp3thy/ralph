@@ -20,8 +20,20 @@ from typing import Any
 
 import pytest
 
-from ralph_executor.safety.events import EventLog, EventType, open_log, signature_from_text
+from ralph_executor.safety.cycle_detector import (
+    SignalKind,
+    evaluate_regression_cascade,
+    evaluate_signature_recurrence,
+)
+from ralph_executor.safety.events import (
+    Event,
+    EventLog,
+    EventType,
+    open_log,
+    signature_from_text,
+)
 from ralph_executor.sweep.runner import SweepConfig, SweepContext, run
+from ralph_executor.sweep.state import SweepSidecar, write_sidecar
 from tests.executor.sweep.conftest import register_pr
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
@@ -362,6 +374,190 @@ def test_sweep_does_not_emit_events_on_non_merge_paths(
         log_handle.close()
 
     assert all(e.kind not in {EventType.PR_MERGED, EventType.PBI_CLOSED} for e in events)
+
+
+def _seed_sidecar(pbi_dir: Path, *, last_ci_status: str) -> None:
+    """Pre-populate ``.ralph-state.json`` with a known ``last_ci_status``.
+
+    The runner's CI-transition detection compares the prior sidecar value
+    against the freshly-fetched snapshot, so tests that exercise
+    PR_GREEN_THEN_RED must seed the sidecar first — without this the
+    default empty-string sentinel never matches ``"succeeded"``.
+    """
+    write_sidecar(
+        pbi_dir,
+        SweepSidecar(
+            last_feedback_sweep=None,
+            last_feedback_round=0,
+            last_seen_comment_ids=frozenset(),
+            last_ci_status=last_ci_status,
+        ),
+    )
+
+
+def test_sweep_emits_pr_green_then_red_on_check_regression(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan 19b Task 3: succeeded→failed CI transition emits PR_GREEN_THEN_RED."""
+    pbi = make_pending_pbi("WI-GTR1", pr_id=2000)
+    _seed_sidecar(pbi, last_ci_status="succeeded")
+    # CI now red on an active PR triggers MOVE_TO_INBOX_RETRY (attempts=1 <
+    # max). The transition event must fire BEFORE the move so the URL
+    # signature can be paired with PR_MERGED by regression_cascade.
+    register_pr(monkeypatch, 2000, status="active", ci_status="failed")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    gtr = [e for e in events if e.kind == EventType.PR_GREEN_THEN_RED]
+    assert len(gtr) == 1
+    pr_url = "https://example/_git/svc/pullrequest/2000"
+    assert gtr[0].pbi_id == "WI-GTR1"
+    assert gtr[0].payload == {
+        "pr_url": pr_url,
+        "signature": signature_from_text(pr_url),
+        "files": [],
+    }
+
+
+def test_sweep_does_not_re_emit_pr_green_then_red_after_state_update(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sidecar ``last_ci_status="failed"`` guards against a second emission
+    when the next sweep tick still sees a failed CI."""
+    pbi = make_pending_pbi("WI-GTR2", pr_id=2100)
+    _seed_sidecar(pbi, last_ci_status="failed")
+    register_pr(monkeypatch, 2100, status="active", ci_status="failed")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    assert all(e.kind != EventType.PR_GREEN_THEN_RED for e in events)
+
+
+def test_sweep_does_not_emit_pr_green_then_red_on_first_observation(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bootstrap tick (sidecar empty) records baseline only — no event.
+
+    Without this guard, every previously-unseen PR with failing CI would
+    spuriously emit a PR_GREEN_THEN_RED on first observation.
+    """
+    make_pending_pbi("WI-GTR3", pr_id=2200)
+    # No _seed_sidecar — default last_ci_status="".
+    register_pr(monkeypatch, 2200, status="active", ci_status="failed")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    assert all(e.kind != EventType.PR_GREEN_THEN_RED for e in events)
+
+
+def test_regression_cascade_trips_with_pr_merged_then_matching_green_then_red(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end Plan 19b: sweep emits PR_MERGED for a PR URL; a later
+    PR_GREEN_THEN_RED with the matching signature trips regression_cascade.
+
+    We exercise sweep's emission path for PR_MERGED, then inject the
+    follow-on PR_GREEN_THEN_RED directly. The alternative — running a
+    second sweep tick with green→red on the SAME pending-pr PBI — is
+    impossible by construction: MOVE_TO_DONE removes the PBI from
+    pending-pr, so a subsequent CI regression can only show up on a
+    fresh PBI that happens to share the URL. The detector matches
+    purely by signature, so the synthesised event is equivalent.
+    """
+    make_pending_pbi("WI-CASCADE", pr_id=3000)
+    register_pr(monkeypatch, 3000, status="completed", ci_status="succeeded")
+    pr_url = "https://example/_git/svc/pullrequest/3000"
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        log_handle.append(
+            Event(
+                kind=EventType.PR_GREEN_THEN_RED,
+                recorded_at=NOW + timedelta(minutes=5),
+                pbi_id="WI-FOLLOWUP",
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature_from_text(pr_url),
+                    "files": [],
+                },
+            )
+        )
+        events = log_handle.recent(
+            window=timedelta(hours=24),
+            now=NOW + timedelta(minutes=10),
+        )
+    finally:
+        log_handle.close()
+
+    signal = evaluate_regression_cascade(events, now=NOW + timedelta(minutes=10))
+    assert signal is not None
+    assert signal.kind == SignalKind.REGRESSION_CASCADE
+
+
+def test_signature_recurrence_trips_across_pr_merged_and_signature_observed(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sweep emits PR_MERGED with sig(pr_url); a later SIGNATURE_OBSERVED
+    carrying the same signature trips signature_recurrence.
+
+    SIGNATURE_OBSERVED is a loop-side event (Plan 19a); injecting it
+    directly here is correct — this test exercises detector wiring
+    against the sweep's emitted PR_MERGED, not loop-side emission.
+    """
+    make_pending_pbi("WI-SIGREC", pr_id=4000)
+    register_pr(monkeypatch, 4000, status="completed", ci_status="succeeded")
+    pr_url = "https://example/_git/svc/pullrequest/4000"
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        log_handle.append(
+            Event(
+                kind=EventType.SIGNATURE_OBSERVED,
+                recorded_at=NOW + timedelta(hours=1),
+                pbi_id="WI-OTHER",
+                payload={"signature": signature_from_text(pr_url)},
+            )
+        )
+        later = NOW + timedelta(hours=2)
+        events = log_handle.recent(window=timedelta(hours=24), now=later)
+    finally:
+        log_handle.close()
+
+    signal = evaluate_signature_recurrence(events, now=NOW + timedelta(hours=2))
+    assert signal is not None
+    assert signal.kind == SignalKind.SIGNATURE_RECURRENCE
 
 
 def test_run_reconciles_orphan_when_pr_link_missing(
