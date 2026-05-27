@@ -198,7 +198,32 @@ def run(*, ctx: SweepContext) -> SweepResult:
     actions: list[PbiActionRecord] = []
     errors: list[str] = []
 
+    from ralph_executor.sweep.reconcile import (  # local import avoids cycle
+        ReconcileError,
+        reconcile_orphan,
+    )
+    from ralph_executor.sweep.types import ReconcileAction
+
     for pbi_dir in pbis:
+        if not (pbi_dir / "PR-LINK.md").is_file():
+            try:
+                action = reconcile_orphan(pbi_dir, ctx)
+                if action == ReconcileAction.KEEP_API_ERROR:
+                    log.warning(
+                        "sweep: reconcile API error for %s; will retry next iteration",
+                        pbi_dir.name,
+                    )
+                else:
+                    log.info(
+                        "sweep: reconciled %s -> %s",
+                        pbi_dir.name,
+                        action.value,
+                    )
+            except ReconcileError as err:
+                errors.append(f"{pbi_dir.name}: reconcile error: {err}")
+                log.warning("sweep: reconcile failed for %s: %s", pbi_dir.name, err)
+            continue
+
         try:
             actions.append(_process_pbi(pbi_dir=pbi_dir, ctx=ctx))
         except _SweepPbiError as err:

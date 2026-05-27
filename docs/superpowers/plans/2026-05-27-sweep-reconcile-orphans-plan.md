@@ -1300,7 +1300,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(sweep): add reconcile.py for 
 - Modify: `ralph_executor/sweep/runner.py:201-206`
 - Modify: `tests/executor/sweep/test_runner.py` (existing missing-PR-LINK test)
 
-- [ ] **Step 5.1: Find the existing "missing PR-LINK.md" test**
+- [x] **Step 5.1: Find the existing "missing PR-LINK.md" test**
 
 ```bash
 grep -n "PR-LINK.md is missing" tests/executor/sweep/test_runner.py
@@ -1308,7 +1308,7 @@ grep -n "PR-LINK.md is missing" tests/executor/sweep/test_runner.py
 
 If a test exists asserting the old error string, note its name. Update it in Step 5.4.
 
-- [ ] **Step 5.2: Replace the `run()` loop body in `runner.py`**
+- [x] **Step 5.2: Replace the `run()` loop body in `runner.py`**
 
 In `ralph_executor/sweep/runner.py`, find the `run()` function (around line 194). Replace the per-PBI loop body (currently lines 201–206):
 
@@ -1359,7 +1359,7 @@ with:
 
 The local import is intentional: `reconcile.py` imports `SweepContext` from `runner.py`, so importing reconcile at module-load time creates a cycle. Local import inside `run()` breaks it without restructuring.
 
-- [ ] **Step 5.3: Verify the import-cycle hypothesis quickly**
+- [x] **Step 5.3: Verify the import-cycle hypothesis quickly**
 
 Run:
 
@@ -1369,7 +1369,7 @@ uv run python -c "from ralph_executor.sweep import runner, reconcile; print('ok'
 
 Expected: `ok`. If `ImportError: cannot import name 'SweepContext'`, the cycle is real and the local import is necessary. If the line prints `ok` with a top-level import too, you can move the import up — but the local-import shape is correct either way.
 
-- [ ] **Step 5.4: Update or remove the legacy missing-PR-LINK test in test_runner.py**
+- [x] **Step 5.4: Update or remove the legacy missing-PR-LINK test in test_runner.py**
 
 If Step 5.1 found a test that asserts `"PR-LINK.md is missing; cannot determine PR id"` in sweep errors, rewrite it to:
 
@@ -1425,7 +1425,7 @@ def test_run_reconciles_orphan_when_pr_link_missing(
 
 If Step 5.1 found NO matching test (this codebase may not have one), skip this step and proceed.
 
-- [ ] **Step 5.5: Run the sweep test module**
+- [x] **Step 5.5: Run the sweep test module**
 
 ```bash
 uv run pytest tests/executor/sweep/ -v
@@ -1433,14 +1433,14 @@ uv run pytest tests/executor/sweep/ -v
 
 Expected: all green.
 
-- [ ] **Step 5.6: Run ruff + mypy on the touched files**
+- [x] **Step 5.6: Run ruff + mypy on the touched files**
 
 ```bash
 uv run ruff check ralph_executor/sweep/runner.py
 uv run mypy --strict ralph_executor/sweep/runner.py
 ```
 
-- [ ] **Step 5.7: Commit**
+- [x] **Step 5.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/runner.py tests/executor/sweep/test_runner.py
