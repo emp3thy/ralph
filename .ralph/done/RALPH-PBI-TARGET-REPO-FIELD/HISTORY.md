@@ -20,3 +20,4 @@
 - URL: https://github.com/emp3thy/ralph/pull/40
 - Branch: ralph/RALPH-PBI-TARGET-REPO-FIELD
 - Title: RALPH-PBI-TARGET-REPO-FIELD: add target_repo to PBI frontmatter
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)

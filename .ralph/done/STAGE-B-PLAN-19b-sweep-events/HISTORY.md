@@ -39,3 +39,4 @@
 - Branch: ralph/STAGE-B-PLAN-19b-sweep-events
 - Title: STAGE-B-PLAN-19b: emit sweep-side cycle-detector events
 - URL: https://github.com/emp3thy/ralph/pull/34
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)

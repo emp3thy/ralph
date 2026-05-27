@@ -17,3 +17,4 @@ Fix: pass `--repo <repo_name> --pr-id <pr_id>` to both skill scripts; thread `re
 - URL: https://github.com/emp3thy/ralph/pull/37
 - Branch: ralph/BUG-sweep-show-args-flags
 - Title: BUG-sweep-show-args-flags: sweep PR-state wrapper must pass --repo + --pr-id flags
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)

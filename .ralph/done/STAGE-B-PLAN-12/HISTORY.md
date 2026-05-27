@@ -132,3 +132,4 @@ Any one of the following:
 - PR creation: `uv run python skills/pr-github/scripts/create_pr.py --repo ralph --source-branch ralph/STAGE-B-PLAN-12 --target-branch main --title ... --body ...` → JSON `{"pr_id": 39, "url": "https://github.com/emp3thy/ralph/pull/39", "is_draft": false, "dry_run": false}`. Exit 0.
 - Memory observations recorded before PR creation (per CLAUDE.md mandatory triggers — end-of-phase memory sweep): (1) PyYAML `safe_load` duplicate-key silent overwrite gotcha (from Iteration 6's CI workflow fix); (2) plan-verbatim test/code blocks routinely need mypy/ruff deviations (from Iterations 2–5).
 - Notes: Acceptance criteria from PBI.md all met (ruff/format/mypy/pytest clean + PR opened against main from ralph/STAGE-B-PLAN-12). Exit; executor moves PBI to `pending-pr/`.
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)

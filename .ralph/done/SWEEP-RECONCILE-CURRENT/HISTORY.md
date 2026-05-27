@@ -16,3 +16,4 @@
 - Branch: ralph/SWEEP-RECONCILE-CURRENT
 - Title: SWEEP-RECONCILE-CURRENT: sweep deletes stale .ralph/current/ orphans
 - URL: https://github.com/emp3thy/ralph/pull/42
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)

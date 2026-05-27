@@ -16,3 +16,4 @@
 - Branch: ralph/CONFIG-PROMOTE-BASH-TIMEOUT
 - Title: CONFIG-PROMOTE-BASH-TIMEOUT: promote bash_max_timeout_ms to TOML
 
+- 2026-05-27T22:55:05.697188+00:00 sweep: PR merged (completed)
