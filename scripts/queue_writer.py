@@ -218,7 +218,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     raise QueueWriterError("frontmatter block is not closed by a second '---'")
 
 
-def _flatten_history_field(value: str) -> str:
+def flatten_history_field(value: str) -> str:
     """Collapse embedded newlines/CRs so a multi-line ``--note`` or
     ``detail`` does not corrupt the one-entry-per-block format of
     HISTORY.md (each entry is a contiguous run of ``- key: value`` lines
@@ -316,9 +316,9 @@ def append_history(
     entry = (
         "---\n"
         f"- timestamp: {_now_iso()}\n"
-        f"- actor: {_flatten_history_field(actor)}\n"
-        f"- action: {_flatten_history_field(action)}\n"
-        f"- detail: {_flatten_history_field(detail)}\n"
+        f"- actor: {flatten_history_field(actor)}\n"
+        f"- action: {flatten_history_field(action)}\n"
+        f"- detail: {flatten_history_field(detail)}\n"
     )
     with history.open("a", encoding="utf-8") as fh:
         fh.write(entry)

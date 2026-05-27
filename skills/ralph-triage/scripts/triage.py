@@ -28,6 +28,7 @@ from scripts.queue_writer import (  # noqa: E402
     checkout_queue_branch,
     commit_paths,
     ensure_git_repo,
+    flatten_history_field,
     is_path_in_head,
     push,
     read_frontmatter,
@@ -256,7 +257,14 @@ def main(argv: list[str] | None = None) -> int:
             working_history = (
                 history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
             )
-            skip_append = working_history.count(args.note) > head_history.count(args.note)
+            # ``append_history`` runs ``args.note`` through
+            # ``flatten_history_field`` before writing — comparing the
+            # raw newline-bearing note against the stored flattened text
+            # would always count 0 and bypass the dedup, causing a
+            # duplicate entry on partial-failure retry with a
+            # multi-line ``--note``.
+            flat_note = flatten_history_field(args.note)
+            skip_append = working_history.count(flat_note) > head_history.count(flat_note)
             if not skip_append:
                 append_history(
                     old_path,

@@ -590,3 +590,56 @@ def test_triage_archive_created_true_on_partial_failure_retry(
         ".ralph/archive/ in HEAD, even if the dir already exists on "
         "disk from a prior incomplete attempt"
     )
+
+
+def test_triage_dedup_handles_multi_line_note(
+    git_repo: Path,
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-7. ``append_history`` flattens
+    embedded newlines via ``flatten_history_field``, but the dedup
+    check compared the raw ``args.note`` against the flattened stored
+    text — counts always 0, dedup never fires, partial-failure retry
+    duplicated the entry. Fix flattens both sides."""
+    note = "first line\nsecond line"
+    flat = "first line second line"
+    _seed_blocked_pbi(git_repo, "WI-1700")
+
+    # Simulate partial-failure retry pre-move: working tree shows the
+    # PBI moved + frontmatter updated + HISTORY already carrying the
+    # FLATTENED entry from the prior attempt, HEAD still in blocked.
+    _git(git_repo, "checkout", "ralph-queue")
+    import shutil
+
+    src = git_repo / ".ralph" / "blocked" / "WI-1700"
+    dst = git_repo / ".ralph" / "inbox" / "WI-1700"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    pbi_md = dst / "PBI.md"
+    text = pbi_md.read_text(encoding="utf-8")
+    text = text.replace("status: blocked", "status: inbox")
+    text = text.replace("attempts: 3", "attempts: 0")
+    pbi_md.write_text(text, encoding="utf-8")
+    history_path = dst / "HISTORY.md"
+    history_path.write_text(
+        history_path.read_text(encoding="utf-8") + f"## ralph-triage: return-to-inbox\n{flat}\n",
+        encoding="utf-8",
+    )
+
+    rc = triage_module.main(
+        [
+            "--pbi-id",
+            "WI-1700",
+            "--to",
+            "inbox",
+            "--note",
+            note,
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert rc == 0
+    history = (git_repo / ".ralph" / "inbox" / "WI-1700" / "HISTORY.md").read_text(encoding="utf-8")
+    assert history.count(flat) == 1, f"dedup must compare flattened forms; got:\n{history}"
