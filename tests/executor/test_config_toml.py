@@ -348,9 +348,7 @@ def test_bash_max_timeout_ms_from_toml(clean_env: Path) -> None:
     assert cfg.bash_max_timeout_ms == 1_200_000
 
 
-def test_bash_max_timeout_ms_env_wins(
-    clean_env: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_bash_max_timeout_ms_env_wins(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_toml(clean_env, "bash_max_timeout_ms = 1200000\n")
     monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "600000")
     cfg = load_config()
