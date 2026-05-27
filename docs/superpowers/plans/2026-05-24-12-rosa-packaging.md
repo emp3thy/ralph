@@ -1062,7 +1062,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Confirm the orchestrator's Wave 1 and Wave 2 outputs are present (or stubbed). Run:
+- [x] 1. Confirm the orchestrator's Wave 1 and Wave 2 outputs are present (or stubbed). Run:
   ```
   test -f pyproject.toml
   test -f uv.lock
@@ -1070,14 +1070,14 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   Expected: every check exits 0. If `ralph_executor/` is absent, create a stub package containing only `ralph_executor/__init__.py` and `ralph_executor/cli.py` with the body documented in the "Cross-plan assumptions ledger" above.
 
-- [ ] 2. Open `pyproject.toml`. Confirm the `[project.scripts]` table exists and contains:
+- [x] 2. Open `pyproject.toml`. Confirm the `[project.scripts]` table exists and contains:
   ```toml
   [project.scripts]
   ralph-executor = "ralph_executor.cli:main"
   ```
   If absent, add it.
 
-- [ ] 3. Confirm the host-specific skill directories exist for the host(s) you intend to build. **For Phase 1 (github):**
+- [x] 3. Confirm the host-specific skill directories exist for the host(s) you intend to build. **For Phase 1 (github):**
   ```
   test -d skills/pr-github
   test -d skills/workitem-fetch-github
@@ -1090,19 +1090,19 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   If either is missing, that's expected before Plans 3/5 Phase 2 lands — Phase 2 image builds will be blocked until those land. Phase 1 is unblocked.
 
-- [ ] 4. Create `tests/packaging/__init__.py`:
+- [x] 4. Create `tests/packaging/__init__.py`:
   ```python
   """Empty package marker."""
   ```
 
-- [ ] 5. Add the packaging-test dev dependencies to `pyproject.toml`:
+- [x] 5. Add the packaging-test dev dependencies to `pyproject.toml`:
   ```
   dockerfile-parse>=2.0
   pyyaml>=6.0
   ```
   Then `uv sync`. Expected: completes without error.
 
-- [ ] 6. Verify the toolchain:
+- [x] 6. Verify the toolchain:
   ```
   uv run mypy --version
   uv run pytest --collect-only -q
