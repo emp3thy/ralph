@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import subprocess
+import sys
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -49,6 +51,7 @@ class SweepConfig:
     max_attempts: int
     stale_threshold: timedelta
     now: datetime
+    auto_merge_clean_prs: bool = False
 
     def __post_init__(self) -> None:
         if not self.ralph_author_email:
@@ -162,6 +165,9 @@ def decide_action(
             reason=f"{len(new_comments)} new active comment(s) since last sweep",
             new_comments=new_comments,
         )
+
+    if config.auto_merge_clean_prs and pr.merge_state == "clean":
+        return Decision(action=Action.MERGE_PR, reason="auto-merging clean PR")
 
     if config.now - pr.last_activity_at >= config.stale_threshold:
         return Decision(
@@ -386,6 +392,8 @@ def _dispatch(
         )
     elif a is Action.PING_REVIEWER:
         _append_history(pbi_dir, decision.reason, ctx)
+    elif a is Action.MERGE_PR:
+        _dispatch_merge_pr(pbi_dir=pbi_dir, snapshot=snapshot, ctx=ctx)
     elif a is Action.NOOP:
         return
     else:  # pragma: no cover — defensive
@@ -596,6 +604,79 @@ def _emit_pr_green_then_red(
             pbi_id,
             exc,
         )
+
+
+def _invoke_merge_pr(*, pr_id: int, ctx: SweepContext) -> int:
+    """Subprocess-invoke the ``pr-github`` ``merge_pr.py`` skill.
+
+    Returns the raw subprocess exit code (0 = merged, 3 = HTTP error,
+    4 = race / refused-by-host). Exit 2 (argparse / validation) is
+    converted to ``_SweepPbiError`` so the per-PBI guard in ``run`` catches
+    it — exit 2 indicates the caller passed garbage and is never a
+    "retry next sweep" condition. Any other unexpected exit also raises,
+    so the dispatch branch never silently swallows a new exit code added
+    to the skill in the future.
+    """
+    script = ctx.ado_pr_scripts_path / "merge_pr.py"
+    if not script.is_file():
+        raise _SweepPbiError(f"merge_pr.py not found at {script}")
+    cmd = [
+        sys.executable,
+        str(script),
+        "--repo",
+        ctx.repo_name or ctx.queue_root.parent.name,
+        "--pr-id",
+        str(pr_id),
+    ]
+    result = subprocess.run(  # noqa: S603
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 2:
+        raise _SweepPbiError(
+            f"merge_pr.py exited 2 (validation): {result.stderr.strip() or '<no stderr>'}"
+        )
+    return result.returncode
+
+
+def _dispatch_merge_pr(
+    *,
+    pbi_dir: Path,
+    snapshot: PrSnapshot,
+    ctx: SweepContext,
+) -> None:
+    """Run merge_pr.py for this PBI and route its exit code.
+
+    Exit 0 → move PBI to ``done/`` with the marker reason and emit
+    ``PR_MERGED`` + ``PBI_CLOSED``. Exit 4 → log INFO and leave the PBI
+    in ``pending-pr/`` for the next sweep (race / refused-by-host).
+    Exit 3 → log WARNING and leave the PBI in ``pending-pr/`` (transient
+    GitHub error). Anything else → raise ``_SweepPbiError`` so the
+    per-PBI guard records it and continues with the remaining PBIs.
+    """
+    rc = _invoke_merge_pr(pr_id=snapshot.pr_id, ctx=ctx)
+    if rc == 0:
+        _move_with_history(
+            pbi_dir,
+            ctx.queue_root / "done" / pbi_dir.name,
+            "PR auto-merged by sweep",
+            ctx,
+        )
+        _emit_pr_merged_and_pbi_closed(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
+    elif rc == 4:
+        log.info(
+            "sweep: merge_pr refused for %s (race / not-ready); retry next iter",
+            pbi_dir.name,
+        )
+    elif rc == 3:
+        log.warning(
+            "sweep: merge_pr GitHub error for %s; retry next iter",
+            pbi_dir.name,
+        )
+    else:
+        raise _SweepPbiError(f"merge_pr returned unexpected exit {rc}")
 
 
 def _read_original_summary(pbi_dir: Path) -> str:

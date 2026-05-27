@@ -63,6 +63,13 @@ CONFIG_TOML_STUB = """\
 # claude subprocess via the BASH_MAX_TIMEOUT_MS env var (subprocess-scoped —
 # ralph's parent env is not touched). Must be positive.
 # bash_max_timeout_ms = 900000
+#
+# Sweep auto-merge: when true, sweep auto-merges PRs that GitHub reports as
+# mergeable_state == "clean" (CI green + required approvals + no conflicts +
+# branch up-to-date). Default false. Opt in carefully — merging a PR a human
+# still wanted to review is unrecoverable. Env override:
+# RALPH_AUTO_MERGE_CLEAN_PRS=1.
+# auto_merge_clean_prs = false
 """
 
 

@@ -43,6 +43,7 @@ def _snapshot(
     ci_status: str = "succeeded",
     threads: tuple[ThreadSnapshot, ...] = (),
     last_activity_at: datetime | None = None,
+    merge_state: str = "",
 ) -> PrSnapshot:
     return PrSnapshot(
         pr_id=100,
@@ -55,6 +56,7 @@ def _snapshot(
         threads=threads,
         last_activity_at=last_activity_at or NOW - timedelta(hours=1),
         url="https://dev.azure.com/example-org/_git/svc/pullrequest/100",
+        merge_state=merge_state,
     )
 
 
@@ -211,3 +213,33 @@ def test_missing_ralph_author_email_raises() -> None:
             stale_threshold=timedelta(days=3),
             now=NOW,
         )
+
+
+# Auto-merge clean PRs: gated by SweepConfig.auto_merge_clean_prs.
+def test_flag_off_clean_is_noop() -> None:
+    pr = _snapshot(merge_state="clean")
+    decision = _decide(pr, config=_config(auto_merge_clean_prs=False))
+    assert decision.action is Action.NOOP
+
+
+def test_flag_on_clean_yields_merge_pr() -> None:
+    pr = _snapshot(merge_state="clean")
+    decision = _decide(pr, config=_config(auto_merge_clean_prs=True))
+    assert decision.action is Action.MERGE_PR
+    assert "auto-merging" in decision.reason.lower()
+
+
+def test_flag_on_dirty_is_not_merge_pr() -> None:
+    pr = _snapshot(merge_state="dirty")
+    decision = _decide(pr, config=_config(auto_merge_clean_prs=True))
+    assert decision.action is not Action.MERGE_PR
+
+
+def test_new_comments_preempt_merge_pr() -> None:
+    human = _comment(author=HUMAN_EMAIL, thread_id=50, comment_id=601)
+    pr = _snapshot(
+        merge_state="clean",
+        threads=(_thread(thread_id=50, status="active", comments=(human,)),),
+    )
+    decision = _decide(pr, config=_config(auto_merge_clean_prs=True))
+    assert decision.action is Action.CREATE_FEEDBACK_PBI

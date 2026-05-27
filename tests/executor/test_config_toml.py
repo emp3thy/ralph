@@ -42,6 +42,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_ADO_AUTHOR_EMAIL",
         "RALPH_STALE_DAYS",
         "BASH_MAX_TIMEOUT_MS",
+        "RALPH_AUTO_MERGE_CLEAN_PRS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -371,4 +372,30 @@ def test_bash_max_timeout_ms_rejected_when_negative_in_env(
 ) -> None:
     monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "-1")
     with pytest.raises(ConfigError, match="bash_max_timeout_ms must be positive"):
+        load_config()
+
+
+def test_auto_merge_clean_prs_default_false(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.auto_merge_clean_prs is False
+
+
+def test_auto_merge_clean_prs_toml_true(clean_env: Path) -> None:
+    _write_toml(clean_env, "auto_merge_clean_prs = true\n")
+    cfg = load_config()
+    assert cfg.auto_merge_clean_prs is True
+
+
+def test_auto_merge_clean_prs_env_wins_over_toml(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, "auto_merge_clean_prs = true\n")
+    monkeypatch.setenv("RALPH_AUTO_MERGE_CLEAN_PRS", "false")
+    cfg = load_config()
+    assert cfg.auto_merge_clean_prs is False
+
+
+def test_auto_merge_clean_prs_toml_wrong_type_raises(clean_env: Path) -> None:
+    _write_toml(clean_env, 'auto_merge_clean_prs = "yes"\n')
+    with pytest.raises(ConfigError, match="auto_merge_clean_prs must be a boolean"):
         load_config()

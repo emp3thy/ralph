@@ -77,6 +77,7 @@ def fetch(*, pr_id: int, skill_scripts_path: Path, repo_name: str) -> PrSnapshot
         threads=threads,
         last_activity_at=last_activity_at,
         url=str(show_dict.get("url", "")),
+        merge_state=str(show_dict.get("mergeable_state") or ""),
     )
 
 

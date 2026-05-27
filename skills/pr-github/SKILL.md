@@ -1,6 +1,6 @@
 ---
 name: pr-github
-description: Drive GitHub pull requests from Ralph. Five operations — create-pr, read-threads, reply, set-status, show — each one a Python script under scripts/ that calls the GitHub REST and GraphQL APIs. Use from Ralph's autonomous loop to open the initial PR after pushing a feature branch, to read PR review threads, to reply to reviewer comments, to mark threads resolved, and to print a summary of PR state. wontFix and byDesign thread statuses are human-only; set-status rejects them with a clear error. This skill is host-pure (GitHub only); the executor stages it as `pr/` when RALPH_GIT_HOST=github.
+description: Drive GitHub pull requests from Ralph. Six operations — create-pr, read-threads, reply, set-status, show, merge_pr — each one a Python script under scripts/ that calls the GitHub REST and GraphQL APIs. Use from Ralph's autonomous loop to open the initial PR after pushing a feature branch, to read PR review threads, to reply to reviewer comments, to mark threads resolved, to print a summary of PR state, and (when sweep's auto-merge flag is on) to merge a PR that GitHub reports as clean. wontFix and byDesign thread statuses are human-only; set-status rejects them with a clear error. This skill is host-pure (GitHub only); the executor stages it as `pr/` when RALPH_GIT_HOST=github.
 ---
 
 # pr-github
@@ -8,7 +8,7 @@ description: Drive GitHub pull requests from Ralph. Five operations — create-p
 ## What this skill does
 
 The `pr-github` skill is Ralph's only handle on a GitHub pull request.
-It contains five Python entry scripts under `skills/pr-github/scripts/`,
+It contains six Python entry scripts under `skills/pr-github/scripts/`,
 one per operation. Each script uses argparse, prints a JSON summary to
 stdout on success, sends progress to stderr, and calls the GitHub REST
 (`https://api.github.com`) and GraphQL (`https://api.github.com/graphql`)
@@ -235,6 +235,49 @@ REST endpoints used:
 - `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
   (docs: https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
 
+The output also includes a raw `mergeable_state` field carrying GitHub's
+verbatim mergeability string (`clean`, `dirty`, `blocked`, `behind`,
+`unstable`, `unknown`, …) or JSON `null` when GitHub's async mergeability
+check has not yet resolved. Sweep's auto-merge predicate keys off the
+exact value `"clean"`.
+
+### `merge_pr` — merge a PR that GitHub reports as mergeable
+
+```bash
+uv run python skills/pr-github/scripts/merge_pr.py \
+    --repo service-auth \
+    --pr-id 4242 \
+    --merge-method squash
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--repo <name>` | yes | GitHub repository name. |
+| `--pr-id <int>` | yes | Pull request number. |
+| `--merge-method <enum>` | no (default `squash`) | One of `merge`, `squash`, `rebase`. argparse rejects anything else with exit 2. |
+| `--commit-title <text>` | no | Optional commit title for the merge commit. |
+| `--commit-message <text>` | no | Optional commit message body for the merge commit. |
+
+Returns a JSON object with `pr_id`, `repo`, `merged` (bool), `sha` (the
+resulting merge commit SHA, or `null`), `message` (GitHub's response
+message, e.g. `"Pull Request successfully merged"`).
+
+Exit codes (this operation has an extra exit 4; see the table below):
+`0` success, `2` validation / IO error, `3` GitHub returned an unexpected
+non-2xx (422, 5xx, …), `4` race / refused-by-host — GitHub returned 405
+Method Not Allowed or 409 Conflict. Sweep treats exit 4 as "not ready
+right now" and retries on the next iteration; the PBI stays in
+`pending-pr/`.
+
+REST endpoint: `PUT https://api.github.com/repos/{owner}/{repo}/pulls/{number}/merge`
+(docs: https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
+Request body: `{"merge_method": ..., "commit_title": ..., "commit_message": ...}`
+(the two commit fields are omitted from the body when not supplied).
+
+The skill itself does not check `mergeable_state` before calling — that
+predicate lives in the caller (sweep's `decide_action`). The skill is
+intentionally narrow: send the merge, classify the response.
+
 ## Environment variables
 
 | Variable | Purpose |
@@ -252,6 +295,7 @@ a message naming the missing variable when any are absent.
 | 0 | Success. JSON summary on stdout. |
 | 2 | Validation / IO error before any HTTP call (bad CLI arg, missing env var, malformed id, human-only status). Message on stderr. |
 | 3 | GitHub REST or GraphQL returned non-2xx (or a 200 response with a non-empty `errors` array on GraphQL). The error message is forwarded to stderr. |
+| 4 | Race / refused-by-host: GitHub returned 405 Method Not Allowed or 409 Conflict on a merge attempt. Only emitted by `merge_pr`. Caller (sweep) treats this as "not ready" and retries on the next iteration. |
 
 ## Thread status semantics
 
@@ -282,7 +326,7 @@ spec.loader.exec_module(module)
 exit_code = module.main([...])
 ```
 
-Same pattern for all five entry scripts.
+Same pattern for all six entry scripts.
 
 ## What this skill does NOT do
 

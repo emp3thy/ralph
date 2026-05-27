@@ -34,6 +34,7 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
         "RALPH_USE_WORKTREES",
+        "RALPH_AUTO_MERGE_CLEAN_PRS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -166,6 +167,27 @@ def test_load_config_use_worktrees_env_invalid(
 ) -> None:
     monkeypatch.setenv("RALPH_USE_WORKTREES", "maybe")
     with pytest.raises(ConfigError, match="RALPH_USE_WORKTREES"):
+        load_config()
+
+
+def test_load_config_auto_merge_clean_prs_default_false(env_minimal: Path) -> None:
+    cfg = load_config()
+    assert cfg.auto_merge_clean_prs is False
+
+
+def test_load_config_auto_merge_clean_prs_env_true(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    monkeypatch.setenv("RALPH_AUTO_MERGE_CLEAN_PRS", "true")
+    cfg = load_config()
+    assert cfg.auto_merge_clean_prs is True
+
+
+def test_load_config_auto_merge_clean_prs_env_invalid(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    monkeypatch.setenv("RALPH_AUTO_MERGE_CLEAN_PRS", "maybe")
+    with pytest.raises(ConfigError, match="RALPH_AUTO_MERGE_CLEAN_PRS"):
         load_config()
 
 

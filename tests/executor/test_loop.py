@@ -671,12 +671,18 @@ def test_run_sweep_passes_cfg_values_to_sweep_config(
         lambda cfg: fake_repo,
     )
 
-    cfg = replace(cfg_for_repo, bot_author_email="ralph@x.test", stale_days=5)
+    cfg = replace(
+        cfg_for_repo,
+        bot_author_email="ralph@x.test",
+        stale_days=5,
+        auto_merge_clean_prs=True,
+    )
     _run_sweep(cfg, FilesystemQueueSource(cfg))
 
     assert captured["ralph_author_email"] == "ralph@x.test"
     assert captured["stale_threshold"] == timedelta(days=5)
     assert captured["max_attempts"] == cfg.max_attempts
+    assert captured["auto_merge_clean_prs"] is True
 
 
 def test_run_sweep_does_not_read_env_for_promoted_knobs(

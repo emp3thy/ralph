@@ -191,3 +191,42 @@ def test_fetch_passes_repo_and_pr_id_flags(tmp_path: Path) -> None:
     threads_argv = json.loads(threads_argv_log.read_text())
     assert show_argv == ["--repo", "ralph", "--pr-id", "7"]
     assert threads_argv == ["--repo", "ralph", "--pr-id", "7"]
+
+
+def test_fetch_parses_merge_state_clean(shim_skill: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GitHub's raw ``mergeable_state`` value carries through verbatim."""
+    monkeypatch.setenv(
+        "SHIM_SHOW_JSON",
+        json.dumps({**SHOW_PAYLOAD_MERGED, "status": "active", "mergeable_state": "clean"}),
+    )
+    monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_EMPTY))
+
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
+    assert snapshot.merge_state == "clean"
+
+
+def test_fetch_merge_state_null_becomes_empty_string(
+    shim_skill: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A null ``mergeable_state`` (async check pending) parses to ``""``."""
+    monkeypatch.setenv(
+        "SHIM_SHOW_JSON",
+        json.dumps({**SHOW_PAYLOAD_MERGED, "status": "active", "mergeable_state": None}),
+    )
+    monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_EMPTY))
+
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
+    assert snapshot.merge_state == ""
+
+
+def test_fetch_merge_state_missing_becomes_empty_string(
+    shim_skill: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absent ``mergeable_state`` key parses to ``""``."""
+    show = {**SHOW_PAYLOAD_MERGED, "status": "active"}
+    show.pop("mergeable_state", None)
+    monkeypatch.setenv("SHIM_SHOW_JSON", json.dumps(show))
+    monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_EMPTY))
+
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
+    assert snapshot.merge_state == ""

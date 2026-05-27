@@ -66,6 +66,7 @@ class PrSnapshot:
     threads: tuple[ThreadSnapshot, ...]
     last_activity_at: datetime
     url: str
+    merge_state: str = ""
 
 
 class Action(StrEnum):
@@ -75,6 +76,7 @@ class Action(StrEnum):
     MOVE_TO_BLOCKED_MAX_ATTEMPTS = "move-to-blocked-max-attempts"
     CREATE_FEEDBACK_PBI = "create-feedback-pbi"
     PING_REVIEWER = "ping-reviewer"
+    MERGE_PR = "merge-pr"
     NOOP = "noop"
 
 

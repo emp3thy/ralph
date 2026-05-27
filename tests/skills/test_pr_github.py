@@ -80,6 +80,11 @@ def show_module() -> ModuleType:
     return _load_module("pr_github_show", SCRIPTS_DIR / "show.py")
 
 
+@pytest.fixture(scope="module")
+def merge_pr_module() -> ModuleType:
+    return _load_module("pr_github_merge_pr", SCRIPTS_DIR / "merge_pr.py")
+
+
 # ----------------------------------------------------------------------
 # Env fixture
 # ----------------------------------------------------------------------
@@ -982,6 +987,7 @@ def test_show_happy_path(
     assert payload["title"] == "WI-1234: add /healthz"
     assert payload["status"] == "active"  # open → active
     assert payload["merge_status"] == "mergeable"
+    assert payload["mergeable_state"] == "clean"
     assert payload["source_branch"] == "ralph/WI-1234"
     assert payload["target_branch"] == "main"
     assert payload["is_draft"] is False
@@ -1127,6 +1133,229 @@ def test_show_merge_status_mapping(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["merge_status"] == expected_status
+    # Raw mergeable_state is also passed through verbatim — downstream
+    # callers (sweep's auto-merge predicate) gate on the host vocab.
+    assert payload["mergeable_state"] == mergeable_state
+
+
+@responses.activate
+def test_show_mergeable_state_null_passthrough(
+    env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When GitHub returns ``mergeable_state: null`` (async check not yet
+    resolved), the raw field is emitted as JSON ``null``."""
+    pr_url = _pr_url()
+    reviews_url = f"{pr_url}/reviews?per_page=100"
+    checks_url = _check_runs_url("abc123") + "?per_page=100"
+    responses.add(
+        responses.GET,
+        pr_url,
+        json={
+            "number": PR_ID,
+            "title": "x",
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "mergeable": None,
+            "mergeable_state": None,
+            "head": {"ref": "feat", "sha": "abc123"},
+            "base": {"ref": "main"},
+            "user": {"login": "u"},
+            "created_at": "2026-05-25T00:00:00Z",
+            "closed_at": None,
+            "html_url": pr_url,
+        },
+        status=200,
+    )
+    responses.add(responses.GET, reviews_url, json=[], status=200)
+    responses.add(responses.GET, checks_url, json={"check_runs": []}, status=200)
+
+    mod = _load_module("show_test_mergeable_null", SCRIPTS_DIR / "show.py")
+    exit_code = mod.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mergeable_state"] is None
+
+
+# ----------------------------------------------------------------------
+# merge_pr tests
+# ----------------------------------------------------------------------
+
+
+def _merge_url(pr_id: int = PR_ID, repo: str = REPO) -> str:
+    return f"{_pr_url(pr_id, repo)}/merge"
+
+
+@responses.activate
+def test_merge_pr_happy_path(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={
+            "sha": "abcdef0123456789",
+            "merged": True,
+            "message": "Pull Request successfully merged",
+        },
+        status=200,
+    )
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pr_id"] == PR_ID
+    assert payload["repo"] == REPO
+    assert payload["merged"] is True
+    assert payload["sha"] == "abcdef0123456789"
+    assert payload["message"] == "Pull Request successfully merged"
+
+    raw_body = responses.calls[0].request.body
+    assert isinstance(raw_body, (str, bytes))
+    posted = json.loads(raw_body)
+    assert posted == {"merge_method": "squash"}
+
+
+@responses.activate
+def test_merge_pr_passes_optional_commit_fields(
+    env: None,
+    merge_pr_module: ModuleType,
+) -> None:
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={"sha": "abc", "merged": True, "message": ""},
+        status=200,
+    )
+    exit_code = merge_pr_module.main(
+        [
+            "--repo",
+            REPO,
+            "--pr-id",
+            str(PR_ID),
+            "--merge-method",
+            "rebase",
+            "--commit-title",
+            "T",
+            "--commit-message",
+            "Body",
+        ]
+    )
+    assert exit_code == 0
+    raw_body = responses.calls[0].request.body
+    assert isinstance(raw_body, (str, bytes))
+    posted = json.loads(raw_body)
+    assert posted == {
+        "merge_method": "rebase",
+        "commit_title": "T",
+        "commit_message": "Body",
+    }
+
+
+@responses.activate
+def test_merge_pr_method_not_allowed_exits_four(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """405 means GitHub refused — typically branch out of date or required
+    reviews missing. Mapped to exit 4 (race / refused-by-host) so sweep
+    retries on the next iteration rather than escalating."""
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={"message": "Pull Request is not mergeable"},
+        status=405,
+    )
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 4
+    assert "github race" in capsys.readouterr().err
+
+
+@responses.activate
+def test_merge_pr_conflict_exits_four(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """409 means the head SHA moved between `show` and `merge_pr` — a real
+    race against a push. Also mapped to exit 4."""
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={"message": "Head branch was modified. Review and try the merge again."},
+        status=409,
+    )
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 4
+    assert "github race" in capsys.readouterr().err
+
+
+@responses.activate
+def test_merge_pr_unprocessable_exits_three(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={"message": "Validation Failed"},
+        status=422,
+    )
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 3
+    assert "github error" in capsys.readouterr().err
+
+
+@responses.activate
+def test_merge_pr_server_error_exits_three(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responses.add(
+        responses.PUT,
+        _merge_url(),
+        json={"message": "Internal server error"},
+        status=500,
+    )
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 3
+
+
+def test_merge_pr_bad_merge_method_exits_two(
+    env: None,
+    merge_pr_module: ModuleType,
+) -> None:
+    """argparse rejects the --merge-method enum at parse time, exiting 2."""
+    with pytest.raises(SystemExit) as excinfo:
+        merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID), "--merge-method", "force"])
+    assert excinfo.value.code == 2
+
+
+def test_merge_pr_missing_env_var_exits_two(
+    monkeypatch: pytest.MonkeyPatch,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GH_OWNER", OWNER)
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 2
+    assert "GH_TOKEN" in capsys.readouterr().err
+
+
+def test_merge_pr_malformed_pr_id_exits_two(
+    env: None,
+    merge_pr_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = merge_pr_module.main(["--repo", REPO, "--pr-id", "abc"])
+    assert exit_code == 2
+    assert "positive integer" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

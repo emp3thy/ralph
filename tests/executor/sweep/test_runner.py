@@ -34,7 +34,7 @@ from ralph_executor.safety.events import (
 )
 from ralph_executor.sweep.runner import SweepConfig, SweepContext, run
 from ralph_executor.sweep.state import SweepSidecar, write_sidecar
-from tests.executor.sweep.conftest import register_pr
+from tests.executor.sweep.conftest import register_merge_pr_exit, register_pr
 
 NOW = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
 
@@ -58,6 +58,27 @@ def _ctx(
         queue_root=queue_root,
         ado_pr_scripts_path=fake_ado_pr_skill,
         config=_config(),
+        event_log=event_log,
+    )
+
+
+def _ctx_with_auto_merge(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    *,
+    event_log: EventLog | None = None,
+) -> SweepContext:
+    """SweepContext whose embedded SweepConfig has ``auto_merge_clean_prs=True``."""
+    return SweepContext(
+        queue_root=queue_root,
+        ado_pr_scripts_path=fake_ado_pr_skill,
+        config=SweepConfig(
+            ralph_author_email="ralph-bot@example.com",
+            max_attempts=3,
+            stale_threshold=timedelta(days=3),
+            now=NOW,
+            auto_merge_clean_prs=True,
+        ),
         event_log=event_log,
     )
 
@@ -679,3 +700,89 @@ def test_run_reconciles_orphan_when_pr_link_missing(
     assert result.errors == ()
     assert captured == [pbi_dir]
     assert all(r.pbi_id != "WI-ORPHAN" for r in result.actions)
+
+
+def test_auto_merge_clean_pr_lands_in_done(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag on + mergeable_state=clean + shim exit 0 → PBI moved to done/."""
+    pbi = make_pending_pbi("WI-AM1", pr_id=5100)
+    register_pr(
+        monkeypatch,
+        5100,
+        status="active",
+        ci_status="succeeded",
+        mergeable_state="clean",
+    )
+    register_merge_pr_exit(monkeypatch, 5100, 0)
+
+    result = run(ctx=_ctx_with_auto_merge(queue_root, fake_ado_pr_skill))
+
+    assert not pbi.exists()
+    done_dir = queue_root / "done" / "WI-AM1"
+    assert done_dir.is_dir()
+    history = (done_dir / "HISTORY.md").read_text(encoding="utf-8")
+    assert "PR auto-merged by sweep" in history
+    assert result.errors == ()
+
+
+def test_auto_merge_race_keeps_pbi_in_pending(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flag on + shim exit 4 (race / refused) → PBI stays in pending-pr/."""
+    pbi = make_pending_pbi("WI-AM2", pr_id=5200)
+    register_pr(
+        monkeypatch,
+        5200,
+        status="active",
+        ci_status="succeeded",
+        mergeable_state="clean",
+    )
+    register_merge_pr_exit(monkeypatch, 5200, 4)
+
+    with caplog.at_level("INFO", logger="ralph_executor.sweep.runner"):
+        result = run(ctx=_ctx_with_auto_merge(queue_root, fake_ado_pr_skill))
+
+    assert pbi.exists()
+    assert not (queue_root / "done" / "WI-AM2").exists()
+    assert result.errors == ()
+    assert any(
+        "merge_pr refused" in rec.message and "WI-AM2" in rec.message for rec in caplog.records
+    )
+
+
+def test_auto_merge_github_error_keeps_pbi_in_pending(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flag on + shim exit 3 (transient GitHub error) → PBI stays in
+    pending-pr/ and a WARNING is logged."""
+    pbi = make_pending_pbi("WI-AM3", pr_id=5300)
+    register_pr(
+        monkeypatch,
+        5300,
+        status="active",
+        ci_status="succeeded",
+        mergeable_state="clean",
+    )
+    register_merge_pr_exit(monkeypatch, 5300, 3)
+
+    with caplog.at_level("WARNING", logger="ralph_executor.sweep.runner"):
+        result = run(ctx=_ctx_with_auto_merge(queue_root, fake_ado_pr_skill))
+
+    assert pbi.exists()
+    assert not (queue_root / "done" / "WI-AM3").exists()
+    assert result.errors == ()
+    assert any(
+        "merge_pr GitHub error" in rec.message and "WI-AM3" in rec.message for rec in caplog.records
+    )
