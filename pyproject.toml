@@ -30,6 +30,14 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["ralph_executor", "scripts", "skills", "tests"]
+# Each skill's scripts/__init__.py is a discovery marker only — the
+# directory name (e.g. "ralph-add") is not a valid Python identifier, so
+# the script is imported via importlib.util.spec_from_file_location at
+# runtime. Without exclusion, mypy reports a duplicate-module collision
+# against the top-level scripts/ package.
+exclude = [
+    "skills/[^/]+/scripts/__init__\\.py$",
+]
 
 [tool.uv]
 package = true
