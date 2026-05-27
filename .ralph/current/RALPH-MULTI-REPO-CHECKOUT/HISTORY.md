@@ -6,3 +6,10 @@
 - Tests: green (7/7) `uv run pytest tests/executor/test_url_utils.py`
 - Lint: ruff check + ruff format --check + mypy --strict all clean
 - Notes: Next iteration tackles Task 2 (`git_ops.clone` helper). Watch: existing `GitCommandError.__init__` takes `(argv, returncode, stderr)` not a single string — plan's draft `clone()` impl raises with one string arg and will break; substitute the 3-arg constructor when implementing.
+
+## Iteration 2 — 2026-05-28T00:00:00Z
+
+- Step: Task 2 — `clone()` helper in `ralph_executor/git_ops.py` + 3 tests in `tests/executor/test_git_ops.py`
+- Tests: green (17/17) `uv run pytest tests/executor/test_git_ops.py`
+- Lint: ruff check + ruff format (1 reformat applied) + mypy --strict all clean
+- Notes: Used the 3-arg `GitCommandError(argv, returncode, stderr)` form instead of the plan's draft single-string raise (per iter-1 warning). Falls back to `stdout.strip()` when `stderr` is empty. Next iteration: Task 3 (`target_clone.py` with `ensure_clone` + `TargetClone` + `TargetUnreachable`). The plan's draft target_clone module imports `git_ops` and calls `git_ops.fetch(clone_root)` / `git_ops.clone(info.clone_url, clone_root)` — both now exist.
