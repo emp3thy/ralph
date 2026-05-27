@@ -49,3 +49,9 @@
 - Step 7.4–7.6 (smoke against 8 real orphans + commit moved-orphan state): SKIPPED on this branch. `.ralph/pending-pr/<PBI-ID>/` orphan dirs only exist on the `ralph-queue` branch (queue state); on `ralph/SWEEP-RECONCILE-ORPHANS` (code branch) `.ralph/` contains only `current/` and `state/`. Running `ralph-executor reconcile --dry-run --repo .` here returns "no orphans found in pending-pr/". PROMPT.md explicitly forbids touching the `ralph-queue` branch from feature work, so per-step 7.7's `git add .ralph/` commit would also violate the queue/code branch split. The smoke is deferred to operator post-merge: after this PR lands, an operator runs `uv run ralph-executor reconcile --dry-run --repo <ralph-queue-worktree>` and (if clean) the real reconcile on `ralph-queue` to clear the 8 orphans.
 - Tests: see Task 7.2 above.
 - Notes: All Task 7 boxes ticked in canonical plan except the orphan-smoke (deferred). PR being opened against `main` from `ralph/SWEEP-RECONCILE-ORPHANS`.
+
+## Iteration 8 — 2026-05-27T14:30:00+00:00 — PR created
+
+- PR: #31 — https://github.com/emp3thy/ralph/pull/31
+- Branch: ralph/SWEEP-RECONCILE-ORPHANS
+- Title: SWEEP-RECONCILE-ORPHANS: sweep auto-reconciles orphan pending-pr/ entries
