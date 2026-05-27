@@ -85,3 +85,15 @@ Any one of the following:
 - Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 107 files clean, `uv run mypy ralph_executor scripts skills tests` clean (104 files), `uv run pytest` 639 passed / 2 skipped (opt-in).
 - Plan checkboxes for Task 4 steps 1, 2, 4, 5 ticked. Step 3 left unchecked with kubectl-unavailability marker inline.
 - Notes: Next iteration starts Task 5 (build + preflight scripts + `tests/packaging/test_scripts.py`).
+
+## Iteration 5 — 2026-05-27T20:55:00Z
+
+- Task 5 (build + preflight scripts + `tests/packaging/test_scripts.py`) — steps 1, 2, 4, 5, 6 complete. Step 3 (`shellcheck`) SKIPPED: shellcheck not installed in executor PATH; `test_script_passes_shellcheck` pytest-skips on hosts without it (per plan). Marker `[SKIPPED — shellcheck not installed in executor environment]` added inline to step 3.
+- Wrote `scripts/build_image.sh` and `scripts/preflight.sh` verbatim from plan ("Build and preflight scripts" section). LF line endings verified via `file` + `xxd` (`0a` not `0d 0a`).
+- Marked both executable via `git update-index --chmod=+x` (Windows). `git ls-files --stage` shows mode `100755` for both.
+- Smoke-ran step 4 commands: `--help` exit 0; no `--host` exit 2; `--host gitlab` exit 2. All as expected.
+- Wrote `tests/packaging/test_scripts.py` verbatim from plan. One pyright informational diagnostic on `if os.name != "nt"` ("statically false" on Windows) — not blocking, no rule disabled.
+- Tests: 9 collected; 7 passed, 2 skipped (`test_script_passes_shellcheck[*]` skip via `shutil.which("shellcheck") is None`).
+- Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 108 files clean, `uv run mypy ralph_executor scripts skills tests` clean (105 files), `uv run pytest` 646 passed / 4 skipped (2 shellcheck + 2 opt-in prompt smoke).
+- Plan checkboxes for Task 5 steps 1, 2, 4, 5, 6 ticked. Step 3 left unchecked with shellcheck-unavailability marker inline.
+- Notes: Next iteration starts Task 6 (end-to-end image smoke — requires `docker`, which is also not present in executor; will document gate state per plan).
