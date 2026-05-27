@@ -11,7 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from ralph_executor.url_utils import TargetRepoInfo
 
 PBIType = Literal["feature", "bug", "pr-feedback"]
 PBIStatus = Literal["inbox", "current", "pending-pr", "done", "blocked", "archive"]
@@ -29,6 +32,14 @@ class PBI:
     before this one is eligible for ``pick_next``. Optional — default
     is an empty tuple. Cycles are NOT detected by the queue source;
     operator responsibility (the dependency graph is small and static).
+
+    ``target_repo`` is the raw HTTPS URL from the PBI's frontmatter
+    (required field per PBI 1's schema, but defaults to ``""`` here so
+    legacy positional constructions keep compiling). ``target_info`` is
+    the parsed view (``None`` until ``parse_target_repo`` runs).
+    ``work_worktree`` is the per-PBI worktree path inside the target's
+    clone (``None`` until ``ensure_clone`` + ``create_work_worktree``
+    complete).
     """
 
     id: str
@@ -40,3 +51,6 @@ class PBI:
     updated_at: datetime
     path: Path
     depends_on: tuple[str, ...] = ()
+    target_repo: str = ""
+    target_info: TargetRepoInfo | None = None
+    work_worktree: Path | None = None

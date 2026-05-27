@@ -64,3 +64,27 @@ def test_literal_aliases_are_exported() -> None:
     assert PBIType is not None
     assert PBIStatus is not None
     assert Severity is not None
+
+
+def test_pbi_carries_target_repo_and_target_info_fields() -> None:
+    """PBI dataclass has target_repo (raw string), target_info (parsed),
+    and work_worktree (per-PBI worktree path)."""
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    pbi = PBI(
+        id="WI-1",
+        type="feature",
+        status="inbox",
+        severity="normal",
+        attempts=0,
+        created_at=datetime(2026, 5, 24, 9, 15, tzinfo=UTC),
+        updated_at=datetime(2026, 5, 24, 9, 15, tzinfo=UTC),
+        path=Path("/tmp/x"),
+        target_repo="https://github.com/emp3thy/ralph",
+        target_info=TargetRepoInfo(host="github.com", owner="emp3thy", name="ralph"),
+        work_worktree=Path("/tmp/clone/.ralph-work/WI-1"),
+    )
+    assert pbi.target_repo == "https://github.com/emp3thy/ralph"
+    assert pbi.target_info is not None
+    assert pbi.target_info.owner == "emp3thy"
+    assert pbi.work_worktree == Path("/tmp/clone/.ralph-work/WI-1")
