@@ -1,11 +1,11 @@
 ---
 id: STAGE-B-PLAN-20a-worktree
 type: feature
-status: inbox
+status: current
 severity: normal
 attempts: 0
 created_at: 2026-05-26T07:30:00+00:00
-updated_at: 2026-05-26T07:30:00+00:00
+updated_at: 2026-05-27T01:37:09+00:00
 depends_on: []
 ---
 
