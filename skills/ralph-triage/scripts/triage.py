@@ -31,6 +31,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    read_path_from_head,
     write_frontmatter,
 )
 
@@ -228,24 +229,28 @@ def main(argv: list[str] | None = None) -> int:
             entry_file = _resolve_entry_file(old_path)
             frontmatter, body = read_frontmatter(entry_file)
             current_status = frontmatter.get("status")
-            wrote_frontmatter = False
             if current_status != args.destination:
                 frontmatter["status"] = args.destination
                 frontmatter["updated_at"] = _now_iso()
                 if args.destination == "inbox":
                     frontmatter["attempts"] = 0
                 write_frontmatter(entry_file, frontmatter, body)
-                wrote_frontmatter = True
 
             history_file = old_path / "HISTORY.md"
-            # Partial-failure retry (pre-move): working tree's frontmatter
-            # already shows the destination status (so we did NOT just
-            # write it this run). HISTORY may or may not carry the entry
-            # from the previous failed attempt — dedup only here.
-            is_pre_move_retry = not wrote_frontmatter and current_status == args.destination
-            skip_append = False
-            if is_pre_move_retry and history_file.is_file():
-                skip_append = args.note in history_file.read_text(encoding="utf-8")
+            # Per-invocation dedup that survives repeated-cycle history.
+            # Compare working tree HISTORY against HEAD's HISTORY: if the
+            # working tree already has MORE occurrences of ``args.note``
+            # than HEAD, the previous (failed) attempt already appended
+            # it — skip to avoid a duplicate. Otherwise always append.
+            # Handles both partial-failure shapes AND fresh repeat-cycles
+            # (blocked→inbox→blocked→inbox) where the same note text
+            # appears in an older committed entry.
+            rel_history = str(history_file.relative_to(repo)).replace("\\", "/")
+            head_history = read_path_from_head(repo, rel_history) or ""
+            working_history = (
+                history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
+            )
+            skip_append = working_history.count(args.note) > head_history.count(args.note)
             if not skip_append:
                 append_history(
                     old_path,

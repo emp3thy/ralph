@@ -506,3 +506,52 @@ def test_promote_records_audit_for_repeated_cycle(
         f"round 3 must record a fresh audit entry; got:\n{history}"
     )
     assert history.count("severity: high -> normal") == 1
+
+
+def test_promote_appends_audit_on_partial_retry_after_earlier_identical_cycle(
+    git_repo: Path,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-6. After successful cycles 1+2
+    (normal→high committed, then high→normal committed), cycle 3 does
+    normal→high again but its commit fails (only frontmatter written).
+    Cycle 3 retry must append the new audit entry — the round-5 dedup
+    erroneously matched the cycle-1 entry and suppressed cycle 3's. Fix
+    compares working-tree vs HEAD counts of the detail string so an
+    older committed entry no longer hides the new uncommitted one."""
+    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-680", pbi_type="feature", severity="normal")
+
+    # Cycles 1 + 2: full normal→high→normal, both committed.
+    for sev in ("high", "normal"):
+        rc = promote_module.main(
+            ["--pbi-id", "WI-680", "--severity", sev, "--repo", str(git_repo), "--no-push"]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+    # Cycle 3 partial: write_frontmatter ran (severity=high on disk),
+    # commit never landed. We simulate by directly editing the PBI on
+    # ralph-queue.
+    _git(git_repo, "checkout", "ralph-queue")
+    entry = pbi_dir / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    text = text.replace("severity: normal", "severity: high")
+    entry.write_text(text, encoding="utf-8")
+    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+
+    # Cycle 3 retry: must produce a NEW "normal -> high" audit entry.
+    rc = promote_module.main(
+        ["--pbi-id", "WI-680", "--severity", "high", "--repo", str(git_repo), "--no-push"]
+    )
+    assert rc == 0
+    head_after = _git(git_repo, "rev-parse", "ralph-queue")
+    assert head_after != head_before, "retry must commit"
+
+    history = (git_repo / ".ralph" / "inbox" / "WI-680" / "HISTORY.md").read_text(encoding="utf-8")
+    # 2 normal→high (cycle 1 + cycle 3 retry), 1 high→normal (cycle 2).
+    assert history.count("severity: normal -> high") == 2, (
+        f"cycle 3 retry must append a fresh audit even though an older "
+        f"cycle-1 entry exists with the same detail; got:\n{history}"
+    )
+    assert history.count("severity: high -> normal") == 1

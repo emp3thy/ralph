@@ -219,10 +219,20 @@ def main(argv: list[str] | None = None) -> int:
 
         history_file = pbi_dir / "HISTORY.md"
         history_detail = f"severity: {previous_severity} -> {args.severity}"
-        is_partial_retry = working_severity == args.severity and head_severity != args.severity
-        skip_append = False
-        if is_partial_retry and history_file.is_file():
-            skip_append = history_detail in history_file.read_text(encoding="utf-8")
+        # Per-invocation dedup that survives repeated-cycle history.
+        # Compare working tree HISTORY against HEAD's HISTORY: if the
+        # working tree already has MORE occurrences of ``history_detail``
+        # than HEAD, the previous (failed) attempt already appended it
+        # — skip to avoid a duplicate. Otherwise (no uncommitted append
+        # yet, including the case where HEAD's count == working count
+        # because earlier successful cycles match) always append. This
+        # works for both partial-failure shapes (crash between write+
+        # append vs between append+commit) AND for fresh repeat-cycles
+        # where the detail string happens to match an older entry.
+        rel_history = str(history_file.relative_to(repo)).replace("\\", "/")
+        head_history = read_path_from_head(repo, rel_history) or ""
+        working_history = history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
+        skip_append = working_history.count(history_detail) > head_history.count(history_detail)
         if not skip_append:
             append_history(
                 pbi_dir,
