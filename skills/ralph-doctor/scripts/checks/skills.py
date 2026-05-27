@@ -106,11 +106,15 @@ def _scan_skill(skill_dir: Path) -> list[str]:
 
 
 def _offending_skill_name(path_str: str) -> str:
+    # Walk ancestors so files nested below `scripts/` (e.g.
+    # `scripts/utils/helper.py`, picked up by `scripts_dir.rglob("*.py")`)
+    # still resolve to the owning skill name. Checking only the direct
+    # parent would return "utils" instead of the skill dir.
     path = Path(path_str)
-    parent = path.parent
-    if parent.name == "scripts":
-        return parent.parent.name
-    return parent.name
+    for ancestor in path.parents:
+        if ancestor.name == "scripts":
+            return ancestor.parent.name
+    return path.parent.name
 
 
 def check(context: CheckContext) -> CheckResult:
