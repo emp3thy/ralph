@@ -185,6 +185,8 @@ Add `.ralph-work/` to root `.gitignore`. Worktrees are not tracked content; the 
 
 Commit: `chore(gitignore): exclude .ralph-work/`
 
+- [x] Task 8 complete (iteration 8, 2026-05-27, commit 5c21fb0)
+
 ### Task 9 — tests
 
 - `test_ensure_worktree_creates_new_when_absent`

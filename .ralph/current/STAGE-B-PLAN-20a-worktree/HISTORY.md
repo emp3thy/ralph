@@ -77,3 +77,12 @@
   - No new tests this iteration — Task 9 owns the dedicated `test_terminal_outcome_removes_work_tree` coverage. Existing `test_iterate_once_routes_pr_created`, `test_iterate_once_routes_stuck`, and `test_max_attempts_moves_pbi_to_blocked` all use `use_worktrees=False` via `cfg_for_repo`, so the new code path is opt-out for them.
 - Tests: full `uv run --no-sync pytest` green (454 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
 - Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits (the executor's `_persist_iteration_writes` mirrors them onto ralph-queue). Commit: `4aef065 feat(loop): clean up per-PBI work tree on terminal outcomes` on `ralph/STAGE-B-PLAN-20a-worktree`.
+
+## Iteration 8 — 2026-05-27T21:00:00+00:00
+
+- Step: Task 8 — added `.ralph-work/` to root `.gitignore` on the feature branch (`ralph/STAGE-B-PLAN-20a-worktree`), placed under the existing "Ralph runtime + tooling" group next to `.ralph/`, `.worktrees/`, `.superpowers/`.
+- Design notes:
+  - Only edited the feature branch's `.gitignore`. The `ralph-queue` branch's `.gitignore` deliberately diverges (it tracks `.ralph/` because queue state is the whole point of that branch) and PROMPT.md's standing instructions forbid touching ralph-queue from code work. If the operator's primary checkout ever sits on ralph-queue, `.ralph-work/` may show up untracked there until a follow-up addresses queue-branch gitignore drift — out of scope for this PBI.
+  - No code or test changes; pure gitignore. Skipped the full pytest run since no Python source touched, but did run `ruff check .` and `ruff format --check .` — both clean. (The full suite landed clean in iteration 7 and nothing since then could have regressed it.)
+- Tests: `ruff check .` clean, `ruff format --check .` clean (`72 files already formatted`). Full pytest not re-run — no Python touched.
+- Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits. Commit: `5c21fb0 chore(gitignore): exclude .ralph-work/` on `ralph/STAGE-B-PLAN-20a-worktree`.
