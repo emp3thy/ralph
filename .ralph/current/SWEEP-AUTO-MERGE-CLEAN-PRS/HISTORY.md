@@ -17,3 +17,13 @@
 - Task 2: Added `merge_pr_module` fixture + 9 test cases in `tests/skills/test_pr_github.py` (happy path, optional commit fields, 405 race, 409 race, 422 error, 500 error, bad merge method via argparse, missing env, malformed pr-id).
 - Tests: `uv run pytest tests/skills/test_pr_github.py -k merge_pr` → 9 passed. Full `tests/skills/` → 194 passed.
 - Lint: `ruff check .` clean (only pre-existing noqa-format warnings in `ralph-doctor`). `ruff format` applied to `test_pr_github.py`. `mypy skills` → no issues.
+
+## Iteration 3 — 2026-05-27T22:00:00+00:00
+
+- Task 3: Updated `skills/pr-github/SKILL.md` frontmatter description (`Five operations` → `Six operations`, added `merge_pr` + sweep-auto-merge use case). Prose `five Python entry scripts` → `six`. `Same pattern for all five entry scripts` → `six`.
+- Task 3: Added a `### merge_pr — merge a clean PR` section after the `show` section (usage example, flag table, return JSON shape, exit codes incl. exit 4, REST endpoint + docs link, note that the `mergeable_state` predicate lives in the caller).
+- Task 3: Appended a paragraph to the `show` section documenting the new raw `mergeable_state` field exposed by Task 1 (verbatim string or `null`; sweep keys off `"clean"`).
+- Task 3: Added a row to the "Exit codes (every operation)" table for exit 4 ("Race / refused-by-host… Only emitted by `merge_pr`").
+- Tests: `uv run pytest tests/skills/test_pr_github.py -q` → 67 passed. (Markdown-only change; no test references SKILL.md text.)
+- Lint: `uv run ruff check .` → All checks passed.
+- Notes: Used op name `merge_pr` (underscore) to match plan + PBI wording; sibling ops use hyphens externally but plan/spec explicitly say `merge_pr`. The `pr-ado` SKILL.md is unchanged — this PBI is GitHub-only (per `target_repo` + spec); ADO mirror is a follow-up.
