@@ -89,7 +89,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 - Create: `skills/pr-github/scripts/merge_pr.py`
 - Modify: `tests/skills/test_pr_github.py`
 
-- [ ] **Step 2.1: Add `put_rest` to `GitHubClient` in `_common.py`**
+- [x] **Step 2.1: Add `put_rest` to `GitHubClient` in `_common.py`**
 
   Mirror the existing `post_rest` shape:
   ```python
@@ -99,7 +99,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
       return self._read_rest_response(response)
   ```
 
-- [ ] **Step 2.2: Add a new `RaceError` exception class to `_common.py`**
+- [x] **Step 2.2: Add a new `RaceError` exception class to `_common.py`**
 
   Distinct from `HttpError` so the skill can map 405/409 specifically to exit 4 without parsing message strings.
 
@@ -112,7 +112,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 
   Modify `_read_rest_response` to raise `RaceError` (not `HttpError`) when `response.status_code in (405, 409)`. (Verify no existing call site relies on those codes producing `HttpError` — `grep -n "405\|409" skills/`. Currently neither code is referenced.)
 
-- [ ] **Step 2.3: Create `skills/pr-github/scripts/merge_pr.py`**
+- [x] **Step 2.3: Create `skills/pr-github/scripts/merge_pr.py`**
 
   Mirror `create_pr.py` for structure. Argparse:
   ```python
@@ -146,7 +146,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 
   `main`'s except chain: `FatalError → 2`; `RaceError → 4`; `HttpError → 3`.
 
-- [ ] **Step 2.4: Add tests in `tests/skills/test_pr_github.py`**
+- [x] **Step 2.4: Add tests in `tests/skills/test_pr_github.py`**
 
   New cluster `# merge_pr tests`:
   - `test_merge_pr_happy_path`: 200 response with `{"sha": "abc", "merged": true, "message": "Pull Request successfully merged"}`. Assert exit 0 + JSON has `merged=True`, `sha="abc"`.
@@ -158,7 +158,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 
   Use `responses.PUT` (or `responses.add(responses.PUT, ...)`). Endpoint URL builder: `f"{GH_API}/repos/{OWNER}/{REPO}/pulls/{PR_ID}/merge"`.
 
-- [ ] **Step 2.5: `uv run pytest tests/skills/test_pr_github.py -k merge_pr` until green.**
+- [x] **Step 2.5: `uv run pytest tests/skills/test_pr_github.py -k merge_pr` until green.**
 
 ---
 

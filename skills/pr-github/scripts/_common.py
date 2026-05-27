@@ -1,4 +1,4 @@
-"""Shared helpers for the ``pr-github`` skill's five entry scripts.
+"""Shared helpers for the ``pr-github`` skill's entry scripts.
 
 - ``load_client()`` reads ``GH_TOKEN`` and ``GH_OWNER`` from the
   environment and returns a ``GitHubClient`` bound to that owner.
@@ -8,8 +8,12 @@
 - ``FatalError`` is the in-process signal for validation / IO error;
   the wrapping ``main`` of each entry script catches it and returns 2.
 - ``HttpError`` is raised by ``GitHubClient`` on non-2xx HTTP responses
-  or on GraphQL responses with a non-empty ``errors`` array. Mapped to
-  exit code 3 by ``handle_http_error``.
+  (excluding 405/409) or on GraphQL responses with a non-empty ``errors``
+  array. Mapped to exit code 3 by ``handle_http_error``.
+- ``RaceError`` is raised by ``GitHubClient`` on 405 Method Not Allowed
+  or 409 Conflict responses (used by ``merge_pr.py`` to distinguish
+  "PR not ready / someone pushed during the call" from generic GitHub
+  errors). Mapped to exit code 4 by ``handle_race_error``.
 - ``ALLOWED_STATUSES`` / ``HUMAN_ONLY_STATUSES`` are referenced by
   ``set_status.py`` so the enum lives in exactly one place. The set is
   the shared cross-host vocabulary, not GitHub-native.
@@ -45,6 +49,16 @@ class HttpError(RuntimeError):
     """Raised on GitHub HTTP / GraphQL failure. Mapped to exit code 3."""
 
 
+class RaceError(RuntimeError):
+    """Raised on 405 Method Not Allowed or 409 Conflict from GitHub.
+
+    Mapped to exit code 4 by ``handle_race_error``. Currently only
+    surfaced by ``merge_pr.py`` (GitHub's documented response for a PR
+    that became un-mergeable between the check and the merge call, or
+    for a head-SHA conflict from a racing push).
+    """
+
+
 def fail(message: str) -> int:
     """Print ``message`` to stderr and return exit code 2."""
     print(f"error: {message}", file=sys.stderr)
@@ -55,6 +69,12 @@ def handle_http_error(error: HttpError) -> int:
     """Print an :class:`HttpError` to stderr and return exit code 3."""
     print(f"github error: {error}", file=sys.stderr)
     return 3
+
+
+def handle_race_error(error: RaceError) -> int:
+    """Print a :class:`RaceError` to stderr and return exit code 4."""
+    print(f"github race: {error}", file=sys.stderr)
+    return 4
 
 
 def _require_env(name: str) -> str:
@@ -94,6 +114,11 @@ class GitHubClient:
         response = self.session.post(url, headers=self._headers(), json=body, timeout=30)
         return self._read_rest_response(response)
 
+    def put_rest(self, path: str, body: dict[str, Any]) -> Any:
+        url = f"{GITHUB_API}{path}"
+        response = self.session.put(url, headers=self._headers(), json=body, timeout=30)
+        return self._read_rest_response(response)
+
     def graphql(
         self,
         query: str,
@@ -130,6 +155,12 @@ class GitHubClient:
 
     @staticmethod
     def _read_rest_response(response: requests.Response) -> Any:
+        if response.status_code in (405, 409):
+            raise RaceError(
+                f"GitHub REST {response.request.method} "
+                f"{response.request.url} returned HTTP "
+                f"{response.status_code}: " + GitHubClient._summarise_body(response)
+            )
         if response.status_code >= 400:
             raise HttpError(
                 f"GitHub REST {response.request.method} "
@@ -212,8 +243,10 @@ __all__ = [
     "GitHubClient",
     "HUMAN_ONLY_STATUSES",
     "HttpError",
+    "RaceError",
     "fail",
     "handle_http_error",
+    "handle_race_error",
     "load_client",
     "parse_branch",
     "parse_pr_id",
