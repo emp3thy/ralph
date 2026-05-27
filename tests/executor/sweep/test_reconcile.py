@@ -320,32 +320,60 @@ def test_reconcile_orphan_invokes_lookup_with_correct_args(
 
 
 def test_reconcile_uses_explicit_repo_name_not_queue_root_parent(
-    fake_orphan: Path,
-    fake_ctx: SweepContext,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In worktree mode ``ctx.queue_root.parent.name`` is the worktree
     directory name (``"queue"``), not the repo name. The reconcile path
     must read ``ctx.repo_name`` explicitly so ``--repo`` lands as e.g.
     ``ralph`` and not ``queue`` (which produces 404s against
-    ``/repos/<owner>/queue/pulls``)."""
-    import dataclasses
+    ``/repos/<owner>/queue/pulls``).
 
-    ctx = dataclasses.replace(fake_ctx, repo_name="ralph")
+    Build a synthetic ``queue_root`` whose parent is named ``"queue"``
+    (simulating ``<repo>/.ralph-work/queue/.ralph``). The new code path
+    must return ``ctx.repo_name="ralph"`` instead of the parent name
+    ``"queue"`` — and the old fallback would visibly fail this
+    assertion, which is the regression we want covered."""
+    queue_root = tmp_path / "queue" / ".ralph"
+    for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
+        (queue_root / sub).mkdir(parents=True)
+    orphan = queue_root / "pending-pr" / "STAGE-B-PLAN-03"
+    orphan.mkdir()
+    (orphan / "PBI.md").write_text("---\nid: STAGE-B-PLAN-03\n---\n", encoding="utf-8")
+    (orphan / "HISTORY.md").write_text("", encoding="utf-8")
+    scripts_path = tmp_path / "pr_scripts"
+    scripts_path.mkdir()
+
+    ctx = SweepContext(
+        queue_root=queue_root,
+        ado_pr_scripts_path=scripts_path,
+        config=SweepConfig(
+            ralph_author_email="ralph@example.com",
+            max_attempts=20,
+            stale_threshold=timedelta(days=3),
+            now=datetime.now(tz=UTC),
+        ),
+        repo_name="ralph",
+    )
+    # Sanity: queue_root.parent.name is "queue", not "ralph" — so the
+    # old fallback would return the wrong value, making this assertion
+    # protective against a regression that removed the explicit branch.
+    assert ctx.queue_root.parent.name == "queue"
+
     invocations = _stub_subprocess(
         monkeypatch,
         stdout=json.dumps({"pr": None, "branch_exists": False}),
         returncode=0,
     )
 
-    reconcile_orphan(fake_orphan, ctx)
+    reconcile_orphan(orphan, ctx)
 
     argv = invocations[0]
     assert "--repo" in argv
     repo_value = argv[argv.index("--repo") + 1]
     assert repo_value == "ralph", (
         f"--repo must use ctx.repo_name='ralph', not queue_root.parent.name "
-        f"(='{ctx.queue_root.parent.name}'); got {repo_value!r}"
+        f"('queue'); got {repo_value!r}"
     )
 
 
