@@ -573,9 +573,13 @@ def test_run_sweep_passes_cfg_values_to_sweep_config(
     )
 
     # Stub out the actual sweep run so we don't need a real PR skill on disk.
+    # Must return a SweepResult-shaped object — _run_sweep logs .pbis_scanned /
+    # .actions / .errors after the call.
+    from types import SimpleNamespace
+
     monkeypatch.setattr(
         "ralph_executor.sweep.run",
-        lambda ctx: None,
+        lambda ctx: SimpleNamespace(pbis_scanned=0, actions=[], errors=[]),
     )
     # Bypass the scripts-path check.
     monkeypatch.setattr(
