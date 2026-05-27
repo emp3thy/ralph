@@ -52,6 +52,9 @@ DEFAULT_CLAUDE_BINARY = "claude"
 DEFAULT_PR_CHECK_POLL_MAX_ATTEMPTS = 6
 DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS = 30.0
 DEFAULT_USE_WORKTREES = True
+# Sweep stale-PR threshold in days. PRs older than this in pending-pr/
+# get moved to blocked/. Promoted from RALPH_STALE_DAYS env-only.
+DEFAULT_STALE_DAYS = 3
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -74,6 +77,10 @@ _TOML_KNOWN_KEYS = frozenset(
         "ado_org_url",
         "ado_project",
         "halt_webhook",
+        # Sweep tuning. Promoted from env-only so operators can pin them
+        # in .ralph/config.toml instead of exporting RALPH_* every shell.
+        "bot_author_email",
+        "stale_days",
         # CI-green verifier budget — see DEFAULT_PR_CHECK_POLL_* above.
         "pr_check_poll_max_attempts",
         "pr_check_poll_interval_seconds",
@@ -133,6 +140,16 @@ class ExecutorConfig:
     # worktree pinned to ``queue_branch``. When False, behaviour reverts
     # to the Stage-A single-checkout branch-dance path.
     use_worktrees: bool = DEFAULT_USE_WORKTREES
+    # Sweep tuning — promoted from env-only. ``bot_author_email`` is the
+    # commit/PR author email ralph uses; sweep skips comments by this
+    # author so the loop doesn't feed back into itself. Env name keeps
+    # the historical ``RALPH_ADO_AUTHOR_EMAIL`` spelling for
+    # backwards-compat — sweep is host-agnostic, so the TOML key drops
+    # the misleading ADO prefix. ``stale_days`` is the pending-PR
+    # staleness threshold (days), strictly positive (validated in
+    # ``load_config``).
+    bot_author_email: str = ""
+    stale_days: int = DEFAULT_STALE_DAYS
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -390,6 +407,24 @@ def load_config() -> ExecutorConfig:
         default="",
         source_label=source_label,
     )
+    bot_author_email = _resolve_str(
+        name="bot_author_email",
+        env_name="RALPH_ADO_AUTHOR_EMAIL",
+        toml_value=toml_overrides.get("bot_author_email"),
+        default="",
+        source_label=source_label,
+    )
+    stale_days = _resolve_int(
+        name="stale_days",
+        env_name="RALPH_STALE_DAYS",
+        toml_value=toml_overrides.get("stale_days"),
+        default=DEFAULT_STALE_DAYS,
+        source_label=source_label,
+    )
+    if stale_days <= 0:
+        raise ConfigError(
+            f"{source_label}: stale_days must be positive (got {stale_days})"
+        )
     pr_check_poll_max_attempts = _resolve_int(
         name="pr_check_poll_max_attempts",
         env_name="RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
@@ -429,4 +464,6 @@ def load_config() -> ExecutorConfig:
         pr_check_poll_max_attempts=pr_check_poll_max_attempts,
         pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
         use_worktrees=use_worktrees,
+        bot_author_email=bot_author_email,
+        stale_days=stale_days,
     )
