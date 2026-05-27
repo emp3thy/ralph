@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -134,7 +135,62 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--no-push", action="store_true", help="Commit but do not push.")
     parser.add_argument("--dry-run", action="store_true", help="Compute without mutating.")
+    parser.add_argument(
+        "--target-repo",
+        help=(
+            "HTTPS URL of the repo this PBI applies to. If omitted, derive "
+            "from --repo's git origin remote (SSH form converted to HTTPS)."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _validate_target_repo_value(value: str) -> str | None:
+    """Mirror of scripts.validate_samples._validate_target_repo.
+
+    Inlined to avoid a cross-package import. Returns an error string or
+    ``None`` if the value validates.
+    """
+    if not value.startswith("https://"):
+        return f"target_repo must be an HTTPS URL, got {value!r}"
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.netloc:
+        return f"target_repo URL has no host: {value!r}"
+    path_segments = [p for p in parsed.path.split("/") if p]
+    if len(path_segments) < 2:
+        return f"target_repo URL must include owner + name path: {value!r}"
+    return None
+
+
+_SSH_ORIGIN_RE = re.compile(r"^git@([^:]+):(.+?)(?:\.git)?$")
+
+
+def _derive_target_repo(repo: Path) -> str:
+    """Read git origin URL and reshape to canonical HTTPS form.
+
+    Examples:
+        git@github.com:emp3thy/ralph.git     -> https://github.com/emp3thy/ralph
+        https://github.com/emp3thy/ralph     -> https://github.com/emp3thy/ralph
+        https://github.com/emp3thy/ralph.git -> https://github.com/emp3thy/ralph
+
+    Raises ``_FatalError`` if origin is missing or unparseable; the
+    message points at the ``--target-repo`` escape hatch.
+    """
+    try:
+        url = _run_git(repo, "remote", "get-url", "origin").strip()
+    except subprocess.CalledProcessError as exc:
+        raise _FatalError(
+            "no git remote 'origin' configured; pass --target-repo explicitly"
+        ) from exc
+    ssh_match = _SSH_ORIGIN_RE.match(url)
+    if ssh_match:
+        host, path = ssh_match.group(1), ssh_match.group(2)
+        return f"https://{host}/{path}"
+    if url.startswith("https://"):
+        return url.removesuffix(".git")
+    raise _FatalError(
+        f"cannot derive target_repo from origin URL {url!r}; pass --target-repo explicitly"
+    )
 
 
 def _resolve_fetcher() -> Path:
@@ -207,6 +263,7 @@ def _render_frontmatter(
     pbi_type: str,
     severity: str,
     parent_id: str | None,
+    target_repo: str,
 ) -> str:
     now = _now_iso()
     lines = [
@@ -218,6 +275,7 @@ def _render_frontmatter(
         "attempts: 0",
         f"created_at: {now}",
         f"updated_at: {now}",
+        f"target_repo: {target_repo}",
     ]
     if parent_id:
         lines.append(f"parent_id: {parent_id}")
@@ -358,6 +416,7 @@ def _write_pbi_directory(
     doc: dict[str, Any],
     severity: str,
     parent_id: str | None,
+    target_repo: str,
 ) -> Path:
     # Sanitize pbi_id the same way attachment names are — strip
     # directory components so a fetcher emitting {"id": "../../evil"}
@@ -373,6 +432,7 @@ def _write_pbi_directory(
         pbi_type=pbi_type,
         severity=severity,
         parent_id=parent_id,
+        target_repo=target_repo,
     )
     if pbi_type == "bug":
         (pbi_dir / "BUG.md").write_text(frontmatter + _render_bug_body(doc), encoding="utf-8")
@@ -418,6 +478,17 @@ def main(argv: list[str] | None = None) -> int:
             raise _FatalError(f"--repo path does not exist: {repo}")
         ensure_git_repo(repo)
 
+        # Resolve target_repo: explicit flag wins over auto-derive.
+        if args.target_repo is not None:
+            target_repo = args.target_repo.strip()
+            if not target_repo:
+                raise _FatalError("--target-repo must be non-empty")
+        else:
+            target_repo = _derive_target_repo(repo)
+        target_repo_err = _validate_target_repo_value(target_repo)
+        if target_repo_err is not None:
+            raise _FatalError(target_repo_err)
+
         fetcher = _resolve_fetcher()
         work_item_arg = _normalise_work_item_arg(args.work_item)
 
@@ -452,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
                         doc=child_doc,
                         severity=child_severity,
                         parent_id=root_parent_id,
+                        target_repo=target_repo,
                     )
                 else:
                     pbi_dir = (
@@ -486,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
                     doc=root_doc,
                     severity=severity,
                     parent_id=None,
+                    target_repo=target_repo,
                 )
             else:
                 pbi_dir = (
