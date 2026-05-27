@@ -167,15 +167,15 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 **Files:**
 - Modify: `skills/pr-github/SKILL.md`
 
-- [ ] **Step 3.1: Update the frontmatter description**
+- [x] **Step 3.1: Update the frontmatter description**
 
   Replace "Five operations — create-pr, read-threads, reply, set-status, show" with "Six operations — create-pr, read-threads, reply, set-status, show, merge_pr". (And update the prose "contains five Python entry scripts" to "six".)
 
-- [ ] **Step 3.2: Add a `### merge_pr — merge a clean PR` section**
+- [x] **Step 3.2: Add a `### merge_pr — merge a clean PR` section**
 
   After the existing `### show` section (around line 207). Document: usage example, flag table, return JSON shape, exit codes including 4. Mirror tone of other sections.
 
-- [ ] **Step 3.3: Update the "Exit codes (every operation)" table**
+- [x] **Step 3.3: Update the "Exit codes (every operation)" table**
 
   Add a row for exit code 4: "Race / refused-by-host: GitHub returned 405 Method Not Allowed or 409 Conflict on a merge attempt. Only emitted by `merge_pr`."
 
