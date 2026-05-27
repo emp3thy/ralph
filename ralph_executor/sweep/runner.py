@@ -66,6 +66,12 @@ class SweepContext:
     queue_root: Path  # the ``.ralph/`` directory in the project repo
     ado_pr_scripts_path: Path  # the staged PR-skill ``scripts/`` directory
     config: SweepConfig
+    # The GitHub/ADO repo name (e.g. "ralph"), used by reconcile when
+    # invoking lookup_by_branch. Must be passed explicitly because
+    # ``queue_root.parent.name`` is unreliable under worktree mode: there
+    # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
+    # ``.parent.name`` is "queue", not the repo name.
+    repo_name: str = ""
 
 
 @dataclass(frozen=True)

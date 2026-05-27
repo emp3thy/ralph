@@ -319,6 +319,36 @@ def test_reconcile_orphan_invokes_lookup_with_correct_args(
     assert "--include-branch-check" in argv
 
 
+def test_reconcile_uses_explicit_repo_name_not_queue_root_parent(
+    fake_orphan: Path,
+    fake_ctx: SweepContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode ``ctx.queue_root.parent.name`` is the worktree
+    directory name (``"queue"``), not the repo name. The reconcile path
+    must read ``ctx.repo_name`` explicitly so ``--repo`` lands as e.g.
+    ``ralph`` and not ``queue`` (which produces 404s against
+    ``/repos/<owner>/queue/pulls``)."""
+    import dataclasses
+
+    ctx = dataclasses.replace(fake_ctx, repo_name="ralph")
+    invocations = _stub_subprocess(
+        monkeypatch,
+        stdout=json.dumps({"pr": None, "branch_exists": False}),
+        returncode=0,
+    )
+
+    reconcile_orphan(fake_orphan, ctx)
+
+    argv = invocations[0]
+    assert "--repo" in argv
+    repo_value = argv[argv.index("--repo") + 1]
+    assert repo_value == "ralph", (
+        f"--repo must use ctx.repo_name='ralph', not queue_root.parent.name "
+        f"(='{ctx.queue_root.parent.name}'); got {repo_value!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # reconcile_all
 # ---------------------------------------------------------------------------

@@ -161,6 +161,10 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=sweep_cfg,
+        # Always derive the repo name from the primary checkout, NOT
+        # from queue_root.parent.name — the latter would be "queue" in
+        # worktree mode (the .ralph-work/queue/ dir).
+        repo_name=cfg.repo_path.name,
     )
     result = run_sweep(ctx=sweep_ctx)
     log.info(
