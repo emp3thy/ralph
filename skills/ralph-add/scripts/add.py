@@ -186,11 +186,18 @@ def _derive_target_repo(repo: Path) -> str:
     message points at the ``--target-repo`` escape hatch.
     """
     try:
-        url = _run_git(repo, "remote", "get-url", "origin").strip()
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
         raise _FatalError(
             "no git remote 'origin' configured; pass --target-repo explicitly"
         ) from exc
+    url = result.stdout.strip()
     ssh_match = _SSH_ORIGIN_RE.match(url)
     if ssh_match:
         host, path = ssh_match.group(1), ssh_match.group(2)
