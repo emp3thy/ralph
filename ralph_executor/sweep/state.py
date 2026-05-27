@@ -1,0 +1,95 @@
+"""Per-PBI sidecar persisted at ``<pbi-dir>/.ralph-state.json``.
+
+The sidecar lets the sweep distinguish "PR has new active comments" from
+"PR has comments we already turned into a feedback PBI last round". Without
+this, the sweep would loop forever generating duplicate feedback PBIs.
+
+Storage layout (per-PBI, NOT global):
+
+    {
+      "last_feedback_sweep": "2026-05-24T12:00:00+00:00",
+      "last_feedback_round": 2,
+      "last_seen_comment_ids": ["10:1", "10:2", "11:5"]
+    }
+
+Comment ids are stored as ``"<thread_id>:<comment_id>"`` so they remain
+unique across threads.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+SIDECAR_FILENAME = ".ralph-state.json"
+
+
+@dataclass(frozen=True)
+class SweepSidecar:
+    last_feedback_sweep: datetime | None
+    last_feedback_round: int
+    last_seen_comment_ids: set[str] = field(default_factory=set)
+
+
+def load_sidecar(pbi_dir: Path) -> SweepSidecar:
+    """Return the sidecar for ``pbi_dir``. Missing or corrupt → empty default."""
+    path = pbi_dir / SIDECAR_FILENAME
+    if not path.is_file():
+        return SweepSidecar(
+            last_feedback_sweep=None,
+            last_feedback_round=0,
+            last_seen_comment_ids=set(),
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return SweepSidecar(
+            last_feedback_sweep=None,
+            last_feedback_round=0,
+            last_seen_comment_ids=set(),
+        )
+    if not isinstance(raw, dict):
+        return SweepSidecar(
+            last_feedback_sweep=None,
+            last_feedback_round=0,
+            last_seen_comment_ids=set(),
+        )
+    sweep_raw = raw.get("last_feedback_sweep")
+    sweep_dt: datetime | None
+    if isinstance(sweep_raw, str) and sweep_raw:
+        try:
+            sweep_dt = datetime.fromisoformat(sweep_raw)
+        except ValueError:
+            sweep_dt = None
+    else:
+        sweep_dt = None
+    return SweepSidecar(
+        last_feedback_sweep=sweep_dt,
+        last_feedback_round=int(raw.get("last_feedback_round", 0) or 0),
+        last_seen_comment_ids={str(x) for x in (raw.get("last_seen_comment_ids") or [])},
+    )
+
+
+def write_sidecar(pbi_dir: Path, sidecar: SweepSidecar) -> None:
+    """Atomically write ``sidecar`` to ``pbi_dir/.ralph-state.json``."""
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_feedback_sweep": (
+            sidecar.last_feedback_sweep.isoformat()
+            if sidecar.last_feedback_sweep is not None
+            else None
+        ),
+        "last_feedback_round": sidecar.last_feedback_round,
+        "last_seen_comment_ids": sorted(sidecar.last_seen_comment_ids),
+    }
+    tmp = pbi_dir / (SIDECAR_FILENAME + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(pbi_dir / SIDECAR_FILENAME)
+
+
+def merge_seen_comment_ids(existing: set[str], new: Iterable[str]) -> set[str]:
+    """Return the union of ``existing`` and ``new`` (never shrinks)."""
+    return existing | {str(x) for x in new}

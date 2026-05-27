@@ -34,3 +34,14 @@
 - Tests: `uv run --no-sync pytest tests/executor/sweep/test_pr_state.py -v` → 5 passed.
 - Toolchain: `ruff check` clean, `ruff format` (1 file reformatted then clean), `mypy ralph_executor` clean (23 source files).
 - Notes: Task 5 next (sidecar state + feedback PBI renderer). No host-binding work yet; both are pure-Python file/template logic.
+
+## Iteration 4 — 2026-05-27T03:00:00+00:00
+
+- Task 5: created `ralph_executor/sweep/state.py` (`SweepSidecar` dataclass + `load_sidecar` / `write_sidecar` / `merge_seen_comment_ids`) and `ralph_executor/sweep/feedback_pbi.py` (`render` returning a `FeedbackPbiBundle`: FEEDBACK.md with verbatim boilerplate, PR-LINK.md, ORIGINAL.md, HISTORY.md). Wrote `tests/executor/sweep/test_state.py` (5 tests) and `tests/executor/sweep/test_feedback_pbi.py` (4 tests). Red steps confirmed twice: `ModuleNotFoundError` for each new module before the implementation landed.
+- Plan deviations (intentional):
+  - Plan literally writes `from datetime import datetime, timezone` + `timezone.utc`; ruff `UP017` rejects under py3.12. Used `from datetime import UTC, ...` instead (semantically identical, same wire format).
+  - Added a defensive `isinstance(raw, dict)` check in `load_sidecar` after `json.loads` so a JSON file containing a non-object (e.g. a bare array, a string) is treated like a corrupt sidecar instead of crashing on `.get`.
+  - FEEDBACK boilerplate refers generically to "the PR skill" rather than `ado-pr` (host-agnostic; matches Iteration 3's binding strategy).
+- Tests: `uv run --no-sync pytest tests/executor/sweep/test_state.py tests/executor/sweep/test_feedback_pbi.py -v` → 9 passed.
+- Toolchain: `ruff check ralph_executor/sweep tests/executor/sweep` clean, `ruff format --check` clean (11 files), `mypy ralph_executor` clean (25 source files).
+- Notes: Task 6 next — orchestration (`run`, `SweepContext`, conftest fixtures, runner tests). The host-skill binding (`pr-github` vs `ado-pr`) gets decided in Task 7 at the loop driver, not here; `pr_state.fetch` is already host-agnostic so Task 6 stays generic too.
