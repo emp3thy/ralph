@@ -931,7 +931,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/skills.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/skills.py`. Structure:
   - Module docstring: heuristic substring scan over `SKILL.md` body and `scripts/*.py`. Markdown regions wrapped with `<!-- ralph-doctor: ignore -->` ... `<!-- /ralph-doctor: ignore -->` are dropped before the search. Python lines containing `# noqa: ralph-doctor` are dropped.
   - Module constants:
     ```python
@@ -949,13 +949,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If offences non-empty: dedupe + sort. Derive a short list of skill names from the offending paths (the immediate parent directory if `parent.name == "scripts"`, otherwise the parent itself). Return `severity="error"`, `status="fail"`, message naming the skills, `details={"offending_files": offences}`.
     - Otherwise: `pass` with message `f"No installed skill calls AskUserQuestion in its main path (scanned {skills_seen} skill(s))."` and `details={"skills_scanned": skills_seen}`.
 
-- [ ] 2. Run the skills tests:
+- [x] 2. Run the skills tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestSkillsCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/skills.py
   git commit -m "feat(ralph-doctor): implement skills check (AskUserQuestion scan)"
