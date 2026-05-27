@@ -89,6 +89,18 @@ def fake_ado_pr_skill(tmp_path: Path) -> Path:
             """
         )
     )
+    (skill_dir / "merge_pr.py").write_text(
+        textwrap.dedent(
+            """\
+            import json, os, sys
+            pr_id = sys.argv[sys.argv.index("--pr-id") + 1]
+            rc = int(os.environ.get(f"SHIM_MERGE_PR_{pr_id}_EXIT", "0"))
+            payload = {"pr_id": int(pr_id), "merged": rc == 0, "sha": "deadbeef"}
+            print(json.dumps(payload))
+            sys.exit(rc)
+            """
+        )
+    )
     return skill_dir
 
 
@@ -101,6 +113,7 @@ def register_pr(
     last_activity_at: str = "2026-05-23T08:00:00+00:00",
     threads: list[dict[str, Any]] | None = None,
     source_branch: str = "ralph/WI-1234",
+    mergeable_state: str = "unknown",
 ) -> None:
     """Register canned ``show`` and ``read_threads`` JSON for a PR id."""
     show: dict[str, Any] = {
@@ -113,6 +126,12 @@ def register_pr(
         "reviewers": ["reviewer@example.com"],
         "url": f"https://example/_git/svc/pullrequest/{pr_id}",
         "last_activity_at": last_activity_at,
+        "mergeable_state": mergeable_state,
     }
     monkeypatch.setenv(f"SHIM_SHOW_{pr_id}_JSON", json.dumps(show))
     monkeypatch.setenv(f"SHIM_THREADS_{pr_id}_JSON", json.dumps(threads or []))
+
+
+def register_merge_pr_exit(monkeypatch: pytest.MonkeyPatch, pr_id: int, exit_code: int) -> None:
+    """Set the shim ``merge_pr.py`` exit code for ``pr_id``."""
+    monkeypatch.setenv(f"SHIM_MERGE_PR_{pr_id}_EXIT", str(exit_code))
