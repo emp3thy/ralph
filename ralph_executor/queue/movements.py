@@ -29,8 +29,21 @@ from ralph_executor.safety.events import (
     signature_from_text,
 )
 from ralph_executor.types import PBI, PBIStatus
+from ralph_executor.worktree import queue_worktree_path
 
 log = logging.getLogger(__name__)
+
+
+def _queue_repo(cfg: ExecutorConfig) -> Path:
+    """Filesystem path of the checkout that owns ``.ralph/`` for this run.
+
+    In worktree mode this is the long-lived queue worktree; in legacy
+    single-checkout mode it is the primary checkout itself. Both are
+    real working trees backed by the same ``.git/`` object store.
+    """
+    if cfg.use_worktrees:
+        return queue_worktree_path(cfg.repo_path)
+    return cfg.repo_path
 
 
 class QueueMovementError(RuntimeError):
@@ -83,25 +96,32 @@ def _move(
 ) -> PBI:
     if pbi.status != expected_state:
         raise QueueMovementError(f"PBI {pbi.id} must be in {expected_state}, found in {pbi.status}")
-    git_ops.checkout(cfg.repo_path, cfg.queue_branch)
+    queue_repo = _queue_repo(cfg)
+    if not cfg.use_worktrees:
+        # Legacy single-checkout: primary holds queue_branch, swap to it
+        # before touching .ralph/. In worktree mode the queue worktree is
+        # already pinned to queue_branch — no checkout needed (and a
+        # checkout would actually fail because the branch is owned by the
+        # queue worktree, not the primary).
+        git_ops.checkout(queue_repo, cfg.queue_branch)
 
-    src = cfg.repo_path / ".ralph" / expected_state / pbi.id
-    dst = cfg.repo_path / ".ralph" / target_state / pbi.id
+    src = queue_repo / ".ralph" / expected_state / pbi.id
+    dst = queue_repo / ".ralph" / target_state / pbi.id
     if not src.is_dir():
         raise QueueMovementError(f"source path {src} does not exist on the queue branch")
     if dst.exists():
         raise QueueMovementError(f"destination {dst} already exists; refusing to overwrite")
 
-    git_ops.mv(cfg.repo_path, src, dst)
+    git_ops.mv(queue_repo, src, dst)
 
     entry_name = ENTRY_FILE_BY_TYPE[pbi.type]
     _rewrite_status(dst / entry_name, target_state)
 
     git_ops.commit_all(
-        cfg.repo_path,
+        queue_repo,
         f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
     )
-    git_ops.push(cfg.repo_path, cfg.queue_branch)
+    git_ops.push(queue_repo, cfg.queue_branch)
     return parse_pbi_directory(dst, status=target_state)
 
 

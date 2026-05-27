@@ -57,6 +57,11 @@ from ralph_executor.safety import (
     open_log,
 )
 from ralph_executor.types import PBI
+from ralph_executor.worktree import (
+    ensure_worktree,
+    queue_worktree_path,
+    work_worktree_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +134,15 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
 
 
 def _ensure_on_queue_branch(cfg: ExecutorConfig) -> None:
+    """Make the primary checkout's HEAD match ``cfg.queue_branch``.
+
+    In worktree mode the queue worktree owns ``cfg.queue_branch`` and
+    git refuses to check the same branch out in two worktrees, so this
+    is a no-op — callers that need to read ``.ralph/`` use the queue
+    worktree path instead.
+    """
+    if cfg.use_worktrees:
+        return
     if git_ops.current_branch(cfg.repo_path) != cfg.queue_branch:
         git_ops.checkout(cfg.repo_path, cfg.queue_branch)
 
@@ -191,6 +205,13 @@ def _persist_iteration_writes(
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
     log.debug("pulling %s", cfg.queue_branch)
+    if cfg.use_worktrees:
+        # Materialise (or reuse) the queue worktree before pulling so the
+        # very first iteration on a fresh repo still has a path to update.
+        queue_wt = queue_worktree_path(cfg.repo_path)
+        ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
+        git_ops.pull(queue_wt, cfg.queue_branch)
+        return
     _ensure_on_queue_branch(cfg)
     git_ops.pull(cfg.repo_path, cfg.queue_branch)
 
@@ -208,7 +229,18 @@ def _feature_branch_name(pbi: PBI) -> str:
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
-    Sequence (matches the spec's "Branch dance"):
+    Worktree mode (``cfg.use_worktrees=True``):
+      1. Ensure the long-lived queue worktree at
+         ``<repo>/.ralph-work/queue/`` is on ``cfg.queue_branch``.
+      2. ``git fetch origin`` so ``origin/<main_branch>`` and any
+         existing ``origin/ralph/<PBI-ID>`` ref are current.
+      3. ``move_inbox_to_current`` operates against the queue worktree
+         (movements._move resolves the path via ``cfg.use_worktrees``).
+      4. Materialise the per-PBI work worktree at
+         ``<repo>/.ralph-work/repo-<PBI-ID>/`` on ``ralph/<PBI-ID>``,
+         forked from ``origin/<main_branch>`` when the branch is new.
+
+    Legacy single-checkout mode (``cfg.use_worktrees=False``):
       1. ``move_inbox_to_current`` (commits + pushes on ralph-queue,
          emits ``PBI_OPENED`` to the event log for the cycle detector).
       2. ``git pull main``.
@@ -218,6 +250,9 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
+    if cfg.use_worktrees:
+        return _claim_pbi_worktree(cfg, pbi)
+
     event_log = open_log(cfg.repo_path)
     try:
         moved = move_inbox_to_current(
@@ -238,6 +273,42 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         git_ops.checkout_new(cfg.repo_path, branch)
     # Return to the queue branch so .ralph/ is visible on disk.
     git_ops.checkout(cfg.repo_path, cfg.queue_branch)
+    return moved
+
+
+def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
+    """Worktree-mode implementation of ``_claim_pbi``.
+
+    The primary checkout's branch is never touched. ``.ralph/`` reads
+    and writes go through the queue worktree; code edits go through the
+    per-PBI work worktree.
+    """
+    queue_wt = queue_worktree_path(cfg.repo_path)
+    ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
+    # Update remote-tracking refs so the work worktree can fork from a
+    # current ``origin/<main_branch>``. We deliberately do NOT advance the
+    # local ``<main_branch>`` ref — keeping main untouched avoids fighting
+    # the primary checkout when the operator happens to have main checked
+    # out there.
+    git_ops.fetch(cfg.repo_path)
+    event_log = open_log(cfg.repo_path)
+    try:
+        moved = move_inbox_to_current(
+            cfg,
+            pbi,
+            event_log=event_log,
+            now=datetime.now(tz=UTC),
+        )
+    finally:
+        event_log.close()
+    branch = _feature_branch_name(moved)
+    work_wt = work_worktree_path(cfg.repo_path, moved.id)
+    ensure_worktree(
+        cfg.repo_path,
+        worktree_path=work_wt,
+        branch=branch,
+        create_branch_from=f"origin/{cfg.main_branch}",
+    )
     return moved
 
 

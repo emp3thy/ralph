@@ -203,6 +203,10 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        # Existing executor tests exercise the legacy single-checkout
+        # branch-dance path; worktree-mode coverage gets its own fixtures
+        # alongside the dedicated tests in Task 9.
+        use_worktrees=False,
     )
 
 

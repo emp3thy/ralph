@@ -22,6 +22,29 @@ from .git_ops import GitCommandError, _run_git
 log = logging.getLogger(__name__)
 
 
+WORKTREE_ROOT_DIR = ".ralph-work"
+
+
+def queue_worktree_path(repo_root: Path) -> Path:
+    """Canonical filesystem path of the long-lived queue worktree.
+
+    All ``.ralph/`` reads and writes route through this path when
+    ``cfg.use_worktrees`` is True, so the executor never has to swap the
+    primary checkout's branch to see the queue tree.
+    """
+    return Path(repo_root) / WORKTREE_ROOT_DIR / "queue"
+
+
+def work_worktree_path(repo_root: Path, pbi_id: str) -> Path:
+    """Canonical filesystem path of the per-PBI work worktree.
+
+    Each in-flight PBI gets its own worktree at
+    ``<repo>/.ralph-work/repo-<PBI-id>/`` so concurrent or sequential
+    PBIs do not clobber each other's working tree state.
+    """
+    return Path(repo_root) / WORKTREE_ROOT_DIR / f"repo-{pbi_id}"
+
+
 def _local_branch_exists(git_root: Path, branch: str) -> bool:
     """Return True if ``refs/heads/<branch>`` exists in ``git_root``.
 
@@ -183,8 +206,11 @@ def remove_worktree(git_root: Path, worktree_path: Path) -> None:
 
 __all__ = [
     "GitCommandError",
+    "WORKTREE_ROOT_DIR",
     "ensure_worktree",
     "list_worktrees",
+    "queue_worktree_path",
     "remove_worktree",
+    "work_worktree_path",
     "worktree_branch",
 ]
