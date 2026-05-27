@@ -45,3 +45,13 @@
 - Task 5: Three new tests in `tests/executor/sweep/test_pr_state.py` — clean carries verbatim, `null` → "", missing → "". Kept `SHOW_PAYLOAD_MERGED` constant unchanged (avoids semantically wrong "merged completed PR with clean mergeable_state" in unrelated tests); per-test overrides instead.
 - Tests: `uv run pytest tests/executor/sweep/test_pr_state.py -q` → 9 passed. Full `tests/executor/sweep/` → 70 passed (no regressions).
 - Lint: `ruff check` clean on touched files. `ruff format` reformatted `test_pr_state.py` (line-fit only). `mypy ralph_executor/sweep/types.py ralph_executor/sweep/pr_state.py` → no issues.
+
+## Iteration 6 — 2026-05-27T23:30:00+00:00
+
+- Task 6: Added `Action.MERGE_PR = "merge-pr"` to the `Action` StrEnum in `ralph_executor/sweep/types.py` (placed before `NOOP`).
+- Task 6: Added `auto_merge_clean_prs: bool = False` field to `SweepConfig` in `ralph_executor/sweep/runner.py` (after `now`, default-valued so existing constructors stay compiling).
+- Task 6: Added predicate to `decide_action`: `if config.auto_merge_clean_prs and pr.merge_state == "clean": return Decision(action=Action.MERGE_PR, reason="auto-merging clean PR")`. Positioned AFTER the new-comments branch (so active human comments still preempt) and BEFORE the stale branch (so we don't ping a reviewer on a PR we are about to merge).
+- Task 6: Extended `_snapshot` helper in `tests/executor/sweep/test_decide_action.py` with `merge_state: str = ""` kwarg threaded through `PrSnapshot(...)`. Added four tests: `test_flag_off_clean_is_noop`, `test_flag_on_clean_yields_merge_pr`, `test_flag_on_dirty_is_not_merge_pr`, `test_new_comments_preempt_merge_pr`.
+- Tests: `uv run pytest tests/executor/sweep/test_decide_action.py -q` → 16 passed. Full `tests/executor/sweep/` → 74 passed (no regressions; +4 new).
+- Lint: `uv run ruff check` on touched files → All checks passed. `uv run ruff format --check` → 3 files already formatted. `uv run mypy ralph_executor/sweep/runner.py ralph_executor/sweep/types.py` → no issues.
+- Notes: `MERGE_PR` placed before `NOOP` for visual grouping (active dispatch values cluster, then NOOP terminator). String value `"merge-pr"` matches the hyphenated convention of other Action members. Dispatch wiring (Task 7) will add the `elif a is Action.MERGE_PR` branch in `_dispatch`; this iteration leaves the `# pragma: no cover` defensive `else` to absorb the new enum value without dispatching, which is acceptable for one iteration boundary.
