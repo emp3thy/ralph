@@ -328,6 +328,62 @@ def test_json_repo_field_is_canonical_path_not_temp_worktree(
         )
 
 
+def test_empty_string_repo_arg_is_rejected_cleanly(
+    show_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot LOW on PR #26: `--repo ""` is falsy and used
+    to fall through to the else branch where `Path(args.repos_file).resolve()`
+    crashed with `TypeError` because repos_file is None when --repo
+    was given. Now treated as a clean rejection."""
+    exit_code = show_module.main(["--repo", ""])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "--repo must not be empty" in err
+
+
+def test_snapshot_failure_cleans_up_partial_worktree(
+    tmp_path: Path,
+    git_repo_with_pbis: Path,
+    show_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot LOW on PR #26: if _extract_queue_snapshot
+    fails AFTER _create_worktree (e.g. enumerate_state hits PermissionError),
+    the partial worktree must still be cleaned up. Without the inner
+    try/except, the snapshot is never appended and the finally block
+    never sees it — leaving a stale .git/worktrees/<name> metadata entry.
+
+    Mocks enumerate_state to raise after the worktree is created; asserts
+    the service repo's `.git/worktrees/` has no leftover entries
+    matching our naming scheme."""
+    import scripts.pbi_reader as reader_mod
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise PermissionError("simulated state-dir access denial")
+
+    monkeypatch.setattr(reader_mod, "enumerate_state", _boom)
+    # Also patch the imported name on the status module (since status.py
+    # imports `enumerate_state` directly into its namespace).
+    monkeypatch.setattr(show_module, "enumerate_state", _boom)
+
+    # The cleanup runs in the inner except + finally, then re-raises.
+    # We don't care that main() raises here — only that the partial
+    # worktree was cleaned up before it did.
+    with pytest.raises(PermissionError):
+        show_module.main(["--repo", str(git_repo_with_pbis), "--json"])
+    capsys.readouterr()
+
+    # No stale worktree entry left in the service repo's .git/worktrees/
+    worktrees_dir = git_repo_with_pbis / ".git" / "worktrees"
+    if worktrees_dir.exists():
+        leftover = list(worktrees_dir.iterdir())
+        # Service-auth-work base — any entry naming our scheme is a leak.
+        leaked = [p for p in leftover if "__ralph-queue__" in p.name]
+        assert not leaked, f"stale worktree entries leaked: {leaked}"
+
+
 def test_two_repos_sharing_basename_do_not_collide(
     tmp_path: Path,
     show_module: ModuleType,

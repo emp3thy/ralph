@@ -8,6 +8,7 @@ working tree is untouched.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -104,7 +105,13 @@ def _load_repos_config(args: argparse.Namespace) -> list[RepoConfig]:
     configs: list[RepoConfig] = []
     branch = args.branch
 
-    if args.repo:
+    # Use `is not None`, not truthiness: an explicit `--repo ""` would
+    # otherwise fall through to the else branch and crash on
+    # Path(None).resolve() because args.repos_file is None when --repo
+    # was given (argparse mutually-exclusive group).
+    if args.repo is not None:
+        if not args.repo.strip():
+            raise _FatalError("--repo must not be empty")
         path = Path(args.repo).resolve()
         configs.append(RepoConfig(path=path, name=path.name, branch=branch))
     else:
@@ -366,7 +373,25 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: list[RepoSnapshot] = []
     try:
         for config in configs:
-            snap = _extract_queue_snapshot(config, states=states, worktree_root=worktree_root)
+            # _extract_queue_snapshot may call _create_worktree (which
+            # registers an entry in the service repo's .git/worktrees/)
+            # and THEN fail in enumerate_state (e.g. PermissionError on
+            # a state dir). Without this guard, the unfinished worktree
+            # never gets appended to `snapshots` and the finally block
+            # below never cleans it up — leaving stale git metadata in
+            # the service repo. Catch broadly, best-effort prune the
+            # candidate path under worktree_root, then re-raise so the
+            # outer handlers see the original error.
+            try:
+                snap = _extract_queue_snapshot(config, states=states, worktree_root=worktree_root)
+            except Exception:
+                if not args.no_cleanup:
+                    path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
+                    candidate = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
+                    if candidate.exists():
+                        with contextlib.suppress(Exception):
+                            _remove_worktree(config.path, candidate)
+                raise
             snapshots.append(snap)
 
         all_rows: list[PBIRow | PBIRowError] = []
