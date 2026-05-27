@@ -64,6 +64,7 @@ def _load_schema_validator() -> Callable[[object], list[str]]:
                 "source_url",
                 "source_host",
                 "raw",
+                "target_repo",
             )
             return [f"missing required key: {k}" for k in required if k not in doc]
 

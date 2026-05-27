@@ -137,6 +137,7 @@ def _doc(
     attachments: list[dict[str, str]] | None = None,
     child_ids: list[str] | None = None,
     source_host: str = "github",
+    target_repo: str = "https://github.com/emp3thy/ralph",
 ) -> dict[str, object]:
     return {
         "id": f"WI-{number}",
@@ -152,6 +153,7 @@ def _doc(
         "source_url": f"https://example.invalid/issues/{number}",
         "source_host": source_host,
         "raw": {},
+        "target_repo": target_repo,
     }
 
 
@@ -291,6 +293,7 @@ def test_work_item_id_with_path_traversal_is_rejected(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
+        "target_repo": "https://github.com/emp3thy/ralph",
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
@@ -339,6 +342,7 @@ def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
+        "target_repo": "https://github.com/emp3thy/ralph",
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))

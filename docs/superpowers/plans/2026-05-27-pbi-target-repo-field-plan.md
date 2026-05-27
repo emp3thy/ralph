@@ -958,7 +958,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "feat(ralph-add): write target_repo 
 - Modify: `skills/workitem-fetch-github/scripts/schema.py`
 - Modify: `prompt/PROMPT.md` (one-line note)
 
-- [ ] **Step 7.1: Add `target_repo` to the workitem-fetch schema**
+- [x] **Step 7.1: Add `target_repo` to the workitem-fetch schema**
 
 In `skills/workitem-fetch-github/scripts/schema.py`, find the list of required keys (referenced from `add.py:35-63` fallback). Add `"target_repo"` to the required tuple.
 
@@ -985,7 +985,7 @@ REQUIRED_KEYS: tuple[str, ...] = (
 
 If the schema also validates per-field types/shapes, add a value-type check for `target_repo`: must be a string (validates as a URL but light-touch; the strict validator lives in `scripts/validate_samples.py`).
 
-- [ ] **Step 7.2: Update PROMPT.md**
+- [x] **Step 7.2: Update PROMPT.md**
 
 In `prompt/PROMPT.md`, find a section that describes PBI structure (e.g., "PBI files" or "frontmatter"). Add a one-line note:
 
@@ -995,7 +995,7 @@ In `prompt/PROMPT.md`, find a section that describes PBI structure (e.g., "PBI f
 
 No behavior change for claude this PBI — claude does NOT read this field yet. The note is informational so the field doesn't look mysterious if claude inspects PBI frontmatter.
 
-- [ ] **Step 7.3: Run targeted tests + ruff + mypy**
+- [x] **Step 7.3: Run targeted tests + ruff + mypy**
 
 ```bash
 uv run pytest tests/skills/ -v
@@ -1005,7 +1005,7 @@ uv run mypy --strict skills/workitem-fetch-github/scripts/schema.py
 
 If existing tests on `schema.py` fail because they don't supply `target_repo` in their fixture data: update the fixture(s) to include the field.
 
-- [ ] **Step 7.4: Commit**
+- [x] **Step 7.4: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add skills/workitem-fetch-github/scripts/schema.py prompt/PROMPT.md

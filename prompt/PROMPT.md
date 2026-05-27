@@ -43,6 +43,11 @@ worktree.
 The `type` frontmatter field on the PBI entry file dictates which files
 to read and in what order.
 
+Every PBI's frontmatter also carries a `target_repo` field — an HTTPS
+URL of the repo the PBI applies to (e.g.
+`https://github.com/emp3thy/ralph`). This is informational metadata for
+now; the loop does not yet act on it.
+
 **All PBI types — always read first, in this order:**
 
 1. `prompt/PROMPT.md` (this file)

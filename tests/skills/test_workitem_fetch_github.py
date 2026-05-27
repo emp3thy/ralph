@@ -145,6 +145,7 @@ def test_feature_issue_produces_normalised_feature_json(
     assert "/healthz" in payload["body_markdown"]
     assert payload["source_host"] == "github"
     assert payload["source_url"].endswith(f"/issues/{ISSUE_NUMBER}")
+    assert payload["target_repo"] == f"https://github.com/{OWNER}/{REPO_NAME}"
     assert payload["parent_id"] is None
     assert payload["child_ids"] == []
     assert len(payload["attachments"]) == 1

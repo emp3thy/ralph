@@ -38,6 +38,7 @@ class WorkItemJson(TypedDict):
     source_url: str
     source_host: SourceHost
     raw: dict[str, object]
+    target_repo: str
 
 
 REQUIRED_KEYS: tuple[str, ...] = (
@@ -54,6 +55,7 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "source_url",
     "source_host",
     "raw",
+    "target_repo",
 )
 ALLOWED_TYPES: tuple[str, ...] = ("feature", "bug")
 ALLOWED_SEVERITIES: tuple[str, ...] = ("critical", "high", "normal", "low")
@@ -87,4 +89,6 @@ def validate(document: object) -> list[str]:
     parent_id = document["parent_id"]
     if parent_id is not None and not isinstance(parent_id, str):
         errors.append("parent_id must be a string or null")
+    if not isinstance(document["target_repo"], str):
+        errors.append("target_repo must be a string")
     return errors
