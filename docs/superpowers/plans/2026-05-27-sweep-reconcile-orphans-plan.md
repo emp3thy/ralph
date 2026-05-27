@@ -283,7 +283,7 @@ git -C /c/Users/gethi/source/ralph commit -m "test(pr-github): failing tests for
 **Files:**
 - Create: `skills/pr-github/scripts/lookup_by_branch.py`
 
-- [ ] **Step 2.1: Scaffold the script**
+- [x] **Step 2.1: Scaffold the script**
 
 Create `skills/pr-github/scripts/lookup_by_branch.py` with the imports and argparse shape that mirrors `show.py`:
 
@@ -355,7 +355,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 ```
 
-- [ ] **Step 2.2: Add the PR-state mapping helper**
+- [x] **Step 2.2: Add the PR-state mapping helper**
 
 Append to the same file:
 
@@ -378,7 +378,7 @@ def _map_pr_state(raw_state: str, merged_at: str | None) -> str:
     raise FatalError(f"unexpected GitHub PR state: {raw_state!r}")
 ```
 
-- [ ] **Step 2.3: Add the lookup function**
+- [x] **Step 2.3: Add the lookup function**
 
 ```python
 def _lookup_pr(
@@ -439,7 +439,7 @@ def _lookup_branch(client: Any, repo: str, branch: str) -> bool:
     return True
 ```
 
-- [ ] **Step 2.4: Add the main entry point**
+- [x] **Step 2.4: Add the main entry point**
 
 ```python
 def main(argv: list[str] | None = None) -> int:
@@ -473,7 +473,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2.5: Run the failing tests and verify they now pass**
+- [x] **Step 2.5: Run the failing tests and verify they now pass**
 
 ```bash
 uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
@@ -481,7 +481,7 @@ uv run pytest tests/skills/test_pr_github.py -k "lookup_by_branch" -v
 
 Expected: **9 PASS**.
 
-- [ ] **Step 2.6: Run ruff + mypy on the new file**
+- [x] **Step 2.6: Run ruff + mypy on the new file**
 
 ```bash
 uv run ruff check skills/pr-github/scripts/lookup_by_branch.py
@@ -490,7 +490,7 @@ uv run mypy --strict skills/pr-github/scripts/lookup_by_branch.py
 
 Expected: all green. If mypy complains about `client: Any` — that's intentional; `load_client()` returns an internal dataclass. If it asks for an import, satisfy it minimally without changing the runtime shape.
 
-- [ ] **Step 2.7: Commit**
+- [x] **Step 2.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add skills/pr-github/scripts/lookup_by_branch.py
