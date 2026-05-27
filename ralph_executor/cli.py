@@ -397,8 +397,12 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     from datetime import UTC, datetime, timedelta
 
+    from ralph_executor.loop import _queue_repo_root
+
     ctx = SweepContext(
-        queue_root=cfg.repo_path / ".ralph",
+        # Worktree-mode awareness: `.ralph/` lives in the queue worktree
+        # (not the primary checkout, which has no `.ralph/`).
+        queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=SweepConfig(
             ralph_author_email=ralph_email,
@@ -406,6 +410,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             stale_threshold=timedelta(days=3),
             now=datetime.now(tz=UTC),
         ),
+        # repo_name must come from the primary checkout name, not from
+        # queue_root.parent.name (which is "queue" in worktree mode).
+        repo_name=cfg.repo_path.name,
     )
 
     report = reconcile_all(ctx, dry_run=args.dry_run)
