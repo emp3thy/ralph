@@ -8,7 +8,18 @@
 
 **Tech Stack:** Python 3.12, dataclasses, `tomllib`, pytest, ruff, mypy strict.
 
-**Confidence:** All tasks ≥ 90%. Pre-flight checks (current line numbers, existing test fixtures, `_TOML_KNOWN_KEYS` membership) verified before writing the plan.
+**Confidence (per task):**
+
+| Task | % | Why |
+|---|---|---|
+| 1. Failing config tests | 98% | Pattern exists at `test_config_toml.py:157+` (gh_owner/halt_webhook promotion). Direct replication. |
+| 2. Promote knobs in config | 95% | Mechanical add to known patterns. Dataclass field-order trap is explicit in Step 2.3 (defaults must come last because `pr_check_poll_*` fields have none). |
+| 3. Failing sweep tests | 90% | Uses `dataclasses.replace` + monkeypatches against `ralph_executor.sweep.runner.SweepConfig`. Risk: the monkeypatch path is the right import target — if `loop.py` imports `SweepConfig` differently (e.g. `from ralph_executor.sweep.runner import SweepConfig`), the patch must target the local name. Mitigation: Step 3.2 patches at the canonical location; if the test fails for that reason, switch the patch target to `ralph_executor.loop.SweepConfig`. |
+| 4. Refactor _run_sweep | 95% | Lines + replacement code explicit. Only risk: existing tests elsewhere that `setenv` these names — Step 4.3 includes a grep to find them. |
+| 5. Stub doc update | 96% | Append text. Conditional test branch (skip if no existing snapshot test) avoids fabricating new test surface. |
+| 6. Full-suite gate | 92% | Could surface a latent test that monkeypatched the env vars and is no longer wired to the new path. Step 6.1's "Common failure modes" lists the two known shapes + fixes. |
+
+All tasks ≥ 90%. Pre-flight checks (line numbers, fixture shape, `_TOML_KNOWN_KEYS` membership, existing test patterns) verified against the current tree before writing the plan.
 
 **Spec:** `docs/superpowers/specs/2026-05-27-promote-sweep-knobs-to-config-design.md`
 
