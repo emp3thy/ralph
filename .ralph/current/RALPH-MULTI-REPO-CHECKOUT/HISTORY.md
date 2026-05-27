@@ -27,3 +27,16 @@
 - Tests: green (5/5 targeted) `uv run pytest tests/executor/test_config_toml.py -k workspace_root`; wider sweep `uv run pytest tests/executor tests/safety` 459/459 green
 - Lint: ruff check + ruff format (auto-applied to config.py + test file) + mypy --strict on config.py all clean
 - Notes: Plan's draft test `f'workspace_root = "{target}"'` blew up under Windows tmp paths — `\U` / `\t` in the path interpolate as TOML escape sequences (`Invalid hex value`). Fix: `.as_posix()` the path when writing the TOML literal so it round-trips through `Path()` identically. Recorded as a better-memory gotcha (id 397b291f). Next iteration: Task 5 — refactor `worktree.work_worktree_path` to take a `clone_root` parameter (sub-90% confidence step per plan; mitigation = chase all call sites first).
+
+## Iteration 5 — 2026-05-28T02:00:00Z
+
+- Step: Tasks 5 + 6 landed in earlier sessions (commits ff0a383, d2c5f31) but were not recorded in HISTORY.md. Verified on-disk state: `work_worktree_path(clone_root, pbi_id)` signature already refactored in `ralph_executor/worktree.py:38`; `PBI` dataclass already carries `target_repo`/`target_info`/`work_worktree` fields in `ralph_executor/types.py:54-56`. No code changes this iteration — just back-fill.
+- Tests: not run (no code change)
+- Notes: Catching up the log. Next iteration starts Task 7 (largest task — split into sub-steps 7A/7B/7C per plan mitigation).
+
+## Iteration 6 — 2026-05-28T02:30:00Z
+
+- Step: Task 7 sub-step 7A — `_ClaimError` exception class + `_read_target_repo_from_pbi` helper in `ralph_executor/loop.py` + 4 tests in `tests/executor/test_loop.py` (frontmatter read; missing target_repo raises; missing entry file raises; BUG.md entry file path)
+- Tests: green (4/4 targeted) `uv run pytest tests/executor/test_loop.py -k "read_target_repo_from_pbi" -v`; full test_loop.py 35/35 green
+- Lint: ruff check + ruff format --check + mypy --strict on loop.py all clean
+- Notes: Plan test stub `pbi = PBI(...)` without target_repo defaults — the field defaults to `""` per Task 6's design so legacy construction still compiles, which the helper rejects via the `if not target_repo:` branch (treats empty string same as missing). Added a 4th test (BUG.md probe) not in the plan to exercise the entry-file probe order. Next iteration: sub-step 7B — `parse_target_repo` + host check inside `_claim_pbi`, with 2 negative-path tests (non-github host, malformed URL).
