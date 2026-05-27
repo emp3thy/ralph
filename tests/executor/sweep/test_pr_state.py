@@ -88,7 +88,7 @@ def test_fetch_parses_merged_pr_with_no_threads(
     monkeypatch.setenv("SHIM_SHOW_JSON", json.dumps(SHOW_PAYLOAD_MERGED))
     monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_EMPTY))
 
-    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill)
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
 
     assert isinstance(snapshot, PrSnapshot)
     assert snapshot.pr_id == 100
@@ -108,7 +108,7 @@ def test_fetch_parses_threads_into_typed_snapshots(
     )
     monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_WITH_HUMAN_COMMENT))
 
-    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill)
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
 
     assert len(snapshot.threads) == 1
     thread = snapshot.threads[0]
@@ -128,7 +128,7 @@ def test_fetch_last_activity_at_falls_back_to_comments_when_show_missing(
     monkeypatch.setenv("SHIM_SHOW_JSON", json.dumps(show))
     monkeypatch.setenv("SHIM_THREADS_JSON", json.dumps(THREADS_PAYLOAD_WITH_HUMAN_COMMENT))
 
-    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill)
+    snapshot = fetch(pr_id=100, skill_scripts_path=shim_skill, repo_name="ralph")
     assert snapshot.last_activity_at == datetime(2026, 5, 24, 9, 0, 0, tzinfo=UTC)
 
 
@@ -139,7 +139,7 @@ def test_fetch_raises_on_nonzero_exit(tmp_path: Path) -> None:
     (skill_dir / "read_threads.py").write_text("print('[]')")
 
     with pytest.raises(AdoSkillError) as excinfo:
-        fetch(pr_id=100, skill_scripts_path=skill_dir)
+        fetch(pr_id=100, skill_scripts_path=skill_dir, repo_name="ralph")
     assert "exit code 7" in str(excinfo.value)
 
 
@@ -150,4 +150,44 @@ def test_fetch_raises_on_invalid_json(tmp_path: Path) -> None:
     (skill_dir / "read_threads.py").write_text("print('[]')")
 
     with pytest.raises(AdoSkillError, match="JSON"):
-        fetch(pr_id=100, skill_scripts_path=skill_dir)
+        fetch(pr_id=100, skill_scripts_path=skill_dir, repo_name="ralph")
+
+
+def test_fetch_passes_repo_and_pr_id_flags(tmp_path: Path) -> None:
+    """Regression: skill scripts require ``--repo`` + ``--pr-id`` flags.
+
+    Positional invocation fails with argparse exit 2 (
+    "the following arguments are required: --repo, --pr-id").
+    Each script must receive both flags with the values passed to ``fetch``.
+    """
+    skill_dir = tmp_path / "pr-skill-capture" / "scripts"
+    skill_dir.mkdir(parents=True)
+    show_argv_log = tmp_path / "show_argv.json"
+    threads_argv_log = tmp_path / "threads_argv.json"
+    (skill_dir / "show.py").write_text(
+        textwrap.dedent(
+            f"""\
+            import json, sys
+            from pathlib import Path
+            Path({str(show_argv_log)!r}).write_text(json.dumps(sys.argv[1:]))
+            print(json.dumps({{"pr_id": 7, "status": "active"}}))
+            """
+        )
+    )
+    (skill_dir / "read_threads.py").write_text(
+        textwrap.dedent(
+            f"""\
+            import json, sys
+            from pathlib import Path
+            Path({str(threads_argv_log)!r}).write_text(json.dumps(sys.argv[1:]))
+            print("[]")
+            """
+        )
+    )
+
+    fetch(pr_id=7, skill_scripts_path=skill_dir, repo_name="ralph")
+
+    show_argv = json.loads(show_argv_log.read_text())
+    threads_argv = json.loads(threads_argv_log.read_text())
+    assert show_argv == ["--repo", "ralph", "--pr-id", "7"]
+    assert threads_argv == ["--repo", "ralph", "--pr-id", "7"]

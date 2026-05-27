@@ -266,7 +266,11 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
     attempts = _read_attempts(pbi_dir)
     sidecar = sidecar_state.load_sidecar(pbi_dir)
     try:
-        snapshot = pr_state.fetch(pr_id=pr_id, skill_scripts_path=ctx.ado_pr_scripts_path)
+        snapshot = pr_state.fetch(
+            pr_id=pr_id,
+            skill_scripts_path=ctx.ado_pr_scripts_path,
+            repo_name=ctx.repo_name or ctx.queue_root.parent.name,
+        )
     except AdoSkillError as err:
         raise _SweepPbiError(f"PR skill failure: {err}") from err
 

@@ -43,15 +43,21 @@ class _RunOutput:
     returncode: int
 
 
-def fetch(*, pr_id: int, skill_scripts_path: Path) -> PrSnapshot:
-    """Invoke ``show.py`` and ``read_threads.py`` for ``pr_id``; build PrSnapshot."""
+def fetch(*, pr_id: int, skill_scripts_path: Path, repo_name: str) -> PrSnapshot:
+    """Invoke ``show.py`` and ``read_threads.py`` for ``pr_id``; build PrSnapshot.
+
+    The skill scripts (``show.py``, ``read_threads.py``) require ``--repo``
+    and ``--pr-id`` flags (argparse ``required=True``); positional invocation
+    fails with exit 2. ``repo_name`` must be non-empty for the same reason.
+    """
+    args = ["--repo", repo_name, "--pr-id", str(pr_id)]
     show_payload = _invoke_skill(
         skill_scripts_path / "show.py",
-        [str(pr_id)],
+        args,
     )
     threads_payload = _invoke_skill(
         skill_scripts_path / "read_threads.py",
-        [str(pr_id)],
+        args,
     )
     threads = _parse_threads(threads_payload)
     last_activity_at = _compute_last_activity_at(show_payload, threads)

@@ -73,7 +73,7 @@ def fake_ado_pr_skill(tmp_path: Path) -> Path:
         textwrap.dedent(
             """\
             import json, os, sys
-            pr_id = sys.argv[1]
+            pr_id = sys.argv[sys.argv.index("--pr-id") + 1]
             payload = json.loads(os.environ[f"SHIM_SHOW_{pr_id}_JSON"])
             print(json.dumps(payload))
             """
@@ -83,7 +83,7 @@ def fake_ado_pr_skill(tmp_path: Path) -> Path:
         textwrap.dedent(
             """\
             import json, os, sys
-            pr_id = sys.argv[1]
+            pr_id = sys.argv[sys.argv.index("--pr-id") + 1]
             payload = json.loads(os.environ[f"SHIM_THREADS_{pr_id}_JSON"])
             print(json.dumps(payload))
             """
