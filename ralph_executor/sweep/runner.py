@@ -399,10 +399,12 @@ def _emit_feedback_pbi(
     new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
     # write_sidecar calls tmp.write_text + tmp.replace; both can raise
     # OSError (ENOSPC etc.). Wrap so it's caught per-PBI rather than
-    # escaping run() and leaving an inconsistent half-state where the
-    # feedback PBI dir was written but the sidecar wasn't (which would
-    # make every subsequent sweep try to re-create the same feedback
-    # PBI and hit "already exists; refusing to overwrite").
+    # escaping run(). If the sidecar fails AFTER the feedback dir has
+    # been written, tear down the feedback dir too — otherwise the
+    # next sweep computes the same next_round (sidecar wasn't bumped),
+    # hits target_dir.exists() and raises "already exists" forever,
+    # permanently stranding the PBI. Mirrors the cleanup in the
+    # feedback-dir except block above.
     try:
         sidecar_state.write_sidecar(
             pbi_dir,
@@ -415,6 +417,7 @@ def _emit_feedback_pbi(
             ),
         )
     except OSError as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
         raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _append_history(pbi_dir, decision.reason, ctx)
 
