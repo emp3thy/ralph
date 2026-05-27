@@ -304,7 +304,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Write `tests/skills/test_ralph_doctor.py` covering the runner and every check. The file must contain nine test classes — `TestRunnerExitCodes`, `TestHostDispatch`, `TestPermissionsCheck`, `TestHooksCheck`, `TestSkillsCheck`, `TestMcpCheck`, `TestAuthCheck`, `TestHostStagingCheck`, `TestGithubAuthCheck`, `TestAdoAuthCheck` — and the helpers / fixtures described below. The module-loading fixture intentionally fails first (the runner does not yet exist) — that is the red step.
+- [x] 1. Write `tests/skills/test_ralph_doctor.py` covering the runner and every check. The file must contain nine test classes — `TestRunnerExitCodes`, `TestHostDispatch`, `TestPermissionsCheck`, `TestHooksCheck`, `TestSkillsCheck`, `TestMcpCheck`, `TestAuthCheck`, `TestHostStagingCheck`, `TestGithubAuthCheck`, `TestAdoAuthCheck` — and the helpers / fixtures described below. The module-loading fixture intentionally fails first (the runner does not yet exist) — that is the red step.
 
   Top of file:
   ```python
@@ -516,13 +516,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   - `test_200_means_routing_is_wrong_and_fails` — mock 200 → `fail`; message contains `"200"`.
   - `test_missing_env_var_fails` — `delenv("ADO_PAT")` → `fail`; message contains `ADO_PAT`.
 
-- [ ] 2. Run the new test file. Every test must fail because `check.py` and the check modules do not yet exist:
+- [x] 2. Run the new test file. Every test must fail because `check.py` and the check modules do not yet exist:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: the module-loading fixtures raise `AssertionError: missing entry script at ...` and `AssertionError: missing check module at ...`. This is the red step.
 
-- [ ] 3. Do NOT commit yet. The failing tests are consumed by Tasks 4–12. Holding the commit until Task 4 keeps the repo in a coherent state (red, with the runner missing) rather than red-and-impossible-to-import.
+- [x] 3. Do NOT commit yet. The failing tests are consumed by Tasks 4–12. Holding the commit until Task 4 keeps the repo in a coherent state (red, with the runner missing) rather than red-and-impossible-to-import.
 
 ---
 
@@ -533,7 +533,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/check.py`. The runner has four responsibilities: load the check contract (via `importlib.util.spec_from_file_location` because the directory name contains a hyphen), parse CLI args, read `RALPH_GIT_HOST` and resolve the host-auth check (`github_auth` or `ado_auth`), then iterate `REGISTRY` invoking each check and skipping the non-dispatched host check.
+- [x] 1. Create `skills/ralph-doctor/scripts/check.py`. The runner has four responsibilities: load the check contract (via `importlib.util.spec_from_file_location` because the directory name contains a hyphen), parse CLI args, read `RALPH_GIT_HOST` and resolve the host-auth check (`github_auth` or `ado_auth`), then iterate `REGISTRY` invoking each check and skipping the non-dispatched host check.
 
   Imports + constants + logging setup:
   ```python
@@ -830,13 +830,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
       raise SystemExit(main())
   ```
 
-- [ ] 2. Run the runner-level + host-dispatch tests; per-check tests are still red because their modules are missing:
+- [x] 2. Run the runner-level + host-dispatch tests; per-check tests are still red because their modules are missing:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestRunnerExitCodes tests/skills/test_ralph_doctor.py::TestHostDispatch -v
   ```
   Expected: every `TestRunnerExitCodes` test fails with a `FileNotFoundError` raised inside `_load_check_module` — that is the documented behaviour when a referenced check is missing. The `test_unset_host_returns_two` and `test_unknown_host_returns_two` cases pass (they exit 2 before any check is loaded). The runner itself is correct.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add tests/skills/test_ralph_doctor.py skills/ralph-doctor/scripts/check.py
   git commit -m "feat(ralph-doctor): add runner with host dispatch + failing test suite"
