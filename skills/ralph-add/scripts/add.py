@@ -193,6 +193,10 @@ def _derive_target_repo(repo: Path) -> str:
             capture_output=True,
             text=True,
         )
+    except FileNotFoundError as exc:
+        raise _FatalError(
+            "git binary not found on PATH; install git or pass --target-repo explicitly"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         raise _FatalError(
             "no git remote 'origin' configured; pass --target-repo explicitly"
