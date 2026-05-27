@@ -57,7 +57,11 @@ def fetch(*, pr_id: int, skill_scripts_path: Path) -> PrSnapshot:
     last_activity_at = _compute_last_activity_at(show_payload, threads)
     show_dict: dict[str, Any] = show_payload if isinstance(show_payload, dict) else {}
     return PrSnapshot(
-        pr_id=int(show_dict.get("pr_id", pr_id)),
+        # dict.get(key, default) returns default only when KEY ABSENT.
+        # If the skill returns {"pr_id": null}, .get returns None and
+        # int(None) raises TypeError, escaping AdoSkillError handling.
+        # Use `or pr_id` to coerce None/0/"" back to the fallback.
+        pr_id=int(show_dict.get("pr_id") or pr_id),
         title=str(show_dict.get("title", "")),
         pr_status=_coerce_pr_status(show_dict.get("status")),
         ci_status=_coerce_ci_status(show_dict.get("ci_status")),
@@ -166,8 +170,8 @@ def _parse_threads(payload: object) -> tuple[ThreadSnapshot, ...]:
                 continue
             comments.append(
                 CommentSnapshot(
-                    thread_id=int(entry.get("thread_id", 0)),
-                    comment_id=int(c.get("comment_id", 0)),
+                    thread_id=int(entry.get("thread_id") or 0),
+                    comment_id=int(c.get("comment_id") or 0),
                     author_email=str(c.get("author_email", "")).lower(),
                     posted_at=_parse_iso(c.get("posted_at")),
                     text=str(c.get("text", "")),
@@ -179,7 +183,7 @@ def _parse_threads(payload: object) -> tuple[ThreadSnapshot, ...]:
             )
         threads.append(
             ThreadSnapshot(
-                thread_id=int(entry.get("thread_id", 0)),
+                thread_id=int(entry.get("thread_id") or 0),
                 status=_coerce_thread_status(entry.get("status")),
                 file_path=(
                     str(entry["file_path"]) if isinstance(entry.get("file_path"), str) else None

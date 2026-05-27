@@ -335,10 +335,18 @@ def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> 
 
 
 def _append_history(pbi_dir: Path, reason: str, ctx: SweepContext) -> None:
+    # Wrap IO at the source so EVERY call site (PING_REVIEWER dispatch,
+    # _move_with_history, _emit_feedback_pbi) gets OSError → _SweepPbiError
+    # conversion uniformly. Without this, a disk-full / EACCES /
+    # EROFS error from read_text or write_text escapes run()'s
+    # per-PBI isolation and aborts the remaining sweep.
     history = pbi_dir / "HISTORY.md"
     line = f"- {ctx.config.now.isoformat()} sweep: {reason}\n"
-    prior = history.read_text(encoding="utf-8") if history.exists() else ""
-    history.write_text(prior + line, encoding="utf-8")
+    try:
+        prior = history.read_text(encoding="utf-8") if history.exists() else ""
+        history.write_text(prior + line, encoding="utf-8")
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to append HISTORY.md in {pbi_dir}: {exc}") from exc
 
 
 def _emit_feedback_pbi(
@@ -361,11 +369,16 @@ def _emit_feedback_pbi(
     target_dir = ctx.queue_root / "inbox" / bundle.directory_name
     if target_dir.exists():
         raise _SweepPbiError(f"feedback PBI {target_dir} already exists; refusing to overwrite")
-    target_dir.mkdir(parents=True)
-    (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
-    (target_dir / "PR-LINK.md").write_text(bundle.pr_link_md, encoding="utf-8")
-    (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
-    (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
+    # Wrap the file IO so EXDEV / EACCES / ENOSPC become _SweepPbiError
+    # rather than escaping run()'s per-PBI isolation.
+    try:
+        target_dir.mkdir(parents=True)
+        (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
+        (target_dir / "PR-LINK.md").write_text(bundle.pr_link_md, encoding="utf-8")
+        (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
+        (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to write feedback PBI {target_dir}: {exc}") from exc
 
     new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
     sidecar_state.write_sidecar(
