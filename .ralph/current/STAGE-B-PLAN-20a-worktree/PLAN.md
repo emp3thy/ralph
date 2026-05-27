@@ -68,6 +68,8 @@ Implementation notes:
 
 Commit: `feat(worktree): worktree.py helpers (ensure/list/remove/branch)`
 
+- [x] Task 1 complete (iteration 1, 2026-05-27, commit d20581a)
+
 ### Task 2 — config knob
 
 Add to `ExecutorConfig`:
