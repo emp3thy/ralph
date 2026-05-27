@@ -321,7 +321,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 **Files:**
 - Modify: `ralph_executor/sweep/runner.py`
 
-- [ ] **Step 7.1: Add `_invoke_merge_pr` helper**
+- [x] **Step 7.1: Add `_invoke_merge_pr` helper**
 
   Local to `runner.py`. Mirror `pr_state._invoke_skill` shape (`subprocess.run` with `check=False`, `capture_output=True`, `sys.executable`). Take `pbi_dir`, `pr_id`, `repo_name`, `skill_scripts_path` and return the integer exit code:
 
@@ -345,7 +345,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 
   (Import `subprocess` and `sys` at the top.)
 
-- [ ] **Step 7.2: Add the dispatch branch**
+- [x] **Step 7.2: Add the dispatch branch**
 
   In `_dispatch`, after `MOVE_TO_DONE` branch:
   ```python
@@ -363,7 +363,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
           raise _SweepPbiError(f"merge_pr returned unexpected exit {rc}")
   ```
 
-- [ ] **Step 7.3: `uv run pytest tests/executor/sweep/test_runner.py` until existing tests stay green.**
+- [x] **Step 7.3: `uv run pytest tests/executor/sweep/test_runner.py` until existing tests stay green.**
 
 ---
 
