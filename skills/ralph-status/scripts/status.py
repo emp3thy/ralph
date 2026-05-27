@@ -419,6 +419,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except Exception as exc:
+        # Catch-all so unexpected runtime failures (PermissionError,
+        # OSError, etc. from the reader) produce a clean error + exit 2
+        # rather than a raw traceback. The finally block below still
+        # runs and removes any partial worktree state.
+        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     finally:
         if not args.no_cleanup:
             for snap in snapshots:
