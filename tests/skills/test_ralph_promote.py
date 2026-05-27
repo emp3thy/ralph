@@ -470,3 +470,39 @@ def test_promote_appends_history_when_prior_crash_was_between_write_and_append(
     assert history2.count("severity: normal -> high") == 1, (
         f"second run must not duplicate the entry; got:\n{history2}"
     )
+
+
+def test_promote_records_audit_for_repeated_cycle(
+    git_repo: Path,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-5. Scoping HISTORY dedup to the
+    entire file suppressed legitimate audit entries when the same
+    severity transition recurred (promote normal→high, demote
+    high→normal, promote normal→high again). The dedup must only fire
+    in the partial-failure retry window."""
+    _seed_pbi(git_repo, "inbox", "WI-670", pbi_type="feature", severity="normal")
+
+    rc = promote_module.main(
+        ["--pbi-id", "WI-670", "--severity", "high", "--repo", str(git_repo), "--no-push"]
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    rc = promote_module.main(
+        ["--pbi-id", "WI-670", "--severity", "normal", "--repo", str(git_repo), "--no-push"]
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    rc = promote_module.main(
+        ["--pbi-id", "WI-670", "--severity", "high", "--repo", str(git_repo), "--no-push"]
+    )
+    assert rc == 0
+
+    history = (git_repo / ".ralph" / "inbox" / "WI-670" / "HISTORY.md").read_text(encoding="utf-8")
+    assert history.count("severity: normal -> high") == 2, (
+        f"round 3 must record a fresh audit entry; got:\n{history}"
+    )
+    assert history.count("severity: high -> normal") == 1

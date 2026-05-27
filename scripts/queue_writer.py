@@ -218,6 +218,15 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     raise QueueWriterError("frontmatter block is not closed by a second '---'")
 
 
+def _flatten_history_field(value: str) -> str:
+    """Collapse embedded newlines/CRs so a multi-line ``--note`` or
+    ``detail`` does not corrupt the one-entry-per-block format of
+    HISTORY.md (each entry is a contiguous run of ``- key: value`` lines
+    terminated by a blank line).
+    """
+    return value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 def parse_frontmatter_text(text: str, *, source: str = "<text>") -> tuple[dict[str, Any], str]:
     """Split ``text`` into ``(frontmatter_dict, body_text)``.
 
@@ -299,12 +308,17 @@ def append_history(
         - detail: <detail>
     """
     history = pbi_dir / "HISTORY.md"
+    # Flatten embedded newlines in actor/action/detail so a multi-line
+    # ``--note`` from a shell with escape expansion (``$'line1\nline2'``)
+    # does not corrupt the one-entry-per-block format of HISTORY.md (the
+    # downstream dedup check and human readers both rely on each entry
+    # being a contiguous run of ``- key: value`` lines).
     entry = (
         "---\n"
         f"- timestamp: {_now_iso()}\n"
-        f"- actor: {actor}\n"
-        f"- action: {action}\n"
-        f"- detail: {detail}\n"
+        f"- actor: {_flatten_history_field(actor)}\n"
+        f"- action: {_flatten_history_field(action)}\n"
+        f"- detail: {_flatten_history_field(detail)}\n"
     )
     with history.open("a", encoding="utf-8") as fh:
         fh.write(entry)

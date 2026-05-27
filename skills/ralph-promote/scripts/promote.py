@@ -199,13 +199,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        # Gate write + append independently. Working-tree severity tells
-        # us whether the frontmatter still needs writing; HISTORY.md's
-        # content tells us whether the audit entry is already there.
-        # A previous crash BETWEEN write_frontmatter and append_history
-        # leaves working_severity == args.severity (no need to re-write)
-        # but HISTORY.md missing the entry — gating both on the working
-        # tree alone would lose the audit trail forever.
+        # Gate write + append independently.
+        # ``working_severity != args.severity`` → frontmatter still needs
+        # writing.
+        # Suppress the append ONLY when working_severity == args.severity
+        # AND head_severity != args.severity — the precise partial-
+        # failure-retry signature where the prior attempt wrote the
+        # working tree but never committed. Inside that window the
+        # prior attempt may also have appended the HISTORY entry; skip
+        # only if it's already there.
+        # Outside the retry window — i.e. the working tree disagrees
+        # with the target, so this is a fresh promote — always append,
+        # even if HISTORY happens to contain an identical detail string
+        # from an older now-reversed cycle (normal→high→normal→high).
         if working_severity != args.severity:
             frontmatter["severity"] = args.severity
             frontmatter["updated_at"] = _now_iso()
@@ -213,8 +219,11 @@ def main(argv: list[str] | None = None) -> int:
 
         history_file = pbi_dir / "HISTORY.md"
         history_detail = f"severity: {previous_severity} -> {args.severity}"
-        history_text = history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
-        if history_detail not in history_text:
+        is_partial_retry = working_severity == args.severity and head_severity != args.severity
+        skip_append = False
+        if is_partial_retry and history_file.is_file():
+            skip_append = history_detail in history_file.read_text(encoding="utf-8")
+        if not skip_append:
             append_history(
                 pbi_dir,
                 actor="ralph-promote",

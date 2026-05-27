@@ -214,31 +214,39 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
-        # Gate each side-effect on its own observable state. The previous
-        # `not is_retry` umbrella missed two partial-failure shapes:
-        # (a) prior crash AFTER write_frontmatter but BEFORE append_history
-        #     left the working tree at the destination's status but the
-        #     HISTORY entry missing — re-running with `if not is_retry`
-        #     also skipped the append, losing the audit trail forever;
-        # (b) prior crash AFTER append_history but BEFORE _move_directory
-        #     (e.g. destination already exists) left HISTORY with the
-        #     entry while old_path was still in blocked/ — re-running with
-        #     `not is_retry` re-appended a duplicate.
+        # Gate each side-effect on its own observable state. ``is_retry``
+        # already short-circuits the post-move case (PBI on disk at
+        # ``new_path`` while HEAD still has it in ``blocked/``). Inside
+        # the not-yet-moved branch we still need per-step idempotency:
+        # frontmatter write only when the destination status isn't yet
+        # there, and HISTORY append always EXCEPT when this is the
+        # partial-failure-retry-pre-move shape AND HISTORY already
+        # carries the entry. Outside that retry window we always append,
+        # even if HISTORY happens to contain identical ``--note`` text
+        # from an older blocked→inbox→blocked cycle.
         if not is_retry:
             entry_file = _resolve_entry_file(old_path)
             frontmatter, body = read_frontmatter(entry_file)
-            if frontmatter.get("status") != args.destination:
+            current_status = frontmatter.get("status")
+            wrote_frontmatter = False
+            if current_status != args.destination:
                 frontmatter["status"] = args.destination
                 frontmatter["updated_at"] = _now_iso()
                 if args.destination == "inbox":
                     frontmatter["attempts"] = 0
                 write_frontmatter(entry_file, frontmatter, body)
+                wrote_frontmatter = True
 
             history_file = old_path / "HISTORY.md"
-            history_text = (
-                history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
-            )
-            if args.note not in history_text:
+            # Partial-failure retry (pre-move): working tree's frontmatter
+            # already shows the destination status (so we did NOT just
+            # write it this run). HISTORY may or may not carry the entry
+            # from the previous failed attempt — dedup only here.
+            is_pre_move_retry = not wrote_frontmatter and current_status == args.destination
+            skip_append = False
+            if is_pre_move_retry and history_file.is_file():
+                skip_append = args.note in history_file.read_text(encoding="utf-8")
+            if not skip_append:
                 append_history(
                     old_path,
                     actor="ralph-triage",

@@ -460,3 +460,76 @@ def test_triage_runs_full_path_when_moved_on_disk_but_not_committed(
     assert history.count("return-to-inbox") == 1, (
         f"HISTORY must not gain a duplicate entry on retry; got:\n{history}"
     )
+
+
+def test_triage_records_audit_when_note_text_was_used_in_earlier_cycle(
+    git_repo: Path,
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-5 flagged that scoping the HISTORY
+    dedup to the entire file suppresses legitimate audit entries when the
+    operator reuses note text in a later blocked→inbox cycle. The dedup
+    must only fire during the partial-failure retry window."""
+    note = "reset and retry the build"
+    _seed_blocked_pbi(git_repo, "WI-1500")
+
+    # Cycle 1: blocked → inbox with the note.
+    rc = triage_module.main(
+        [
+            "--pbi-id",
+            "WI-1500",
+            "--to",
+            "inbox",
+            "--note",
+            note,
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert rc == 0
+    capsys.readouterr()
+
+    # Re-block the PBI on ralph-queue (simulate a later failure that
+    # moved it back to blocked/) so we can triage it again with the same
+    # note.
+    _git(git_repo, "checkout", "ralph-queue")
+    import shutil
+
+    src = git_repo / ".ralph" / "inbox" / "WI-1500"
+    dst = git_repo / ".ralph" / "blocked" / "WI-1500"
+    shutil.move(str(src), str(dst))
+    # Update frontmatter back to blocked status.
+    entry = dst / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    text = text.replace("status: inbox", "status: blocked")
+    text = text.replace("attempts: 0", "attempts: 3")
+    entry.write_text(text, encoding="utf-8")
+    _git(git_repo, "add", ".ralph")
+    _git(git_repo, "commit", "-m", "chore(test): re-block WI-1500")
+    _git(git_repo, "push", "origin", "ralph-queue")
+    _git(git_repo, "checkout", "main")
+
+    # Cycle 2: blocked → inbox with the SAME note. Must produce a fresh
+    # HISTORY entry even though the note text matches the cycle-1 entry.
+    rc = triage_module.main(
+        [
+            "--pbi-id",
+            "WI-1500",
+            "--to",
+            "inbox",
+            "--note",
+            note,
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert rc == 0
+
+    history = (git_repo / ".ralph" / "inbox" / "WI-1500" / "HISTORY.md").read_text(encoding="utf-8")
+    assert history.count(note) == 2, (
+        f"cycle 2 must record a fresh audit entry even though the note "
+        f"text was reused from cycle 1; got:\n{history}"
+    )

@@ -192,6 +192,26 @@ def test_read_frontmatter_rejects_file_without_fence(tmp_path: Path) -> None:
     assert "frontmatter" in str(exc.value).lower()
 
 
+def test_append_history_flattens_embedded_newlines_in_detail(tmp_path: Path) -> None:
+    """Regression: BugBot PR #35 round-5 flagged that an ``--note`` from
+    a shell with escape-sequence expansion (``$'line1\\nline2'``)
+    produced a multi-line HISTORY entry, breaking the one-entry-per-block
+    format that the dedup check and human readers rely on. Newlines in
+    ``actor``/``action``/``detail`` must be collapsed to spaces."""
+    pbi_dir = tmp_path / "WI-LF"
+    pbi_dir.mkdir()
+    append_history(
+        pbi_dir,
+        actor="ralph-test",
+        action="triage",
+        detail="first line\nsecond line\r\nthird line",
+    )
+    history = (pbi_dir / "HISTORY.md").read_text(encoding="utf-8")
+    detail_lines = [line for line in history.splitlines() if line.startswith("- detail:")]
+    assert len(detail_lines) == 1, f"expected exactly one detail line; got:\n{history}"
+    assert detail_lines[0] == "- detail: first line second line third line"
+
+
 def test_read_frontmatter_handles_crlf_line_endings(tmp_path: Path) -> None:
     """Regression: BugBot PR #35 flagged that ``_split_frontmatter``
     used ``rstrip("\\n")`` on each line, so under Windows CRLF
