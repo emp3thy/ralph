@@ -1,0 +1,122 @@
+# Long-running pod mode.
+# Use when the team's ROSA cluster is the durable home of Ralph
+# and the executor loops continuously over a single service repo.
+#
+# IMAGE TAG NOTE: the image tag substituted into __IMAGE__ below
+# MUST match the host this deployment targets. Use
+#   ralph-executor:<ver>-github   for GitHub deployments,
+#   ralph-executor:<ver>-ado      for ADO deployments.
+# The image's baked ENV RALPH_GIT_HOST tells the executor and
+# ralph-doctor which host to probe; you do NOT need to set
+# RALPH_GIT_HOST yourself in this manifest.
+#
+# See docs/deployment.md ("Choosing a mode" and the Phase 1 /
+# Phase 2 sections) before applying.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ralph-executor
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/component: executor
+    app.kubernetes.io/part-of: ralph
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ralph-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ralph-executor
+        app.kubernetes.io/component: executor
+        app.kubernetes.io/part-of: ralph
+    spec:
+      serviceAccountName: ralph
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ralph-executor
+          # Replaced at deploy time. The tag MUST include the
+          # -github or -ado suffix that matches the deployment's
+          # target host. The image's ENV RALPH_GIT_HOST drives
+          # the executor's behaviour; do NOT add RALPH_GIT_HOST
+          # to the env block below.
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          args: ["run"]
+          env:
+            - name: RALPH_RUN_ONCE
+              value: "false"
+          envFrom:
+            - configMapRef:
+                name: ralph-config
+            - secretRef:
+                name: ralph-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+              ephemeral-storage: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+              ephemeral-storage: "10Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            exec:
+              command: ["ralph-executor", "health", "--ready"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["ralph-executor", "health", "--live"]
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 5
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/ralph
+            - name: tmp
+              mountPath: /tmp
+            - name: claude-config
+              mountPath: /etc/ralph/.claude
+              readOnly: true
+            - name: home
+              mountPath: /home/ralph
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 8Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: claude-config
+          configMap:
+            name: ralph-claude-settings
+            items:
+              - key: settings.json
+                path: settings.json
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi
+      terminationGracePeriodSeconds: 30
+      restartPolicy: Always

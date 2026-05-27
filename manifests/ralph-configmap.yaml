@@ -1,0 +1,86 @@
+# Non-secret configuration. Used by both the Deployment and the
+# Job. Update RALPH_REPO_URL per service.
+#
+# NOTE on RALPH_GIT_HOST:
+#   RALPH_GIT_HOST is NOT in this ConfigMap. It is baked into the
+#   image via the Dockerfile's ENV directive at build time and is
+#   immutable for the lifetime of that image. To switch a
+#   deployment from GitHub to ADO (or vice versa), redeploy with
+#   the host-matching image tag — do not try to override
+#   RALPH_GIT_HOST at runtime.
+#
+# NOTE on host-specific values:
+#   The non-secret host config (org URL, project, owner) lives
+#   in the Secret rather than here, because production teams
+#   typically treat the ADO org URL / GitHub org as sensitive
+#   (they reveal internal naming). If your team treats them as
+#   non-sensitive, you can move them here — the executor reads
+#   them from envFrom either way.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ralph-config
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/part-of: ralph
+data:
+  RALPH_REPO_URL: "https://example.invalid/replace-me"
+  RALPH_QUEUE_BRANCH: "ralph-queue"
+  RALPH_MAIN_BRANCH: "main"
+  ANTHROPIC_MODEL: "claude-opus-4-7"
+  RALPH_LOG_LEVEL: "INFO"
+  RALPH_RUN_ONCE: "false"
+---
+# The baked .claude/settings.json projected as a ConfigMap so
+# operators can override the image's defaults without rebuilding.
+# The data MUST match /etc/ralph/.claude/settings.json in the
+# image. Plan 12 task "Bake settings.json" creates both from the
+# same source. This ConfigMap is host-agnostic — it uses the
+# canonical Skill(pr) and Skill(workitem-fetch) entries.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ralph-claude-settings
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/part-of: ralph
+data:
+  settings.json: |
+    {
+      "_comment": "Mirror of /etc/ralph/.claude/settings.json baked into the image. Host-agnostic — uses canonical Skill(pr)/Skill(workitem-fetch) entries.",
+      "dangerouslySkipPermissions": true,
+      "model": "claude-opus-4-7",
+      "permissions": {
+        "allow": [
+          "Bash",
+          "Edit",
+          "Write",
+          "Read",
+          "Grep",
+          "Glob",
+          "Task",
+          "TodoWrite",
+          "WebFetch",
+          "WebSearch",
+          "Skill(pr)",
+          "Skill(workitem-fetch)",
+          "Skill(ralph-add)",
+          "Skill(ralph-status)",
+          "Skill(ralph-cancel)",
+          "Skill(ralph-promote)",
+          "Skill(ralph-triage)",
+          "Skill(ralph-doctor)"
+        ],
+        "deny": [
+          "Bash(rm -rf /*)",
+          "Bash(sudo *)",
+          "Bash(curl http://*)",
+          "Bash(wget http://*)"
+        ]
+      },
+      "env": {
+        "RALPH_LOG_LEVEL": "INFO"
+      }
+    }

@@ -1,0 +1,103 @@
+# Coder workspaces task-pod mode.
+# Use when a separate scheduler dispatches one pod per PBI.
+#
+# IMAGE TAG NOTE: as with the Deployment, the image tag MUST
+# match the host this job is dispatched against. The image's
+# baked ENV RALPH_GIT_HOST is the source of truth — do not
+# override RALPH_GIT_HOST in this manifest.
+#
+# The Job is INTENTIONALLY a template. A scheduler clones this
+# YAML, fills in `__PBI_ID__` (used in the Job name suffix and
+# as an env var) and `__IMAGE__`, and applies it. The leading
+# sentinel comment marks it as a template so preflight catches
+# accidental direct application.
+#
+# RALPH-TEMPLATE-DO-NOT-APPLY-AS-IS
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ralph-task-__PBI_ID__
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/component: task
+    app.kubernetes.io/part-of: ralph
+    ralph.local/pbi-id: "__PBI_ID__"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ralph-executor
+        app.kubernetes.io/component: task
+        app.kubernetes.io/part-of: ralph
+        ralph.local/pbi-id: "__PBI_ID__"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: ralph
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ralph-executor
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          args: ["run", "--once", "--pbi-id", "__PBI_ID__"]
+          env:
+            - name: RALPH_RUN_ONCE
+              value: "true"
+            - name: RALPH_PBI_ID
+              value: "__PBI_ID__"
+          envFrom:
+            - configMapRef:
+                name: ralph-config
+            - secretRef:
+                name: ralph-secrets
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+              ephemeral-storage: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+              ephemeral-storage: "20Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: scratch
+              mountPath: /var/ralph
+            - name: tmp
+              mountPath: /tmp
+            - name: claude-config
+              mountPath: /etc/ralph/.claude
+              readOnly: true
+            - name: home
+              mountPath: /home/ralph
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 16Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: claude-config
+          configMap:
+            name: ralph-claude-settings
+            items:
+              - key: settings.json
+                path: settings.json
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

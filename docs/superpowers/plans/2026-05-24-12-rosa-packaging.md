@@ -1405,9 +1405,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Create each manifest file with the exact content listed in the "Manifests (full content the implementer writes)" section above. Use LF line endings.
+- [x] 1. Create each manifest file with the exact content listed in the "Manifests (full content the implementer writes)" section above. Use LF line endings.
 
-- [ ] 2. Validate each manifest's YAML syntax:
+- [x] 2. Validate each manifest's YAML syntax:
   ```
   uv run python -c "
   import yaml
@@ -1425,7 +1425,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   "
   ```
 
-- [ ] 3. If `kubectl` is available, run client-side dry-run apply for the manifests that should validate (configmap, secrets template, rbac):
+- [ ] 3. If `kubectl` is available, run client-side dry-run apply for the manifests that should validate (configmap, secrets template, rbac): [SKIPPED — kubectl not installed in executor environment]
   ```
   kubectl apply --dry-run=client -f manifests/ralph-configmap.yaml
   kubectl apply --dry-run=client -f manifests/ralph-rbac.yaml
@@ -1433,7 +1433,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   The deployment and job will fail dry-run because of `__IMAGE__` — that's expected.
 
-- [ ] 4. Create `tests/packaging/test_manifests.py`:
+- [x] 4. Create `tests/packaging/test_manifests.py`:
   ```python
   """Structural tests for k8s manifests."""
 
@@ -1571,7 +1571,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       )
   ```
 
-- [ ] 5. Run the manifest tests:
+- [x] 5. Run the manifest tests:
   ```
   uv run pytest tests/packaging/test_manifests.py -v
   ```
