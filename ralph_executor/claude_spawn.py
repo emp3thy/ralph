@@ -474,6 +474,12 @@ def spawn_claude_p(
     # so the claude CLI picks up its own OAuth session.
     if cfg.anthropic_api_key:
         env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
+    # Subprocess-scoped bridge for the Claude Code per-bash-tool ceiling.
+    # Claude Code's own default is 600_000 (10 min); ralph's default is
+    # 900_000 (15 min), overridable per repo via TOML and per shell via
+    # env. Setting on ``env`` (not os.environ) keeps the override scoped
+    # to this child — ralph's parent env stays untouched.
+    env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     proc = subprocess.Popen(

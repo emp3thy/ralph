@@ -57,6 +57,12 @@ CONFIG_TOML_STUB = """\
 # RALPH_STALE_DAYS spelling for backwards compatibility.
 # bot_author_email = "ralph-bot@example.com"
 # stale_days = 3
+#
+# Claude Code per-bash-tool ceiling in milliseconds. Default 900000 (15 min);
+# Claude Code's own default is 600000 (10 min). Propagated to the spawned
+# claude subprocess via the BASH_MAX_TIMEOUT_MS env var (subprocess-scoped —
+# ralph's parent env is not touched). Must be positive.
+# bash_max_timeout_ms = 900000
 """
 
 
