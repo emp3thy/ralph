@@ -76,10 +76,7 @@ def main() -> int:
                 else:
                     counts[result] += 1
                 print(f"{rel}: {result}")
-    print(
-        f"\n{counts['updated']} updated, {counts['skipped']} skipped, "
-        f"{counts['error']} errors."
-    )
+    print(f"\n{counts['updated']} updated, {counts['skipped']} skipped, {counts['error']} errors.")
     return 0 if counts["error"] == 0 else 2
 
 

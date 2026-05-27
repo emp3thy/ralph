@@ -7,11 +7,7 @@ from pathlib import Path
 
 def _make_pbi(pbi_dir: Path, *, with_target_repo: bool) -> Path:
     pbi_dir.mkdir(parents=True)
-    target_line = (
-        "target_repo: https://github.com/emp3thy/ralph\n"
-        if with_target_repo
-        else ""
-    )
+    target_line = "target_repo: https://github.com/emp3thy/ralph\n" if with_target_repo else ""
     entry = pbi_dir / "PBI.md"
     entry.write_text(
         "---\n"
@@ -64,9 +60,7 @@ def test_migrate_inserts_before_closing_fence(tmp_path: Path) -> None:
     lines = _read(entry).splitlines()
     fence_positions = [i for i, line in enumerate(lines) if line == "---"]
     assert len(fence_positions) == 2, lines
-    target_position = next(
-        i for i, line in enumerate(lines) if line.startswith("target_repo:")
-    )
+    target_position = next(i for i, line in enumerate(lines) if line.startswith("target_repo:"))
     assert fence_positions[0] < target_position < fence_positions[1]
 
 
@@ -79,9 +73,7 @@ def test_migrate_preserves_existing_frontmatter_order(tmp_path: Path) -> None:
     _insert_field(entry)
     lines = _read(entry).splitlines()
     field_order = [
-        line.split(":")[0]
-        for line in lines
-        if line and not line.startswith("---") and ":" in line
+        line.split(":")[0] for line in lines if line and not line.startswith("---") and ":" in line
     ]
     expected_prefix = ["id", "type", "status", "severity", "attempts"]
     assert field_order[: len(expected_prefix)] == expected_prefix
