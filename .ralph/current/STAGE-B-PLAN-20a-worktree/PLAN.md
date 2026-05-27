@@ -139,6 +139,8 @@ Always set RALPH_PBI_DIR, not just in worktree mode. Single-checkout mode sets i
 
 Commit: `feat(claude_spawn): spawn into work tree with RALPH_PBI_DIR pointing at queue tree`
 
+- [x] Task 4 complete (iteration 4, 2026-05-27, commit 881fce2)
+
 ### Task 5 — update PROMPT.md
 
 Every `.ralph/current/<PBI-ID>/HISTORY.md` reference becomes `$RALPH_PBI_DIR/HISTORY.md`. Same for STUCK.md, PLAN.md, PBI.md.

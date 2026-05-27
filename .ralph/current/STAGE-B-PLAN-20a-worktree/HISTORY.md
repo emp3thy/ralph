@@ -32,3 +32,15 @@
   - Memory: recorded `git worktree add` rejecting a branch already-checked-out elsewhere (`ebaea5e4dc184729b9af24b8c68344a3`).
 - Tests: `uv run --no-sync pytest` green (454 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
 - Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits (executor's `_persist_iteration_writes` mirrors them onto ralph-queue). Commit: `d969b73 feat(loop): worktree-mode claim creates per-PBI work tree` on `ralph/STAGE-B-PLAN-20a-worktree`.
+
+## Iteration 4 — 2026-05-27T09:00:00+00:00
+
+- Step: Task 4 — `spawn_claude_p` now takes kwarg-only `cwd: Path | None` and `pbi_dir: Path | None` overrides (default to `cfg.repo_path` and `pbi.path` for legacy mode). `_build_argv` substitutes the explicit `pbi_dir` into the prompt string and drops the unused `pbi` arg. `_run_ralph` resolves `cwd=work_worktree_path(cfg.repo_path, pbi.id)` and `pbi_dir=queue_worktree_path(cfg.repo_path) / .ralph / current / pbi.id` when `cfg.use_worktrees`, otherwise passes nothing (defaults preserve Stage-A behaviour).
+- Design notes:
+  - `RALPH_PBI_DIR` was already always set (Stage A invariant); now both modes resolve it from the new `effective_pbi_dir`.
+  - Validation: `spawn_claude_p` raises `FileNotFoundError` if `effective_pbi_dir` or `effective_cwd` is not an existing directory before spawning, addressing the adversarial pre-pass "RALPH_PBI_DIR pointing nowhere" item.
+  - `classify_outcome` also receives `effective_pbi_dir` so STUCK.md detection looks in the queue worktree (not the work worktree where Claude's cwd is rooted).
+  - `_pr_query_open_pr_via_gh` keeps using `cfg.repo_path` — gh CLI infers the GitHub remote from `.git/config` which is shared by all worktrees, so the primary checkout is fine.
+  - Existing test (`test_spawn_invokes_claude_with_pbi_context`) hits the legacy default path; no test update needed for Task 4 (worktree-mode spawn coverage lands with Task 9).
+- Tests: full `pytest` suite green (454 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
+- Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits (executor's `_persist_iteration_writes` mirrors them onto ralph-queue). Commit: `881fce2 feat(claude_spawn): spawn into work tree with RALPH_PBI_DIR pointing at queue tree` on `ralph/STAGE-B-PLAN-20a-worktree`.
