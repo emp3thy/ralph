@@ -41,3 +41,11 @@
 - Tests: `tests/executor/test_cli_reconcile.py` — 4 tests, all PASS (calls-reconcile-all, dry-run-flag-flows-through, no-orphans-message, missing-scripts-dir-exits-2). Added the no-orphans + missing-scripts cases on top of the plan's two original tests for branch coverage of the new exit-2 path and the empty-report message.
 - Full `tests/executor/` suite: 270 PASS. `ruff check` + `ruff format --check` + `mypy --strict` green on `ralph_executor/cli.py` and `tests/executor/test_cli_reconcile.py`.
 - Notes: Task 6 boxes (Step 6.1–6.7) ticked in canonical plan. Next iteration: Task 7 — repo-wide pytest/ruff/mypy sweep, then smoke `ralph-executor reconcile --dry-run --repo .` against the 8 real orphans.
+
+## Iteration 7 — 2026-05-27T14:00:00+00:00 — PR created
+
+- Step Task 7: repo-wide gates green. `uv run pytest tests/` → 515 passed, 2 skipped (opt-in prompt smoke). `uv run ruff check ralph_executor/ skills/ tests/` flagged unsorted imports in `tests/executor/sweep/test_reconcile.py`; ran `--fix` (one-line reordering) and committed as `style(tests): sort imports in test_reconcile.py`. `uv run ruff format --check` clean (84 files). `uv run mypy --strict ralph_executor/` clean (26 source files).
+- Step 7.1 grep for residual `"PR-LINK.md is missing"` / `"cannot determine PR id"` in `tests/`: no matches.
+- Step 7.4–7.6 (smoke against 8 real orphans + commit moved-orphan state): SKIPPED on this branch. `.ralph/pending-pr/<PBI-ID>/` orphan dirs only exist on the `ralph-queue` branch (queue state); on `ralph/SWEEP-RECONCILE-ORPHANS` (code branch) `.ralph/` contains only `current/` and `state/`. Running `ralph-executor reconcile --dry-run --repo .` here returns "no orphans found in pending-pr/". PROMPT.md explicitly forbids touching the `ralph-queue` branch from feature work, so per-step 7.7's `git add .ralph/` commit would also violate the queue/code branch split. The smoke is deferred to operator post-merge: after this PR lands, an operator runs `uv run ralph-executor reconcile --dry-run --repo <ralph-queue-worktree>` and (if clean) the real reconcile on `ralph-queue` to clear the 8 orphans.
+- Tests: see Task 7.2 above.
+- Notes: All Task 7 boxes ticked in canonical plan except the orphan-smoke (deferred). PR being opened against `main` from `ralph/SWEEP-RECONCILE-ORPHANS`.
