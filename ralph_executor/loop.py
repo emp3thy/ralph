@@ -68,15 +68,17 @@ from ralph_executor.worktree import (
 log = logging.getLogger(__name__)
 
 
-def _event_log_root(cfg: ExecutorConfig) -> Path:
-    """Repo root that holds ``.ralph/state/events.db`` for ``open_log``.
+def _queue_repo_root(cfg: ExecutorConfig) -> Path:
+    """Repo root that owns ``.ralph/`` (events.db, sentinel, blocked/, …).
 
     In worktree mode ``.ralph/`` lives in the queue worktree, not the
     primary checkout (which is typically on ``main`` and has no
-    ``.ralph/`` directory). Routing every ``open_log`` call through this
-    helper keeps the event database in a single place and stops events
-    from silently leaking into a stray ``.ralph/state/events.db`` in the
-    primary checkout.
+    ``.ralph/`` directory). Every operation that reads or writes under
+    ``.ralph/`` — opening the event log, moving PBIs to ``.ralph/blocked/``,
+    handling STUCK.md, checking/writing the halt sentinel — must route
+    through this helper. Otherwise the side-effects silently land in the
+    primary checkout's working tree, where they are never committed or
+    pushed and become invisible after a process restart.
     """
     if cfg.use_worktrees:
         return queue_worktree_path(cfg.repo_path)
@@ -130,7 +132,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
     it without dependency-injection (reconciliation #9).
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(_event_log_root(cfg))
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         events = event_log.recent(window=timedelta(hours=72), now=now)
     finally:
@@ -142,7 +144,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
         "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
         len(signals),
     )
-    halt_and_acknowledge(repo=cfg.repo_path, signals=signals, now=now)
+    halt_and_acknowledge(repo=_queue_repo_root(cfg), signals=signals, now=now)
     return True
 
 
@@ -306,7 +308,7 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     if cfg.use_worktrees:
         return _claim_pbi_worktree(cfg, pbi)
 
-    event_log = open_log(_event_log_root(cfg))
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
             cfg,
@@ -344,7 +346,7 @@ def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     # the primary checkout when the operator happens to have main checked
     # out there.
     git_ops.fetch(cfg.repo_path)
-    event_log = open_log(_event_log_root(cfg))
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
             cfg,
@@ -416,7 +418,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     ``PR_GREEN_THEN_RED`` event.
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(_event_log_root(cfg))
+    event_log = open_log(_queue_repo_root(cfg))
     try:
         # --- Spawn Claude ------------------------------------------------
         if cfg.use_worktrees:
@@ -454,7 +456,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                         payload={"reason": str(exc), "source": "max-attempts"},
                     )
                 )
-                target = cfg.repo_path / ".ralph" / "blocked" / pbi.id
+                target = _queue_repo_root(cfg) / ".ralph" / "blocked" / pbi.id
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     # shutil.move would silently move pbi.path INSIDE the existing
@@ -502,7 +504,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
         if outcome.kind == "stuck":
             # --- Plan 9 Layer 1: STUCK.md detection ----------------------
             stuck_outcome = handle_stuck(
-                repo=cfg.repo_path,
+                repo=_queue_repo_root(cfg),
                 pbi_dir=pbi.path,
                 now=datetime.now(tz=UTC),
                 event_log=event_log,
@@ -535,12 +537,13 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
     """
     # --- Plan 9 Layer 3: refuse to start while sentinel is active --------
-    status = check_halt_sentinel(cfg.repo_path)
+    queue_repo = _queue_repo_root(cfg)
+    status = check_halt_sentinel(queue_repo)
     if status == HaltStatus.HALTED:
         raise HaltedError(
             meta_bug_id="(see .ralph/state/halted)",
-            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            meta_bug_path=queue_repo / ".ralph" / "blocked",
+            sentinel_path=queue_repo / ".ralph" / "state" / "halted",
         )
 
     _pull_queue(cfg)
@@ -556,7 +559,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # inside the PBI dir. The move_current_to_* paths handle their
         # own commits via git mv, but partial/error outcomes leave the
         # PBI in current/ with dirty files that would otherwise be lost.
-        event_log = open_log(_event_log_root(cfg))
+        event_log = open_log(_queue_repo_root(cfg))
         try:
             _persist_iteration_writes(
                 cfg,
@@ -571,8 +574,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             # raise HaltedError so the caller knows the loop is frozen.
             raise HaltedError(
                 meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
             )
         return result
 
@@ -586,8 +589,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         if _check_cycle_detector(cfg, source):
             raise HaltedError(
                 meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-                sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
             )
         return IterationResult(outcome="idle", pbi_id=None)
 
@@ -598,8 +601,8 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     if _check_cycle_detector(cfg, source):
         raise HaltedError(
             meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-            meta_bug_path=cfg.repo_path / ".ralph" / "blocked",
-            sentinel_path=cfg.repo_path / ".ralph" / "state" / "halted",
+            meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
+            sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
         )
     return IterationResult(outcome="claimed", pbi_id=claimed.id)
 

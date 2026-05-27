@@ -745,3 +745,80 @@ def test_event_log_lives_in_queue_worktree_under_worktree_mode(
         event_log.close()
     pbi_opened = [e for e in events if e.kind == EventType.PBI_OPENED]
     assert pbi_opened, "PBI_OPENED event missing from queue-worktree event log"
+
+
+def test_stuck_blocked_move_targets_queue_worktree(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode `handle_stuck` must operate against the queue
+    worktree, not the primary checkout. ``pbi.path`` lives under
+    ``.ralph-work/queue/.ralph/current/<id>`` so calling
+    ``move_to_blocked`` with ``repo=cfg.repo_path`` raises ValueError
+    (``parts[0] == '.ralph-work'`` fails the ``parts[0] != '.ralph'``
+    guard in ``ralph_executor/safety/stuck.py::move_to_blocked``).
+    The blocked PBI must end up in the queue worktree's ``.ralph/blocked/``,
+    where the next ``git push`` from the queue worktree will commit it."""
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo_worktree)  # claim → worktrees created
+
+    queue_wt = queue_worktree_path(fake_repo)
+    pbi_dir_in_queue = queue_wt / ".ralph" / "current" / "WI-1234"
+
+    def _stuck_spawn(
+        cfg: ExecutorConfig,
+        pbi: object,
+        *,
+        cwd: Path | None = None,
+        pbi_dir: Path | None = None,
+    ) -> ClaudeOutcome:
+        (pbi_dir_in_queue / "STUCK.md").write_text("# stuck\n", encoding="utf-8")
+        return ClaudeOutcome(
+            kind="stuck",
+            pr_url=None,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.0,
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "ran_stuck"
+    # Lands in queue worktree, not primary.
+    assert (queue_wt / ".ralph" / "blocked" / "WI-1234").is_dir()
+    assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists()
+
+
+def test_max_attempts_blocked_move_targets_queue_worktree(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode the max-attempts blocked move must target the
+    queue worktree's ``.ralph/blocked/``. Otherwise the PBI is moved to
+    the primary checkout's working tree (on `main`, no `.ralph/`),
+    landing outside git tracking and silently disappearing from the
+    queue system."""
+    # `max_attempts()` reads RALPH_MAX_ATTEMPTS from the env, not from cfg.
+    monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "1")
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo_worktree)  # claim
+
+    queue_wt = queue_worktree_path(fake_repo)
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("error"))
+    # First error: attempts 0 -> 1 (== limit, allowed).
+    iterate_once(cfg_for_repo_worktree)
+    # Second error: attempts 1 -> 2 (> limit), triggers max-attempts move.
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "ran_stuck"
+    assert (queue_wt / ".ralph" / "blocked" / "WI-1234").is_dir(), (
+        "max-attempts blocked move must target the queue worktree"
+    )
+    assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists(), (
+        "primary checkout must never receive blocked PBI dirs in worktree mode"
+    )
