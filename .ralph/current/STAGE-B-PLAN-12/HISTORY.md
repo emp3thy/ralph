@@ -71,3 +71,17 @@ Any one of the following:
 - Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 106 files clean, `uv run mypy ralph_executor scripts skills tests` clean (103 files), `uv run pytest` 632 passed / 2 skipped (opt-in).
 - Plan checkboxes for Task 3 steps 1–4 ticked. Steps 5–6 left unchecked with `docker` unavailability noted above.
 - Notes: Next iteration starts Task 4 (k8s manifests + `tests/packaging/test_manifests.py`).
+
+## Iteration 4 — 2026-05-27T20:15:00Z
+
+- Task 4 (k8s manifests + `tests/packaging/test_manifests.py`) — steps 1, 2, 4, 5 complete. Step 3 (`kubectl apply --dry-run=client`) SKIPPED: `kubectl` not present in executor PATH. Marked as `[SKIPPED — kubectl not installed in executor environment]` in plan.
+- Wrote 5 manifests verbatim from plan: `manifests/ralph-deployment.yaml`, `ralph-job.yaml`, `ralph-configmap.yaml` (2 docs), `ralph-secrets.template.yaml`, `ralph-rbac.yaml` (3 docs).
+- YAML syntax validated via `yaml.safe_load_all` (script from plan step 2): all 5 files parsed, doc counts 1/1/2/1/3.
+- Wrote `tests/packaging/test_manifests.py` with two minor deviations from plan-verbatim:
+  1. Loader signature typed as `list[dict[str, Any]]` (plan said `list[dict]`) — required for mypy under our strict config (bare `dict` triggers `type-arg`).
+  2. Removed unused `import pytest` — `ruff` would flag F401; no tests in this module use pytest decorators or fixtures.
+  3. `ruff format` auto-collapsed the two long set-comprehensions / assertion message lines; no semantic change.
+- Tests: 7 passed (`uv run pytest tests/packaging/test_manifests.py -v`).
+- Full gates: `uv run ruff check .` clean, `uv run ruff format --check .` 107 files clean, `uv run mypy ralph_executor scripts skills tests` clean (104 files), `uv run pytest` 639 passed / 2 skipped (opt-in).
+- Plan checkboxes for Task 4 steps 1, 2, 4, 5 ticked. Step 3 left unchecked with kubectl-unavailability marker inline.
+- Notes: Next iteration starts Task 5 (build + preflight scripts + `tests/packaging/test_scripts.py`).
