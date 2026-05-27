@@ -726,18 +726,14 @@ def test_event_log_lives_in_queue_worktree_under_worktree_mode(
     committed/pushed with the queue branch and invisible to the cycle
     detector after a process restart."""
     _populate_inbox(fake_repo)
-    monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p", _stub_spawn("partial")
-    )
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("partial"))
 
     iterate_once(cfg_for_repo_worktree)
 
     queue_wt = queue_worktree_path(fake_repo)
     queue_db = queue_wt / ".ralph" / "state" / "events.db"
     primary_db = fake_repo / ".ralph" / "state" / "events.db"
-    assert queue_db.is_file(), (
-        f"event log must live in the queue worktree; expected at {queue_db}"
-    )
+    assert queue_db.is_file(), f"event log must live in the queue worktree; expected at {queue_db}"
     assert not primary_db.exists(), (
         f"primary checkout should never get a stray events.db; found {primary_db}"
     )
