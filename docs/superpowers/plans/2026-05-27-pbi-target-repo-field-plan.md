@@ -57,7 +57,7 @@ All tasks ≥ 90%. Pre-flighted against `validate_samples.py:30`, `pbi_reader.py
 - Create: `tests/scripts/__init__.py` (empty package marker)
 - Create: `tests/scripts/test_validate_samples.py`
 
-- [ ] **Step 1.1: Create the tests package marker**
+- [x] **Step 1.1: Create the tests package marker**
 
 ```bash
 touch /c/Users/gethi/ralph-queue/tests/scripts/__init__.py
@@ -69,7 +69,7 @@ Verify it exists:
 ls /c/Users/gethi/ralph-queue/tests/scripts/__init__.py
 ```
 
-- [ ] **Step 1.2: Write the failing test file**
+- [x] **Step 1.2: Write the failing test file**
 
 Create `tests/scripts/test_validate_samples.py`:
 
@@ -151,7 +151,7 @@ def test_validate_rejects_non_string_target_repo() -> None:
     assert any("string" in e and "target_repo" in e for e in errors), errors
 ```
 
-- [ ] **Step 1.3: Run the failing tests**
+- [x] **Step 1.3: Run the failing tests**
 
 ```bash
 uv run pytest tests/scripts/test_validate_samples.py -v
@@ -159,7 +159,7 @@ uv run pytest tests/scripts/test_validate_samples.py -v
 
 Expected: all FAIL — either `KeyError: 'target_repo' not in REQUIRED_FRONTMATTER_FIELDS` (the field isn't required yet) or `ImportError` if anything else is off.
 
-- [ ] **Step 1.4: Commit**
+- [x] **Step 1.4: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add tests/scripts/__init__.py tests/scripts/test_validate_samples.py
