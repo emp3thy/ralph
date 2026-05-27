@@ -1,0 +1,91 @@
+name: ralph-image
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "ralph_executor/**"
+      - "skills/**"
+      - ".claude/settings.json"
+      - "scripts/build_image.sh"
+      - "scripts/preflight.sh"
+      - ".github/workflows/ralph-image.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override version tag (defaults to git short SHA)"
+        required: false
+        type: string
+      host:
+        description: "Limit to a single host (github|ado|both)"
+        required: false
+        default: "both"
+        type: choice
+        options: [github, ado, both]
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  build-and-preflight:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [github, ado]
+    env:
+      RALPH_IMAGE: ralph-executor
+      RALPH_REGISTRY: ${{ secrets.RALPH_REGISTRY }}
+    steps:
+      - name: Skip non-selected host
+        if: ${{ github.event.inputs.host != '' && github.event.inputs.host != 'both' && github.event.inputs.host != matrix.host }}
+        run: echo "Skipping host=${{ matrix.host }} per workflow_dispatch input"; exit 0
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute version tag
+        id: ver
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build image (${{ matrix.host }})
+        id: build
+        env:
+          RALPH_VERSION: ${{ steps.ver.outputs.tag }}
+        run: |
+          IMG=$(bash scripts/build_image.sh --host ${{ matrix.host }})
+          echo "image=${IMG}" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight (ralph-doctor inside the image)
+        run: bash scripts/preflight.sh "${{ steps.build.outputs.image }}"
+
+      - name: Registry login
+        if: ${{ env.RALPH_REGISTRY != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.RALPH_REGISTRY }}
+          username: ${{ secrets.RALPH_REGISTRY_USER }}
+          password: ${{ secrets.RALPH_REGISTRY_PASSWORD }}
+
+      - name: Push image
+        if: ${{ env.RALPH_REGISTRY != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+        env:
+          RALPH_VERSION: ${{ steps.ver.outputs.tag }}
+        run: bash scripts/build_image.sh --host ${{ matrix.host }} --push

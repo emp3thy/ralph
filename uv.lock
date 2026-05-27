@@ -138,6 +138,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dockerfile-parse"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/df/929ee0b5d2c8bd8d713c45e71b94ab57c7e11e322130724d54f469b2cd48/dockerfile-parse-2.0.1.tar.gz", hash = "sha256:3184ccdc513221983e503ac00e1aa504a2aa8f84e5de673c46b0b6eee99ec7bc", size = 24556, upload-time = "2023-07-18T13:36:07.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/6c/79cd5bc1b880d8c1a9a5550aa8dacd57353fa3bb2457227e1fb47383eb49/dockerfile_parse-2.0.1-py2.py3-none-any.whl", hash = "sha256:bdffd126d2eb26acf1066acb54cb2e336682e1d72b974a40894fac76a4df17f6", size = 14845, upload-time = "2023-07-18T13:36:06.052Z" },
+]
+
+[[package]]
 name = "freezegun"
 version = "1.5.5"
 source = { registry = "https://pypi.org/simple" }
@@ -401,11 +410,13 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "dockerfile-parse" },
     { name = "freezegun" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "responses" },
     { name = "ruff" },
+    { name = "types-dockerfile-parse" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
 ]
@@ -418,11 +429,13 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "dockerfile-parse", specifier = ">=2.0" },
     { name = "freezegun", specifier = ">=1.5" },
     { name = "mypy", specifier = ">=1.10" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "responses", specifier = ">=0.26.1" },
     { name = "ruff", specifier = ">=0.5" },
+    { name = "types-dockerfile-parse", specifier = ">=2.0.0.20260508" },
     { name = "types-pyyaml", specifier = ">=6.0" },
     { name = "types-requests", specifier = ">=2.33.0.20260518" },
 ]
@@ -488,6 +501,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "types-dockerfile-parse"
+version = "2.0.0.20260508"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/34/29ef7fdeff78e87ff550c7c01f43bcad88109f3473ae92d7f076c6dd0160/types_dockerfile_parse-2.0.0.20260508.tar.gz", hash = "sha256:529640ee6c97be77d36d9d38edb3ba005cb643bb6bc1ed1281fb192a30839df6", size = 8761, upload-time = "2026-05-08T04:48:31.865Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/da/4fad63c79ed69219d55c35786d9920b94368eb116fd3ea40beac677ab219/types_dockerfile_parse-2.0.0.20260508-py3-none-any.whl", hash = "sha256:cd2d907079552190d35456e9722d1a124761ef6bf772c8259514f06361f7fd8c", size = 9345, upload-time = "2026-05-08T04:48:31.016Z" },
 ]
 
 [[package]]

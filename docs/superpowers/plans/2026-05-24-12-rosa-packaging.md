@@ -1062,7 +1062,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Confirm the orchestrator's Wave 1 and Wave 2 outputs are present (or stubbed). Run:
+- [x] 1. Confirm the orchestrator's Wave 1 and Wave 2 outputs are present (or stubbed). Run:
   ```
   test -f pyproject.toml
   test -f uv.lock
@@ -1070,14 +1070,14 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   Expected: every check exits 0. If `ralph_executor/` is absent, create a stub package containing only `ralph_executor/__init__.py` and `ralph_executor/cli.py` with the body documented in the "Cross-plan assumptions ledger" above.
 
-- [ ] 2. Open `pyproject.toml`. Confirm the `[project.scripts]` table exists and contains:
+- [x] 2. Open `pyproject.toml`. Confirm the `[project.scripts]` table exists and contains:
   ```toml
   [project.scripts]
   ralph-executor = "ralph_executor.cli:main"
   ```
   If absent, add it.
 
-- [ ] 3. Confirm the host-specific skill directories exist for the host(s) you intend to build. **For Phase 1 (github):**
+- [x] 3. Confirm the host-specific skill directories exist for the host(s) you intend to build. **For Phase 1 (github):**
   ```
   test -d skills/pr-github
   test -d skills/workitem-fetch-github
@@ -1090,19 +1090,19 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   If either is missing, that's expected before Plans 3/5 Phase 2 lands — Phase 2 image builds will be blocked until those land. Phase 1 is unblocked.
 
-- [ ] 4. Create `tests/packaging/__init__.py`:
+- [x] 4. Create `tests/packaging/__init__.py`:
   ```python
   """Empty package marker."""
   ```
 
-- [ ] 5. Add the packaging-test dev dependencies to `pyproject.toml`:
+- [x] 5. Add the packaging-test dev dependencies to `pyproject.toml`:
   ```
   dockerfile-parse>=2.0
   pyyaml>=6.0
   ```
   Then `uv sync`. Expected: completes without error.
 
-- [ ] 6. Verify the toolchain:
+- [x] 6. Verify the toolchain:
   ```
   uv run mypy --version
   uv run pytest --collect-only -q
@@ -1116,14 +1116,14 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `.claude/settings.json` with the exact content listed in the ".claude/settings.json (full content the implementer writes)" section above. No edits.
+- [x] 1. Write `.claude/settings.json` with the exact content listed in the ".claude/settings.json (full content the implementer writes)" section above. No edits.
 
-- [ ] 2. Confirm valid JSON:
+- [x] 2. Confirm valid JSON:
   ```
   uv run python -c "import json; json.load(open('.claude/settings.json'))"
   ```
 
-- [ ] 3. Create `tests/packaging/test_settings_json.py`:
+- [x] 3. Create `tests/packaging/test_settings_json.py`:
   ```python
   """Tests for the baked .claude/settings.json."""
 
@@ -1203,7 +1203,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       assert any("memory_retrieve" in entry for entry in reserved)
   ```
 
-- [ ] 4. Run the new tests:
+- [x] 4. Run the new tests:
   ```
   uv run pytest tests/packaging/test_settings_json.py -v
   ```
@@ -1217,9 +1217,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `Dockerfile` with the exact content listed in the "Dockerfile (full content the implementer writes)" section above. No edits.
+- [x] 1. Write `Dockerfile` with the exact content listed in the "Dockerfile (full content the implementer writes)" section above. No edits.
 
-- [ ] 2. Write `.dockerignore`:
+- [x] 2. Write `.dockerignore`:
   ```gitignore
   # Source-control + build state
   .git
@@ -1266,7 +1266,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   manifests
   ```
 
-- [ ] 3. Create `tests/packaging/test_dockerfile.py`:
+- [x] 3. Create `tests/packaging/test_dockerfile.py`:
   ```python
   """Static tests for the Dockerfile.
 
@@ -1370,7 +1370,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       assert "ralph.git-host" in blob, "expected ralph.git-host LABEL for host traceability"
   ```
 
-- [ ] 4. Run the Dockerfile tests:
+- [x] 4. Run the Dockerfile tests:
   ```
   uv run pytest tests/packaging/test_dockerfile.py -v
   ```
@@ -1405,9 +1405,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Create each manifest file with the exact content listed in the "Manifests (full content the implementer writes)" section above. Use LF line endings.
+- [x] 1. Create each manifest file with the exact content listed in the "Manifests (full content the implementer writes)" section above. Use LF line endings.
 
-- [ ] 2. Validate each manifest's YAML syntax:
+- [x] 2. Validate each manifest's YAML syntax:
   ```
   uv run python -c "
   import yaml
@@ -1425,7 +1425,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   "
   ```
 
-- [ ] 3. If `kubectl` is available, run client-side dry-run apply for the manifests that should validate (configmap, secrets template, rbac):
+- [ ] 3. If `kubectl` is available, run client-side dry-run apply for the manifests that should validate (configmap, secrets template, rbac): [SKIPPED — kubectl not installed in executor environment]
   ```
   kubectl apply --dry-run=client -f manifests/ralph-configmap.yaml
   kubectl apply --dry-run=client -f manifests/ralph-rbac.yaml
@@ -1433,7 +1433,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   The deployment and job will fail dry-run because of `__IMAGE__` — that's expected.
 
-- [ ] 4. Create `tests/packaging/test_manifests.py`:
+- [x] 4. Create `tests/packaging/test_manifests.py`:
   ```python
   """Structural tests for k8s manifests."""
 
@@ -1571,7 +1571,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       )
   ```
 
-- [ ] 5. Run the manifest tests:
+- [x] 5. Run the manifest tests:
   ```
   uv run pytest tests/packaging/test_manifests.py -v
   ```
@@ -1585,9 +1585,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `scripts/build_image.sh` and `scripts/preflight.sh` with the exact content from the "Build and preflight scripts" section above. LF line endings.
+- [x] 1. Write `scripts/build_image.sh` and `scripts/preflight.sh` with the exact content from the "Build and preflight scripts" section above. LF line endings.
 
-- [ ] 2. Mark both executable:
+- [x] 2. Mark both executable:
   ```
   chmod +x scripts/build_image.sh scripts/preflight.sh
   ```
@@ -1597,13 +1597,13 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   git update-index --chmod=+x scripts/preflight.sh
   ```
 
-- [ ] 3. If `shellcheck` is installed, run it:
+- [ ] 3. If `shellcheck` is installed, run it: [SKIPPED — shellcheck not installed in executor environment; test_script_passes_shellcheck pytest-skips on hosts without it]
   ```
   shellcheck scripts/build_image.sh scripts/preflight.sh
   ```
   Fix any findings before continuing.
 
-- [ ] 4. Smoke-run the build script's help and the missing-host error path:
+- [x] 4. Smoke-run the build script's help and the missing-host error path:
   ```
   bash scripts/build_image.sh --help
   echo "help exit=$?"
@@ -1622,7 +1622,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   ```
   Expected: help exit 0; no-host exit 2; bad-host exit 2.
 
-- [ ] 5. Create `tests/packaging/test_scripts.py`:
+- [x] 5. Create `tests/packaging/test_scripts.py`:
   ```python
   """Tests for the bash helper scripts."""
 
@@ -1732,7 +1732,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
           )
   ```
 
-- [ ] 6. Run the script tests:
+- [x] 6. Run the script tests:
   ```
   uv run pytest tests/packaging/test_scripts.py -v
   ```
@@ -1746,35 +1746,35 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 This task is the Phase 1 verification gate: **prove both `--host github` and `--host ado` produce buildable images**. Phase 2 work (ado skills) must be present for the ado build; if it is not, document the gate as "Phase 1 verified for github, Phase 2 blocked on Plans 3/5".
 
-- [ ] 1. Build the Phase 1 (github) image:
+- [ ] 1. [SKIPPED — docker not installed in executor environment] Build the Phase 1 (github) image:
   ```
   IMG_GH=$(bash scripts/build_image.sh --host github)
   echo "Built ${IMG_GH}"
   ```
   Expected: build succeeds; tag ends in `-github`.
 
-- [ ] 2. Build the Phase 2 (ado) image:
+- [ ] 2. [SKIPPED — docker not installed in executor environment] Build the Phase 2 (ado) image:
   ```
   IMG_ADO=$(bash scripts/build_image.sh --host ado)
   echo "Built ${IMG_ADO}"
   ```
   Expected: build succeeds; tag ends in `-ado`. **If this fails with "skills/pr-ado not found" or similar**, that's expected before Plans 3/5 Phase 2 lands. Note the gap in the PR description and proceed with Phase 1 only.
 
-- [ ] 3. Verify both images carry the right `RALPH_GIT_HOST` env:
+- [ ] 3. [SKIPPED — docker not installed in executor environment] Verify both images carry the right `RALPH_GIT_HOST` env:
   ```
   docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${IMG_GH}" | grep RALPH_GIT_HOST
   docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "${IMG_ADO}" | grep RALPH_GIT_HOST
   ```
   Expected: `RALPH_GIT_HOST=github` for the first; `RALPH_GIT_HOST=ado` for the second.
 
-- [ ] 4. Verify both images carry the `ralph.git-host` OCI label:
+- [ ] 4. [SKIPPED — docker not installed in executor environment] Verify both images carry the `ralph.git-host` OCI label:
   ```
   docker inspect --format='{{index .Config.Labels "ralph.git-host"}}' "${IMG_GH}"
   docker inspect --format='{{index .Config.Labels "ralph.git-host"}}' "${IMG_ADO}"
   ```
   Expected: prints `github` then `ado`.
 
-- [ ] 5. Run preflight against each image. The doctor probes the host indicated by the baked env:
+- [ ] 5. [SKIPPED — docker not installed in executor environment] Run preflight against each image. The doctor probes the host indicated by the baked env:
   ```
   bash scripts/preflight.sh "${IMG_GH}"
   bash scripts/preflight.sh "${IMG_ADO}"
@@ -1782,14 +1782,14 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   Expected (against Plan 11's real doctor): exit 0 for each.
   Expected (against the Task 1 stub doctor): exit 0 for each.
 
-- [ ] 6. Confirm the runtime user is `ralph` (10001) inside each image:
+- [ ] 6. [SKIPPED — docker not installed in executor environment] Confirm the runtime user is `ralph` (10001) inside each image:
   ```
   docker run --rm --entrypoint id "${IMG_GH}" -u
   docker run --rm --entrypoint id "${IMG_ADO}" -u
   ```
   Expected: prints `10001` for each.
 
-- [ ] 7. Confirm the canonical skill paths exist inside each image:
+- [ ] 7. [SKIPPED — docker not installed in executor environment] Confirm the canonical skill paths exist inside each image:
   ```
   docker run --rm --entrypoint ls "${IMG_GH}" /root/.claude/skills/pr/
   docker run --rm --entrypoint ls "${IMG_GH}" /root/.claude/skills/workitem-fetch/
@@ -1798,12 +1798,12 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   ```
   Expected: each path lists at least `SKILL.md` (the contents differ by host but both have the canonical filename).
 
-- [ ] 8. Confirm `.claude/settings.json` is present:
+- [ ] 8. [SKIPPED — docker not installed in executor environment] Confirm `.claude/settings.json` is present:
   ```
   docker run --rm --entrypoint cat "${IMG_GH}" /etc/ralph/.claude/settings.json | head -5
   ```
 
-- [ ] 9. Confirm Claude Code CLI is installed:
+- [ ] 9. [SKIPPED — docker not installed in executor environment] Confirm Claude Code CLI is installed:
   ```
   docker run --rm --entrypoint claude "${IMG_GH}" --version || true
   ```
@@ -1815,9 +1815,9 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Write `.github/workflows/ralph-image.yml` with the exact content from the "CI workflow" section above. The workflow uses a `matrix` over `[github, ado]` so each push builds both host images.
+- [x] 1. Write `.github/workflows/ralph-image.yml` with the exact content from the "CI workflow" section above. The workflow uses a `matrix` over `[github, ado]` so each push builds both host images.
 
-- [ ] 2. Parse the YAML to confirm validity:
+- [x] 2. Parse the YAML to confirm validity:
   ```
   uv run python -c "
   import yaml
@@ -1828,7 +1828,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   "
   ```
 
-- [ ] 3. Validate with `actionlint` if available:
+- [ ] 3. [SKIPPED — actionlint not installed in executor environment] Validate with `actionlint` if available:
   ```
   actionlint .github/workflows/ralph-image.yml 2>&1 || echo "actionlint not present; skipping"
   ```
@@ -1845,7 +1845,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Confirm the Azure Pipelines snippet (which will be embedded in Task 9's runbook) is syntactically valid YAML. The exact snippet:
+- [x] 1. Confirm the Azure Pipelines snippet (which will be embedded in Task 9's runbook) is syntactically valid YAML. The exact snippet:
   ```yaml
   # Azure Pipelines alternative to .github/workflows/ralph-image.yml.
   # Builds both host images via a matrix-equivalent strategy
@@ -1911,7 +1911,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   ```
   Paste this snippet into the runbook in Task 9 verbatim.
 
-- [ ] 2. The alternative is a NICE TO HAVE. Plan 12 does not commit `azure-pipelines.yml` itself.
+- [x] 2. The alternative is a NICE TO HAVE. Plan 12 does not commit `azure-pipelines.yml` itself.
 
 ### Task 9 — Write the deployment runbook (Phase 1 / Phase 2 branches)
 
@@ -1920,7 +1920,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Write `docs/deployment.md` with the structure below. The runbook is **branching** — it asks the reader which phase they are deploying and then takes them down a self-contained path. The implementer SHALL write the actual prose; the headings and the content checklist under each are non-negotiable.
+- [x] 1. Write `docs/deployment.md` with the structure below. The runbook is **branching** — it asks the reader which phase they are deploying and then takes them down a self-contained path. The implementer SHALL write the actual prose; the headings and the content checklist under each are non-negotiable.
 
   ```markdown
   # Ralph Deployment Runbook
@@ -2192,7 +2192,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   the orchestrator plan for status.
   ```
 
-- [ ] 2. The runbook MUST cover (checklist):
+- [x] 2. The runbook MUST cover (checklist):
   - "Which phase are you deploying?" intro with a clear Phase 1 vs Phase 2 branch
   - Common prerequisites
   - Choosing a mode (Deployment vs Job)
@@ -2203,7 +2203,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   - Runtime-staging alternative (host_select.py)
   - Plan 7 / 11 stub callout
 
-- [ ] 3. Re-render the runbook locally and confirm headings:
+- [x] 3. Re-render the runbook locally and confirm headings:
   ```
   uv run python -c "
   from pathlib import Path
@@ -2243,59 +2243,59 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Run the full packaging test set:
+- [x] 1. Run the full packaging test set:
   ```
   uv run pytest tests/packaging/ -v
   ```
   Expected: every test passes.
 
-- [ ] 2. Run the host-specific Phase 1 verification (the new gate this plan adds):
+- [ ] 2. [SKIPPED — docker not installed in executor environment] Run the host-specific Phase 1 verification (the new gate this plan adds):
   ```
   bash scripts/build_image.sh --host github
   ```
   Expected: build succeeds; image tag ends in `-github`.
 
-- [ ] 3. Run the host-specific Phase 2 verification:
+- [ ] 3. [SKIPPED — docker not installed in executor environment] Run the host-specific Phase 2 verification:
   ```
   bash scripts/build_image.sh --host ado
   ```
   Expected: build succeeds AND tag ends in `-ado` (if Phase 2 skills are present), OR fails cleanly at the COPY step with "skills/pr-ado: no such file or directory" (if Phase 2 skills have not landed yet — note this gap in the PR description rather than treating it as a Plan 12 failure).
 
-- [ ] 4. Run the orchestrator's verification gate command. **Note:** the gate command in the orchestrator is `docker build -t ralph:test .` — this Plan 12 amendment REPLACES that simple gate with a host-aware version:
+- [ ] 4. [SKIPPED — docker not installed in executor environment] Run the orchestrator's verification gate command. **Note:** the gate command in the orchestrator is `docker build -t ralph:test .` — this Plan 12 amendment REPLACES that simple gate with a host-aware version:
   ```
   bash scripts/build_image.sh --host github && \
     docker images | grep "ralph-executor.*-github"
   ```
   Expected: image builds, `docker images` shows a `-github`-tagged ralph row. This is the canonical Phase 1 verification gate.
 
-- [ ] 5. Run preflight against the gate-built image. The doctor (real or stub) reads `RALPH_GIT_HOST` from the image's baked env:
+- [ ] 5. [SKIPPED — docker not installed in executor environment] Run preflight against the gate-built image. The doctor (real or stub) reads `RALPH_GIT_HOST` from the image's baked env:
   ```
   IMG=$(bash scripts/build_image.sh --host github)
   bash scripts/preflight.sh "${IMG}"
   ```
   Expected: exit 0.
 
-- [ ] 6. Confirm the full repo gate is green:
+- [x] 6. Confirm the full repo gate is green:
   ```
   uv run ruff check . && uv run ruff format --check . && uv run mypy ralph_executor && uv run pytest
   ```
   Expected: every command exits 0.
 
-- [ ] 7. Self-review checklist. The implementer SHALL confirm each line before declaring the task complete:
-  - [ ] No `__IMAGE__` / `__PBI_ID__` placeholder appears outside the manifests where it is intended as a deploy-time substitution marker.
-  - [ ] No secret value appears in any committed file (grep for `ANTHROPIC_API_KEY=` / `ADO_PAT=` / `GH_TOKEN=` returns only the template sentinels and the runbook references).
-  - [ ] Every file listed in "File Structure" exists and is referenced by at least one test or by the runbook.
-  - [ ] The runbook clearly branches at the top: a reader picks Phase 1 or Phase 2 and sees a self-contained path. The Phase headers are present in the rendered Markdown.
-  - [ ] The Dockerfile's `ARG RALPH_GIT_HOST` has no default and the guard `RUN test -n` fires when the build arg is missing.
-  - [ ] `scripts/build_image.sh --host` is REQUIRED — exit 2 when missing.
-  - [ ] `scripts/build_image.sh --host gitlab` (or other invalid values) exits 2.
-  - [ ] The image tag carries the host suffix in both local and registry forms.
-  - [ ] The image's baked `ENV RALPH_GIT_HOST` matches the `--host` flag used to build it.
-  - [ ] The `ralph.git-host` OCI label matches the host.
-  - [ ] The runtime-staging alternative is documented in the runbook (referencing Plan 7's `host_select.py`).
-  - [ ] The plan 7 / 11 stub assumption is called out in `docs/deployment.md`.
+- [x] 7. Self-review checklist. The implementer SHALL confirm each line before declaring the task complete:
+  - [x] No `__IMAGE__` / `__PBI_ID__` placeholder appears outside the manifests where it is intended as a deploy-time substitution marker.
+  - [x] No secret value appears in any committed file (grep for `ANTHROPIC_API_KEY=` / `ADO_PAT=` / `GH_TOKEN=` returns only the template sentinels and the runbook references).
+  - [x] Every file listed in "File Structure" exists and is referenced by at least one test or by the runbook.
+  - [x] The runbook clearly branches at the top: a reader picks Phase 1 or Phase 2 and sees a self-contained path. The Phase headers are present in the rendered Markdown.
+  - [x] The Dockerfile's `ARG RALPH_GIT_HOST` has no default and the guard `RUN test -n` fires when the build arg is missing.
+  - [x] `scripts/build_image.sh --host` is REQUIRED — exit 2 when missing.
+  - [x] `scripts/build_image.sh --host gitlab` (or other invalid values) exits 2.
+  - [x] The image tag carries the host suffix in both local and registry forms.
+  - [-] The image's baked `ENV RALPH_GIT_HOST` matches the `--host` flag used to build it. [SKIPPED runtime verification — docker not installed; Dockerfile statically sets `ENV RALPH_GIT_HOST=${RALPH_GIT_HOST}` (verified by `test_dockerfile_sets_ralph_git_host_env`).]
+  - [-] The `ralph.git-host` OCI label matches the host. [SKIPPED runtime verification — docker not installed; Dockerfile statically sets `ralph.git-host="${RALPH_GIT_HOST}"` LABEL (verified by `test_oci_labels_set_with_host_label`).]
+  - [x] The runtime-staging alternative is documented in the runbook (referencing Plan 7's `host_select.py`).
+  - [x] The plan 7 / 11 stub assumption is called out in `docs/deployment.md`.
 
-- [ ] 8. Commit each task's output as a separate conventional-commit. Commits this plan produces (in order):
+- [x] 8. Commit each task's output as a separate conventional-commit. Commits this plan produces (in order):
   - `chore(packaging): scaffold packaging tests and console-script entry`
   - `feat(packaging): bake .claude/settings.json with canonical skill names`
   - `feat(packaging): multi-stage Dockerfile with RALPH_GIT_HOST build arg`

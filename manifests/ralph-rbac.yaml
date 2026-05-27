@@ -1,0 +1,52 @@
+# Minimal RBAC. Host-agnostic — the same RBAC works for both
+# Phase 1 (github) and Phase 2 (ado) deployments. The
+# ServiceAccount is the IRSA anchor (annotate it with
+# eks.amazonaws.com/role-arn at deploy time).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ralph
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/part-of: ralph
+  annotations:
+    # TODO: At deploy time, set the IAM role ARN for IRSA, e.g.
+    # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ralph-executor
+    # See docs/deployment.md ("IAM and IRSA").
+    {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ralph-read-own-config
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/part-of: ralph
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["ralph-config", "ralph-claude-settings"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["ralph-secrets"]
+    verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ralph-read-own-config
+  namespace: ralph
+  labels:
+    app.kubernetes.io/name: ralph-executor
+    app.kubernetes.io/part-of: ralph
+subjects:
+  - kind: ServiceAccount
+    name: ralph
+    namespace: ralph
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ralph-read-own-config
