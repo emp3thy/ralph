@@ -555,3 +555,43 @@ def test_promote_appends_audit_on_partial_retry_after_earlier_identical_cycle(
         f"cycle-1 entry exists with the same detail; got:\n{history}"
     )
     assert history.count("severity: high -> normal") == 1
+
+
+def test_promote_exits_clean_when_pbi_not_in_head_and_severity_already_set(
+    git_repo: Path,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-7. A PBI present on disk but not
+    in HEAD (e.g. ralph-add wrote the dir but its commit failed) made
+    head_severity == "". The old guard fired only when
+    head_severity == args.severity, so the script proceeded and wrote
+    a misleading ``severity: high -> high`` HISTORY entry. Fix also
+    treats absent-from-HEAD as nothing-to-do when working tree already
+    has the target severity."""
+    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-690", pbi_type="feature", severity="high")
+    _git(git_repo, "checkout", "ralph-queue")
+    _git(git_repo, "rm", "-rf", ".ralph/inbox/WI-690")
+    _git(git_repo, "commit", "-m", "chore(test): remove seed commit")
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        "---\nid: WI-690\ntype: feature\nstatus: inbox\nseverity: high\nattempts: 0\n"
+        'created_at: "2026-05-20T08:00:00+00:00"\n'
+        'updated_at: "2026-05-20T08:00:00+00:00"\n---\n',
+        encoding="utf-8",
+    )
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+
+    exit_code = promote_module.main(
+        ["--pbi-id", "WI-690", "--severity", "high", "--repo", str(git_repo), "--no-push"]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["commit_sha"] == "", "nothing-to-do path must produce empty commit_sha"
+    history = (pbi_dir / "HISTORY.md").read_text(encoding="utf-8")
+    assert "high -> high" not in history, (
+        f"must NOT write misleading 'high -> high' entry; got:\n{history}"
+    )
+    head_after = _git(git_repo, "rev-parse", "ralph-queue")
+    assert head_after == head_before

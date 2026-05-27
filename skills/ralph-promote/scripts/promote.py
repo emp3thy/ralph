@@ -157,7 +157,18 @@ def main(argv: list[str] | None = None) -> int:
         # it exists; fall back to the working tree only when HEAD does
         # not yet contain the file (fresh PBI just added).
         previous_severity = head_severity if head_text is not None else working_severity
-        if head_severity == args.severity and working_severity == args.severity:
+        # "nothing to do" cases:
+        #   (a) HEAD has the file AND both HEAD and working tree show
+        #       the target severity (the normal already-promoted shape).
+        #   (b) HEAD does NOT have the file (fresh PBI from a failed
+        #       ralph-add commit) AND working tree shows the target
+        #       severity. Without this branch we'd compute a misleading
+        #       "severity: high -> high" history entry from
+        #       previous_severity == working_severity == args.severity.
+        nothing_to_do = working_severity == args.severity and (
+            head_severity == args.severity or head_text is None
+        )
+        if nothing_to_do:
             print(
                 f"PBI {args.pbi_id} already has severity={args.severity!r}; nothing to do.",
                 file=sys.stderr,

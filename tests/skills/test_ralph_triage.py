@@ -533,3 +533,60 @@ def test_triage_records_audit_when_note_text_was_used_in_earlier_cycle(
         f"cycle 2 must record a fresh audit entry even though the note "
         f"text was reused from cycle 1; got:\n{history}"
     )
+
+
+def test_triage_archive_created_true_on_partial_failure_retry(
+    git_repo: Path,
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 round-7 (LOW). Previous round used
+    ``(repo / '.ralph/archive').is_dir()`` for ``archive_existed_before``.
+    In the partial-failure retry case the previous incomplete run
+    already created ``.ralph/archive/`` on disk via ``_move_directory``
+    but never committed it. The retry then reported
+    ``archive_created=False`` even though THIS commit is the first time
+    the archive dir lands on HEAD. Fix uses ``is_path_in_head`` instead."""
+    _seed_blocked_pbi(git_repo, "WI-1600")
+
+    # Simulate the partial-failure retry shape: working tree already has
+    # the PBI in .ralph/archive/<id>/ (move happened) and the new
+    # archive directory exists on disk; HEAD still has it in blocked/.
+    _git(git_repo, "checkout", "ralph-queue")
+    import shutil
+
+    src = git_repo / ".ralph" / "blocked" / "WI-1600"
+    dst = git_repo / ".ralph" / "archive" / "WI-1600"
+    shutil.move(str(src), str(dst))
+    entry = dst / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    text = text.replace("status: blocked", "status: archive")
+    entry.write_text(text, encoding="utf-8")
+    history_path = dst / "HISTORY.md"
+    history_path.write_text(
+        history_path.read_text(encoding="utf-8")
+        + "## ralph-triage: archive\n"
+        + "ambiguous scope, archiving\n",
+        encoding="utf-8",
+    )
+
+    exit_code = triage_module.main(
+        [
+            "--pbi-id",
+            "WI-1600",
+            "--to",
+            "archive",
+            "--note",
+            "ambiguous scope, archiving",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["archive_created"] is True, (
+        "archive_created must be True when THIS commit first lands "
+        ".ralph/archive/ in HEAD, even if the dir already exists on "
+        "disk from a prior incomplete attempt"
+    )

@@ -176,7 +176,13 @@ def main(argv: list[str] | None = None) -> int:
         checkout_queue_branch(repo, args.branch)
 
         old_path = _resolve_blocked_pbi(repo, args.pbi_id, args.destination)
-        archive_existed_before = (repo / ".ralph" / "archive").is_dir()
+        # ``archive_created`` reports whether THIS commit produces the
+        # ``.ralph/archive/`` directory. Filesystem state is unreliable
+        # in the partial-failure retry case (a previous incomplete run
+        # already created the dir on disk via ``_move_directory`` but
+        # never committed it). Check HEAD instead: the dir is "newly
+        # created by this commit" iff HEAD does not yet have it.
+        archive_existed_before = is_path_in_head(repo, ".ralph/archive")
         new_path = repo / ".ralph" / args.destination / args.pbi_id
         # Detect the partial-failure retry: HEAD still has the PBI in
         # blocked/, but the working tree already moved it to
