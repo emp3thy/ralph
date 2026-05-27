@@ -1,22 +1,31 @@
 """Sweep runner: orchestrate the per-iteration sweep over pending-pr/.
 
 The pure ``decide_action`` function encodes the spec's sweep table and is
-exhaustively unit-tested. ``run`` (Task 6) wraps it with I/O: fetching
-PR state via the PR skill, moving folders, and writing feedback PBIs.
+exhaustively unit-tested. ``run`` wraps it with I/O: fetching PR state via
+the PR skill, moving folders, and writing feedback PBIs.
 """
 
 from __future__ import annotations
 
+import logging
+import re
+import shutil
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from ralph_executor.sweep import feedback_pbi as feedback_module
+from ralph_executor.sweep import pr_state
+from ralph_executor.sweep import state as sidecar_state
+from ralph_executor.sweep.pr_state import AdoSkillError
 from ralph_executor.sweep.types import (
     Action,
     CommentSnapshot,
     Decision,
     PrSnapshot,
 )
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,19 @@ class SweepConfig:
             raise ValueError("stale_threshold must be a positive timedelta")
         if self.now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
+
+
+@dataclass(frozen=True)
+class SweepContext:
+    """I/O context for one sweep invocation.
+
+    The loop driver (Plan 7) constructs this from its own ``LoopContext``
+    and passes it in. The split keeps ``run`` testable in isolation.
+    """
+
+    queue_root: Path  # the ``.ralph/`` directory in the project repo
+    ado_pr_scripts_path: Path  # the staged PR-skill ``scripts/`` directory
+    config: SweepConfig
 
 
 @dataclass(frozen=True)
@@ -157,21 +179,198 @@ def _new_active_human_comments(
 
 
 # ----------------------------------------------------------------------
-# Orchestration (filled in Task 6)
+# Orchestration
 # ----------------------------------------------------------------------
 
 
-def run(*, ctx: object) -> SweepResult:  # noqa: ARG001 — populated in Task 6
-    """Top-level sweep entry point. Implementation lands in Task 6."""
-    raise NotImplementedError("sweep.run is implemented in Task 6")
+_PR_ID_RE = re.compile(r"!?(\d+)")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(tz=UTC)
+class _SweepPbiError(RuntimeError):
+    """Raised to skip one PBI without aborting the whole sweep."""
 
 
-def _pbi_dir_iter(pending_dir: Path) -> list[Path]:
-    """Sorted list of immediate child directories of ``pending_dir``."""
+def run(*, ctx: SweepContext) -> SweepResult:
+    """Walk pending-pr/ once. Return a structured summary."""
+    pending_dir = ctx.queue_root / "pending-pr"
+    pbis = _list_pbi_directories(pending_dir)
+    actions: list[PbiActionRecord] = []
+    errors: list[str] = []
+
+    for pbi_dir in pbis:
+        try:
+            actions.append(_process_pbi(pbi_dir=pbi_dir, ctx=ctx))
+        except _SweepPbiError as err:
+            errors.append(f"{pbi_dir.name}: {err}")
+            log.warning("sweep error for %s: %s", pbi_dir.name, err)
+
+    return SweepResult(
+        pbis_scanned=len(pbis),
+        actions=tuple(actions),
+        errors=tuple(errors),
+    )
+
+
+def _list_pbi_directories(pending_dir: Path) -> list[Path]:
     if not pending_dir.is_dir():
         return []
     return sorted(p for p in pending_dir.iterdir() if p.is_dir())
+
+
+def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
+    pr_id = _read_pr_id(pbi_dir)
+    attempts = _read_attempts(pbi_dir)
+    sidecar = sidecar_state.load_sidecar(pbi_dir)
+    try:
+        snapshot = pr_state.fetch(pr_id=pr_id, skill_scripts_path=ctx.ado_pr_scripts_path)
+    except AdoSkillError as err:
+        raise _SweepPbiError(f"PR skill failure: {err}") from err
+
+    decision = decide_action(
+        pr=snapshot,
+        attempts=attempts,
+        last_seen_comment_ids=sidecar.last_seen_comment_ids,
+        last_feedback_round=sidecar.last_feedback_round,
+        config=ctx.config,
+    )
+    _dispatch(
+        pbi_dir=pbi_dir,
+        decision=decision,
+        snapshot=snapshot,
+        sidecar=sidecar,
+        ctx=ctx,
+    )
+    return PbiActionRecord(
+        pbi_id=pbi_dir.name,
+        pr_id=pr_id,
+        action=decision.action,
+        reason=decision.reason,
+    )
+
+
+def _read_pr_id(pbi_dir: Path) -> int:
+    pr_link = pbi_dir / "PR-LINK.md"
+    if not pr_link.is_file():
+        raise _SweepPbiError("PR-LINK.md is missing; cannot determine PR id")
+    for line in pr_link.read_text(encoding="utf-8").splitlines():
+        if "PR ID" in line or "PR:" in line:
+            match = _PR_ID_RE.search(line)
+            if match:
+                return int(match.group(1))
+    raise _SweepPbiError("PR-LINK.md does not contain a parseable PR id")
+
+
+def _read_attempts(pbi_dir: Path) -> int:
+    for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
+        path = pbi_dir / candidate
+        if not path.is_file():
+            continue
+        in_frontmatter = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip() == "---":
+                if in_frontmatter:
+                    break
+                in_frontmatter = True
+                continue
+            if in_frontmatter and line.startswith("attempts:"):
+                try:
+                    return int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    return 0
+    return 0
+
+
+def _dispatch(
+    *,
+    pbi_dir: Path,
+    decision: Decision,
+    snapshot: PrSnapshot,
+    sidecar: sidecar_state.SweepSidecar,
+    ctx: SweepContext,
+) -> None:
+    qr = ctx.queue_root
+    a = decision.action
+    if a is Action.MOVE_TO_DONE:
+        _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx)
+    elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
+        _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx)
+    elif a is Action.MOVE_TO_INBOX_RETRY:
+        _move_with_history(pbi_dir, qr / "inbox" / pbi_dir.name, decision.reason, ctx)
+    elif a is Action.CREATE_FEEDBACK_PBI:
+        _emit_feedback_pbi(
+            pbi_dir=pbi_dir,
+            decision=decision,
+            snapshot=snapshot,
+            sidecar=sidecar,
+            ctx=ctx,
+        )
+    elif a is Action.PING_REVIEWER:
+        _append_history(pbi_dir, decision.reason, ctx)
+    elif a is Action.NOOP:
+        return
+    else:  # pragma: no cover — defensive
+        raise _SweepPbiError(f"unhandled action: {a}")
+
+
+def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> None:
+    _append_history(src, reason, ctx)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        raise _SweepPbiError(f"destination {dst} already exists")
+    shutil.move(str(src), str(dst))
+
+
+def _append_history(pbi_dir: Path, reason: str, ctx: SweepContext) -> None:
+    history = pbi_dir / "HISTORY.md"
+    line = f"- {ctx.config.now.isoformat()} sweep: {reason}\n"
+    prior = history.read_text(encoding="utf-8") if history.exists() else ""
+    history.write_text(prior + line, encoding="utf-8")
+
+
+def _emit_feedback_pbi(
+    *,
+    pbi_dir: Path,
+    decision: Decision,
+    snapshot: PrSnapshot,
+    sidecar: sidecar_state.SweepSidecar,
+    ctx: SweepContext,
+) -> None:
+    next_round = sidecar.last_feedback_round + 1
+    bundle = feedback_module.render(
+        pr=snapshot,
+        originating_pbi_id=pbi_dir.name,
+        round_number=next_round,
+        new_comments=decision.new_comments,
+        original_pbi_summary=_read_original_summary(pbi_dir),
+        generated_at=ctx.config.now,
+    )
+    target_dir = ctx.queue_root / "inbox" / bundle.directory_name
+    if target_dir.exists():
+        raise _SweepPbiError(f"feedback PBI {target_dir} already exists; refusing to overwrite")
+    target_dir.mkdir(parents=True)
+    (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
+    (target_dir / "PR-LINK.md").write_text(bundle.pr_link_md, encoding="utf-8")
+    (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
+    (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
+
+    new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
+    sidecar_state.write_sidecar(
+        pbi_dir,
+        sidecar_state.SweepSidecar(
+            last_feedback_sweep=ctx.config.now,
+            last_feedback_round=next_round,
+            last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
+                sidecar.last_seen_comment_ids, new_ids
+            ),
+        ),
+    )
+    _append_history(pbi_dir, decision.reason, ctx)
+
+
+def _read_original_summary(pbi_dir: Path) -> str:
+    for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
+        path = pbi_dir / candidate
+        if path.is_file():
+            # First 40 lines; enough for context, bounded for file size.
+            return "\n".join(path.read_text(encoding="utf-8").splitlines()[:40])
+    return "(no original PBI body found)"

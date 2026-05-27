@@ -45,3 +45,13 @@
 - Tests: `uv run --no-sync pytest tests/executor/sweep/test_state.py tests/executor/sweep/test_feedback_pbi.py -v` → 9 passed.
 - Toolchain: `ruff check ralph_executor/sweep tests/executor/sweep` clean, `ruff format --check` clean (11 files), `mypy ralph_executor` clean (25 source files).
 - Notes: Task 6 next — orchestration (`run`, `SweepContext`, conftest fixtures, runner tests). The host-skill binding (`pr-github` vs `ado-pr`) gets decided in Task 7 at the loop driver, not here; `pr_state.fetch` is already host-agnostic so Task 6 stays generic too.
+
+## Iteration 5 — 2026-05-27T04:00:00+00:00
+
+- Task 6: implemented sweep runner orchestration. Wrote `tests/executor/sweep/conftest.py` (fixtures `queue_root`, `make_pending_pbi`, `fake_ado_pr_skill` + module-level `register_pr` helper) and `tests/executor/sweep/test_runner.py` (12 tests: terminal moves, no-op, feedback PBI generation, round-2 incremental, sidecar dedup, Ralph-authored skip, stale ping, empty pending, missing PR-LINK error). Red step confirmed: `ImportError: cannot import name 'SweepContext'`. Filled in `ralph_executor/sweep/runner.py` with `SweepContext`, real `run`, `_process_pbi`, `_read_pr_id`/`_read_attempts`, `_dispatch`, `_move_with_history`, `_append_history`, `_emit_feedback_pbi`, `_read_original_summary`, removed Task 3 stubs (`_utc_now`, `_pbi_dir_iter`).
+- Plan deviations (intentional):
+  - Renamed plan's `ado-pr failure` substring to `PR skill failure` so the error text is host-agnostic (matches Iteration 3's binding strategy; user-visible string only — no behaviour change).
+  - `SweepContext.ado_pr_scripts_path` kept the plan's name even though the staged skill is `pr-github`; renaming would propagate into Task 7 wiring and the Plan-7 `LoopContext`, which is out of scope for this iteration.
+- Tests: `uv run --no-sync pytest tests/executor/sweep/ -v` → 38 passed (10 new from `test_runner.py` parametrised to 12 cases). Full suite `uv run --no-sync pytest` → 434 passed, 2 skipped.
+- Toolchain: `ruff check ralph_executor tests` clean, `ruff format` reformatted runner.py + test_runner.py once, then `ruff format --check` clean (62 files); `mypy ralph_executor` clean (25 source files).
+- Notes: Task 7 next — wire `run_sweep(ctx=...)` into `ralph_executor/loop.py`. Existing `loop.py` already has a `_run_sweep(cfg, source)` placeholder rather than the plan-7 snippet's `LoopContext.iterate_once` shape; the integration will adapt to the actual loop signature. Task 7 will also need to thread `ado_pr_scripts_path` through `ExecutorConfig` (or read it from `host_select`) and source `RALPH_ADO_AUTHOR_EMAIL` / `RALPH_STALE_DAYS` from env.
