@@ -299,6 +299,35 @@ def test_repos_file_aggregates_across_repos(
     assert len(payload["rows"]) == 10
 
 
+def test_json_repo_field_is_canonical_path_not_temp_worktree(
+    tmp_path: Path,
+    git_repo_with_pbis: Path,
+    show_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot MEDIUM on PR #26: the JSON ``repo`` field
+    for each row used to emit the ephemeral worktree path
+    (``/tmp/ralph-status-xxx/...``) instead of the service repo path
+    the operator passed via ``--repo``. Downstream JSON consumers
+    expect the canonical path so they can correlate rows back to the
+    source they own."""
+    exit_code = show_module.main(["--repo", str(git_repo_with_pbis), "--json"])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    canonical = str(git_repo_with_pbis)
+    # Every row's repo field must be the canonical service path, not
+    # any ralph-status-* temp worktree.
+    assert payload["rows"], "fixture should produce rows"
+    for row in payload["rows"]:
+        assert row["repo"] == canonical, (
+            f"row.repo={row['repo']!r} should be canonical {canonical!r}; "
+            "ephemeral worktree path leaked into JSON output"
+        )
+        assert "ralph-status-" not in row["repo"], (
+            f"row.repo={row['repo']!r} contains temp-worktree marker"
+        )
+
+
 def test_two_repos_sharing_basename_do_not_collide(
     tmp_path: Path,
     show_module: ModuleType,

@@ -285,10 +285,20 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
+def _row_to_json(row: PBIRow | PBIRowError, *, canonical_repo_path: Path) -> dict[str, object]:
+    """Render a row as JSON. ``canonical_repo_path`` is the service repo
+    path the operator passed via ``--repo``, NOT the temp worktree under
+    which the rows were collected.
+
+    The reader currently stores ``row.repo_path == worktree_dir`` because
+    ``enumerate_state`` walks the worktree. That's the right value for
+    ``row.relative_pbi_dir()`` (pbi_dir IS under the worktree), but it's
+    the wrong value to expose to downstream JSON consumers — they expect
+    the service repo path (the one in ``repos[*].path``). Pass the
+    canonical path in from the snapshot to emit the right value."""
     if isinstance(row, PBIRow):
         return {
-            "repo": str(row.repo_path),
+            "repo": str(canonical_repo_path),
             "repo_name": row.repo_name,
             "state": row.state,
             "id": row.pbi_id,
@@ -302,7 +312,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
             "error": None,
         }
     return {
-        "repo": str(row.repo_path),
+        "repo": str(canonical_repo_path),
         "repo_name": row.repo_name,
         "state": row.state,
         "id": row.pbi_dir.name,
@@ -324,7 +334,7 @@ def _render_json(
     rows: list[dict[str, object]] = []
     for snap in snapshots:
         for row in snap.rows:
-            rows.append(_row_to_json(row))
+            rows.append(_row_to_json(row, canonical_repo_path=snap.config.path))
     payload: dict[str, object] = {
         "rows": rows,
         "errors": top_level_errors,
