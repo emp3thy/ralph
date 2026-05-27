@@ -760,7 +760,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "chore(migration): add target_repo t
 - Modify: `skills/ralph-add/scripts/add.py` (argparse + new `_derive_target_repo` helper + main flow)
 - Modify: `tests/skills/test_ralph_add.py`
 
-- [ ] **Step 6.1: Add failing tests**
+- [x] **Step 6.1: Add failing tests**
 
 Append to `tests/skills/test_ralph_add.py`:
 
@@ -847,7 +847,7 @@ def test_ralph_add_rejects_invalid_target_repo_flag(...) -> None:
 
 (The last three tests use the same fake-repo + mock-fetcher pattern already established in `test_ralph_add.py`. Copy the helper from an existing happy-path test if it exists; otherwise the pattern is: tmp_path repo, monkeypatch the fetcher subprocess to return canned JSON, run `add.main([...])`, then read `.ralph/inbox/<id>/PBI.md`.)
 
-- [ ] **Step 6.2: Run failing tests**
+- [x] **Step 6.2: Run failing tests**
 
 ```bash
 uv run pytest tests/skills/test_ralph_add.py -k "target_repo or derive_target" -v
@@ -855,7 +855,7 @@ uv run pytest tests/skills/test_ralph_add.py -k "target_repo or derive_target" -
 
 Expected: FAIL — `ImportError: cannot import name '_derive_target_repo'`.
 
-- [ ] **Step 6.3: Add the `_derive_target_repo` helper and `--target-repo` arg**
+- [x] **Step 6.3: Add the `_derive_target_repo` helper and `--target-repo` arg**
 
 In `skills/ralph-add/scripts/add.py`, add the helper near the other private helpers (around the `_run_git` area). Also add `import re` at the top if not present:
 
@@ -902,7 +902,7 @@ Add the `--target-repo` arg to the argparse setup. Find the `_parse_args` functi
     )
 ```
 
-- [ ] **Step 6.4: Wire `target_repo` into the new PBI's frontmatter**
+- [x] **Step 6.4: Wire `target_repo` into the new PBI's frontmatter**
 
 In `main()` (around line 436), after argument parsing and before the PBI write step, resolve the value:
 
@@ -925,7 +925,7 @@ In `main()` (around line 436), after argument parsing and before the PBI write s
 
 In the PBI-write step (where `_write_pbi_md` or the frontmatter assembly happens — find it via `grep -n "target_repo\|frontmatter\|PBI.md.*write" /c/Users/gethi/ralph-queue/skills/ralph-add/scripts/add.py`), add `target_repo: <value>` to the frontmatter being written. The exact insertion point depends on the existing structure; pattern-match the way other fields are written.
 
-- [ ] **Step 6.5: Run the tests — verify they pass**
+- [x] **Step 6.5: Run the tests — verify they pass**
 
 ```bash
 uv run pytest tests/skills/test_ralph_add.py -k "target_repo or derive_target" -v
@@ -933,7 +933,7 @@ uv run pytest tests/skills/test_ralph_add.py -k "target_repo or derive_target" -
 
 Expected: 6 PASS.
 
-- [ ] **Step 6.6: Run full ralph-add test module + ruff + mypy**
+- [x] **Step 6.6: Run full ralph-add test module + ruff + mypy**
 
 ```bash
 uv run pytest tests/skills/test_ralph_add.py -v
@@ -943,7 +943,7 @@ uv run mypy --strict skills/ralph-add/scripts/add.py
 
 If any existing happy-path test fails because the produced PBI now includes `target_repo` and the assertion didn't expect it: update the assertion to allow the new field. The field should appear in every ralph-add-created PBI.
 
-- [ ] **Step 6.7: Commit**
+- [x] **Step 6.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add skills/ralph-add/scripts/add.py tests/skills/test_ralph_add.py

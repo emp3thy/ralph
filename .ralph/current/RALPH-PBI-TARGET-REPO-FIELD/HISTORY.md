@@ -36,3 +36,12 @@
 - `ruff check .` + `ruff format --check .` both clean repo-wide.
 - Notes: queue-branch migration deferred but acknowledged in plan Step 5.3 with explanation. Memory note recorded: `.ralph/` gitignored on feature branches means migration scripts targeting it must run on ralph-queue separately.
 - Next iteration: Task 6 (`skills/ralph-add/scripts/add.py` — `_derive_target_repo` helper, `--target-repo` flag, write field into PBI frontmatter at creation).
+
+## Iteration 6 — 2026-05-27T22:45:00Z
+
+- Step Task 6: implemented `_derive_target_repo(repo)` in `skills/ralph-add/scripts/add.py` (regex on `git remote get-url origin`: SSH `git@host:owner/name(.git)?` → `https://host/owner/name`; HTTPS passthrough with `.git` stripped; otherwise `_FatalError` pointing at `--target-repo`). Added `--target-repo` argparse arg, inlined `_validate_target_repo_value` (mirror of `scripts.validate_samples._validate_target_repo` — avoids cross-package import in the skill), and wired resolution into `main()` so explicit flag wins over auto-derive. Threaded `target_repo` through `_write_pbi_directory` → `_render_frontmatter`; field is emitted as the 9th frontmatter line (matches `REQUIRED_FRONTMATTER_FIELDS` order). Added 6 tests to `tests/skills/test_ralph_add.py` (3 derive-helper unit tests + 3 end-to-end orchestrator tests covering auto-derive, flag override, and HTTP-rejection).
+- Fixture change in `tests/skills/test_ralph_add.py::git_repo`: after the initial push, rewrote `origin`'s fetch URL to `https://github.com/emp3thy/ralph.git` and set `pushurl` to the bare repo so existing tests get an auto-derivable origin while pushes continue to land on the local bare. No assertion changes needed on existing tests once the fixture supplies a valid origin.
+- Tests: `tests/skills/test_ralph_add.py` 22/22 green. Full suite: 647 passed, 2 skipped (down to zero collateral failures — `test_generated_pbi_passes_plan1_validator` is now green). `ruff check .` + `ruff format --check .` clean repo-wide; `mypy ralph_executor scripts skills tests` clean (105 source files).
+- Notes: Inlined the validator rather than importing from `scripts.validate_samples` because the skill loads via `importlib.util.spec_from_file_location` from outside the pytest rootdir and the `scripts.` package wouldn't reliably resolve in production. Duplication is 10 lines; both helpers must stay in lockstep.
+- Next iteration: Task 7 (`skills/workitem-fetch-github/scripts/schema.py` — add `target_repo` to `REQUIRED_KEYS` + WorkItemJson typed dict; one-line note in `prompt/PROMPT.md`).
+
