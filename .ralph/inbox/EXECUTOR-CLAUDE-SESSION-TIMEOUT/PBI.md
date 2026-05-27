@@ -5,7 +5,7 @@ status: inbox
 severity: normal
 attempts: 0
 created_at: 2026-05-27T23:35:00+00:00
-updated_at: 2026-05-27T23:35:00+00:00
+updated_at: 2026-05-28T00:05:00+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---
@@ -29,7 +29,7 @@ Add a per-iteration deadline (call it `claude_session_timeout_seconds`) that bou
 3. Surface a synthetic `ClaudeOutcome(kind="error", stderr="claude session exceeded N seconds and was killed", exit_code=-1, …)` to the loop.
 4. The loop then treats this like any other error iteration: attempts counter increments, PBI stays in `current/` for the next try (or moves to `blocked/` when attempts hits the cap, same as today's max-attempts path).
 
-Suggested default: **1800 seconds (30 min)**. Generous enough that legitimate first iterations on code-change PBIs (the slowest cohort observed today) complete, tight enough that wedged sessions get caught within one operator coffee break.
+Suggested default: **1200 seconds (20 min)**. Operator policy is to restart Claude well before 20 min, so anything that runs past the budget is genuinely wedged. Tight enough to catch hangs within one short coffee break.
 
 Implementation sketch:
 
@@ -52,11 +52,11 @@ except subprocess.TimeoutExpired:
     returncode = -1
 ```
 
-`ExecutorConfig` exposes `claude_session_timeout_seconds: int = 1800` (override via TOML `[claude] session_timeout_seconds`).
+`ExecutorConfig` exposes `claude_session_timeout_seconds: int = 1200` (override via TOML `[claude] session_timeout_seconds`).
 
 ## Acceptance criteria
 
-- `ExecutorConfig` exposes `claude_session_timeout_seconds` with default 1800.
+- `ExecutorConfig` exposes `claude_session_timeout_seconds` with default 1200.
 - TOML loader honours `[claude] session_timeout_seconds`.
 - `spawn_claude` (or whatever the public function is called) kills the child when `proc.wait()` exceeds the budget, joins the tee threads cleanly, and returns a `ClaudeOutcome(kind="error", ...)` with a clear stderr explanation.
 - Tee threads see EOF and exit (no zombie threads).
