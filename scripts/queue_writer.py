@@ -89,6 +89,52 @@ def checkout_queue_branch(repo: Path, branch: str) -> None:
     )
 
 
+def is_path_in_head(repo: Path, rel_path: str) -> bool:
+    """Return True if ``rel_path`` exists in the current ``HEAD`` tree.
+
+    Used by ``ralph-cancel`` / ``ralph-promote`` to test idempotency
+    against the COMMITTED git state rather than the filesystem. A
+    previous invocation that staged the change (``git add`` succeeded)
+    but failed the commit step (pre-commit hook, misconfigured
+    user.email, etc.) leaves the file on disk while HEAD is unchanged
+    — a subsequent invocation must re-run the full path, not return
+    "already done" based on ``Path.exists()``.
+    """
+    ensure_git_repo(repo)
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"HEAD:{rel_path}"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def read_path_from_head(repo: Path, rel_path: str) -> str | None:
+    """Return the contents of ``rel_path`` at ``HEAD`` as text, or None
+    if the path is not in HEAD.
+
+    Used by ``ralph-promote`` to read the COMMITTED frontmatter so
+    idempotency reflects what is actually on the queue branch, not what
+    a previously-failed commit happened to leave on disk.
+    """
+    ensure_git_repo(repo)
+    try:
+        result = subprocess.run(
+            ["git", "show", f"HEAD:{rel_path}"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return result.stdout
+
+
 def commit_paths(
     repo: Path,
     paths: Iterable[Path],
@@ -97,8 +143,11 @@ def commit_paths(
     """Stage every path in ``paths`` and create a commit with ``message``.
 
     Returns the new HEAD SHA. Paths are taken relative to ``repo`` for
-    ``git add``. Missing paths raise ``QueueWriterError`` before any git
-    command runs.
+    ``git add``. Paths that no longer exist on disk are still passed to
+    ``git add``, which stages the deletion if the path was tracked at
+    HEAD — callers performing renames (delete-old + add-new) rely on
+    this behaviour and pass the missing ``old_path`` alongside the
+    present ``new_path``.
     """
     ensure_git_repo(repo)
     rel_paths: list[str] = []
@@ -165,6 +214,25 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     raise QueueWriterError("frontmatter block is not closed by a second '---'")
 
 
+def parse_frontmatter_text(text: str, *, source: str = "<text>") -> tuple[dict[str, Any], str]:
+    """Split ``text`` into ``(frontmatter_dict, body_text)``.
+
+    Same parsing semantics as ``read_frontmatter`` but operates on a
+    string (e.g. one returned by ``read_path_from_head``). ``source``
+    appears in error messages so the caller can attribute parse failures.
+    """
+    frontmatter_text, body = _split_frontmatter(text)
+    try:
+        parsed: Any = yaml.safe_load(frontmatter_text)
+    except yaml.YAMLError as exc:
+        raise QueueWriterError(f"frontmatter in {source} is not valid YAML: {exc}") from exc
+    if not isinstance(parsed, Mapping):
+        raise QueueWriterError(
+            f"frontmatter in {source} must be a YAML mapping, got {type(parsed).__name__}"
+        )
+    return dict(parsed), body
+
+
 def read_frontmatter(entry_file: Path) -> tuple[dict[str, Any], str]:
     """Read ``entry_file`` and return ``(frontmatter_dict, body_text)``.
 
@@ -174,18 +242,7 @@ def read_frontmatter(entry_file: Path) -> tuple[dict[str, Any], str]:
     if not entry_file.is_file():
         raise QueueWriterError(f"entry file does not exist: {entry_file}")
     text = entry_file.read_text(encoding="utf-8")
-    frontmatter_text, body = _split_frontmatter(text)
-    try:
-        parsed: Any = yaml.safe_load(frontmatter_text)
-    except yaml.YAMLError as exc:
-        raise QueueWriterError(
-            f"frontmatter in {entry_file.name} is not valid YAML: {exc}"
-        ) from exc
-    if not isinstance(parsed, Mapping):
-        raise QueueWriterError(
-            f"frontmatter in {entry_file.name} must be a YAML mapping, got {type(parsed).__name__}"
-        )
-    return dict(parsed), body
+    return parse_frontmatter_text(text, source=entry_file.name)
 
 
 def write_frontmatter(

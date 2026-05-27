@@ -26,8 +26,10 @@ from scripts.queue_writer import (  # noqa: E402
     commit_paths,
     ensure_git_repo,
     find_pbi_directory,
+    parse_frontmatter_text,
     push,
     read_frontmatter,
+    read_path_from_head,
     write_frontmatter,
 )
 
@@ -136,7 +138,19 @@ def main(argv: list[str] | None = None) -> int:
         frontmatter, body = read_frontmatter(entry_file)
         previous_severity = str(frontmatter.get("severity", ""))
 
-        if previous_severity == args.severity:
+        # Idempotency check reads HEAD's frontmatter, not the working
+        # tree's. A previous invocation that wrote the new severity to
+        # disk but failed the commit (pre-commit hook, missing user
+        # config, etc.) leaves the new value on disk while HEAD still
+        # has the old one — re-running must commit + push the change,
+        # not silently exit 0 leaving the queue branch unchanged.
+        rel_entry = str(entry_file.relative_to(repo)).replace("\\", "/")
+        head_text = read_path_from_head(repo, rel_entry)
+        head_severity = ""
+        if head_text is not None:
+            head_front, _ = parse_frontmatter_text(head_text, source=f"HEAD:{rel_entry}")
+            head_severity = str(head_front.get("severity", ""))
+        if head_severity == args.severity and previous_severity == args.severity:
             print(
                 f"PBI {args.pbi_id} already has severity={args.severity!r}; nothing to do.",
                 file=sys.stderr,

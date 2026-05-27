@@ -252,6 +252,50 @@ def test_cancel_idempotent_when_sentinel_already_present(
     assert payload["pushed"] is False
 
 
+def test_cancel_runs_full_path_when_sentinel_on_disk_but_not_committed(
+    git_repo: Path,
+    cancel_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 flagged that the idempotency check used
+    ``Path.exists()`` which fires for a sentinel that was staged but
+    never committed (pre-commit hook reject, missing user.email, etc.).
+    The script then exited 0 with ``already_cancelled=True`` even though
+    HEAD was unchanged — ralph would never see the cancel. Fix routes
+    the check through ``git cat-file -e HEAD:<path>``; this test seeds
+    the bad-state (sentinel on disk + staged but NOT committed) and
+    asserts the next invocation re-runs the full commit + push path."""
+    pbi_dir = _seed_pbi(git_repo, "current", "WI-5050")
+    _git(git_repo, "checkout", "ralph-queue")
+    # Stage but do NOT commit — simulates a previously-failed cancel
+    # whose `git add` succeeded but whose `git commit` hook rejected
+    # the change.
+    (pbi_dir / "CANCEL").write_text("", encoding="utf-8")
+    _git(git_repo, "add", ".ralph/current/WI-5050/CANCEL")
+    _git(git_repo, "checkout", "main")
+
+    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+
+    exit_code = cancel_module.main(
+        [
+            "--pbi-id",
+            "WI-5050",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["already_cancelled"] is False, (
+        "must re-run the full path when the sentinel is not in HEAD, "
+        "even if it exists on the filesystem"
+    )
+    assert payload["commit_sha"] != ""
+    head_after = _git(git_repo, "rev-parse", "ralph-queue")
+    assert head_after != head_before, "a new commit must land on ralph-queue"
+
+
 def test_cancel_repo_not_a_repo_errors(
     tmp_path: Path,
     cancel_module: ModuleType,

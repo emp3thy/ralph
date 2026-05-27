@@ -331,3 +331,53 @@ def test_promote_records_history_entry(
     history = (git_repo / ".ralph" / "inbox" / "WI-600" / "HISTORY.md").read_text(encoding="utf-8")
     assert "ralph-promote" in history
     assert "normal -> critical" in history
+
+
+def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
+    git_repo: Path,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 flagged that the idempotency check
+    compared the working-tree severity, so a previously-failed promote
+    whose ``write_frontmatter`` succeeded but whose ``git commit`` failed
+    left the new severity on disk while HEAD still had the old one. The
+    next invocation read ``previous_severity == args.severity`` and
+    exited 0 with ``previous_severity == new_severity`` — never landing
+    the change on the queue branch. Fix reads HEAD's frontmatter via
+    ``read_path_from_head``; this test seeds the bad state and asserts
+    the next invocation commits + pushes."""
+    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-650", pbi_type="feature", severity="normal")
+
+    _git(git_repo, "checkout", "ralph-queue")
+    # Simulate previously-failed promote: on-disk frontmatter already
+    # has the new severity but the commit step never ran. Leave the
+    # working tree on ralph-queue with the dirty file in place — the
+    # script's checkout_queue_branch is a no-op when already there and
+    # then re-runs the full commit + push path.
+    entry = pbi_dir / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    text = text.replace("severity: normal", "severity: high")
+    entry.write_text(text, encoding="utf-8")
+    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+
+    exit_code = promote_module.main(
+        [
+            "--pbi-id",
+            "WI-650",
+            "--severity",
+            "high",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["new_severity"] == "high"
+    assert payload["commit_sha"] != "", (
+        "must re-run the full commit path when HEAD's severity is "
+        "unchanged, even if the working tree already has the new value"
+    )
+    head_after = _git(git_repo, "rev-parse", "ralph-queue")
+    assert head_after != head_before, "a new commit must land on ralph-queue"

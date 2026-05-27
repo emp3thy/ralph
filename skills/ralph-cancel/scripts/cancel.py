@@ -23,6 +23,7 @@ from scripts.queue_writer import (  # noqa: E402
     checkout_queue_branch,
     commit_paths,
     ensure_git_repo,
+    is_path_in_head,
     push,
 )
 
@@ -110,7 +111,13 @@ def main(argv: list[str] | None = None) -> int:
             sentinel.relative_to(repo).as_posix() if sentinel.is_absolute() else str(sentinel)
         )
 
-        if sentinel.exists():
+        # Idempotency check reads the COMMITTED HEAD tree, not the
+        # filesystem. A previous invocation that staged the sentinel but
+        # failed the commit step (pre-commit hook reject, missing user
+        # config, etc.) leaves the file on disk while HEAD is unchanged
+        # — that scenario must re-run, not silently return "already
+        # cancelled" and leave ralph thinking the PBI is still active.
+        if is_path_in_head(repo, rel_sentinel):
             print(
                 f"CANCEL sentinel already present at {rel_sentinel}; nothing to do.",
                 file=sys.stderr,
