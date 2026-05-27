@@ -394,3 +394,69 @@ def test_triage_no_push_keeps_remote_unchanged(
     assert payload["commit_sha"]
     after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
+
+
+def test_triage_runs_full_path_when_moved_on_disk_but_not_committed(
+    git_repo: Path,
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression: BugBot PR #35 flagged that triage had no idempotency
+    for the move + commit pair. If ``_move_directory`` succeeded but
+    ``commit_paths`` failed, retry could not find the PBI in
+    ``blocked/`` (moved to ``inbox/``) and raised "PBI is in
+    .ralph/inbox/, not in .ralph/blocked/". Fix detects the
+    HEAD-still-blocked + working-tree-already-moved state and short-
+    circuits to ``commit_paths`` only. Also asserts HISTORY.md gains
+    no duplicate entry."""
+    _seed_blocked_pbi(git_repo, "WI-1400")
+
+    # Simulate previously-failed triage: working tree already shows the
+    # PBI in inbox/ with updated frontmatter + a single HISTORY entry,
+    # but HEAD still has it in blocked/.
+    _git(git_repo, "checkout", "ralph-queue")
+    src = git_repo / ".ralph" / "blocked" / "WI-1400"
+    dst = git_repo / ".ralph" / "inbox" / "WI-1400"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    import shutil
+
+    shutil.move(str(src), str(dst))
+    pbi_md = dst / "PBI.md"
+    text = pbi_md.read_text(encoding="utf-8")
+    text = text.replace("status: blocked", "status: inbox")
+    text = text.replace("attempts: 3", "attempts: 0")
+    pbi_md.write_text(text, encoding="utf-8")
+    history_path = dst / "HISTORY.md"
+    history_path.write_text(
+        history_path.read_text(encoding="utf-8")
+        + "## 2026-05-27T10:00:00+00:00 ralph-triage: return-to-inbox\n"
+        "reseed for retry\n",
+        encoding="utf-8",
+    )
+    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+
+    exit_code = triage_module.main(
+        [
+            "--pbi-id",
+            "WI-1400",
+            "--to",
+            "inbox",
+            "--note",
+            "reseed for retry",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["commit_sha"] != "", (
+        "must re-run commit_paths when the move already landed on disk "
+        "but HEAD still shows the PBI under blocked/"
+    )
+    head_after = _git(git_repo, "rev-parse", "ralph-queue")
+    assert head_after != head_before, "a new commit must land on ralph-queue"
+    history = (git_repo / ".ralph" / "inbox" / "WI-1400" / "HISTORY.md").read_text(encoding="utf-8")
+    assert history.count("return-to-inbox") == 1, (
+        f"HISTORY must not gain a duplicate entry on retry; got:\n{history}"
+    )

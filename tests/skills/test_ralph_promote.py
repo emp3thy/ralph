@@ -350,15 +350,23 @@ def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
     pbi_dir = _seed_pbi(git_repo, "inbox", "WI-650", pbi_type="feature", severity="normal")
 
     _git(git_repo, "checkout", "ralph-queue")
-    # Simulate previously-failed promote: on-disk frontmatter already
-    # has the new severity but the commit step never ran. Leave the
-    # working tree on ralph-queue with the dirty file in place — the
-    # script's checkout_queue_branch is a no-op when already there and
-    # then re-runs the full commit + push path.
+    # Simulate previously-failed promote: on-disk frontmatter AND
+    # HISTORY.md have been updated as the prior attempt got that far,
+    # but the commit step never ran. Leave the working tree on
+    # ralph-queue with the dirty files in place — the script's
+    # checkout_queue_branch is a no-op when already there and then
+    # re-runs the commit + push path.
     entry = pbi_dir / "PBI.md"
     text = entry.read_text(encoding="utf-8")
     text = text.replace("severity: normal", "severity: high")
     entry.write_text(text, encoding="utf-8")
+    # Pre-existing HISTORY entry from the failed attempt — round-3 fix
+    # must not append a duplicate.
+    history_path = pbi_dir / "HISTORY.md"
+    history_path.write_text(
+        "## 2026-05-27T10:00:00+00:00 ralph-promote: promote\nseverity: normal -> high\n",
+        encoding="utf-8",
+    )
     head_before = _git(git_repo, "rev-parse", "ralph-queue")
 
     exit_code = promote_module.main(
@@ -391,5 +399,11 @@ def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
     history = (git_repo / ".ralph" / "inbox" / "WI-650" / "HISTORY.md").read_text(encoding="utf-8")
     assert "normal -> high" in history
     assert "high -> high" not in history
+    # BugBot round-3 (PR #35): must NOT duplicate the HISTORY entry on
+    # retry. The seed wrote one entry; the script must skip the second
+    # append since the working tree already had the new severity.
+    assert history.count("severity: normal -> high") == 1, (
+        f"HISTORY must not gain a duplicate entry on retry; got:\n{history}"
+    )
     subject = _git(git_repo, "log", "-1", "--pretty=%s", "ralph-queue").strip()
     assert "(normal -> high)" in subject, f"commit subject wrong: {subject}"

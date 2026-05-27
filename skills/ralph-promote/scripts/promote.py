@@ -199,16 +199,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        frontmatter["severity"] = args.severity
-        frontmatter["updated_at"] = _now_iso()
-        write_frontmatter(entry_file, frontmatter, body)
-
-        append_history(
-            pbi_dir,
-            actor="ralph-promote",
-            action="promote",
-            detail=f"severity: {previous_severity} -> {args.severity}",
-        )
+        # Only write + append HISTORY when the working tree actually
+        # needs changing. In the partial-failure retry case the working
+        # tree already has the new severity AND HISTORY.md already
+        # carries the entry from the prior failed run; redoing either
+        # would either no-op (write) or duplicate the audit (append).
+        if working_severity != args.severity:
+            frontmatter["severity"] = args.severity
+            frontmatter["updated_at"] = _now_iso()
+            write_frontmatter(entry_file, frontmatter, body)
+            append_history(
+                pbi_dir,
+                actor="ralph-promote",
+                action="promote",
+                detail=f"severity: {previous_severity} -> {args.severity}",
+            )
 
         history_file = pbi_dir / "HISTORY.md"
         commit_sha = commit_paths(

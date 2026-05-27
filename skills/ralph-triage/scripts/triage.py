@@ -28,6 +28,7 @@ from scripts.queue_writer import (  # noqa: E402
     checkout_queue_branch,
     commit_paths,
     ensure_git_repo,
+    is_path_in_head,
     push,
     read_frontmatter,
     write_frontmatter,
@@ -111,10 +112,25 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
-def _resolve_blocked_pbi(repo: Path, pbi_id: str) -> Path:
+def _resolve_blocked_pbi(repo: Path, pbi_id: str, destination: str) -> Path:
+    """Return the on-disk PBI path under ``.ralph/blocked/<pbi_id>``.
+
+    Handles the partial-failure retry case: if the working tree shows
+    the PBI at ``.ralph/<destination>/<pbi_id>`` but HEAD still has it
+    in ``.ralph/blocked/``, return the blocked path anyway so the
+    caller can finish the commit. The blocked path will not exist on
+    disk in that case — ``main`` detects this and skips the move +
+    history-append, going straight to ``commit_paths``.
+    """
     blocked = repo / ".ralph" / "blocked" / pbi_id
     if blocked.is_dir():
         return blocked
+    # Retry-after-failed-commit: working tree shows the move already
+    # happened, HEAD does not. Return blocked even though it's missing.
+    if is_path_in_head(repo, f".ralph/blocked/{pbi_id}"):
+        destination_dir = repo / ".ralph" / destination / pbi_id
+        if destination_dir.is_dir():
+            return blocked
     base = repo / ".ralph"
     for folder in ("current", "inbox", "pending-pr", "done", "archive"):
         if (base / folder / pbi_id).is_dir():
@@ -158,9 +174,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"switching to {args.branch}...", file=sys.stderr)
         checkout_queue_branch(repo, args.branch)
 
-        old_path = _resolve_blocked_pbi(repo, args.pbi_id)
+        old_path = _resolve_blocked_pbi(repo, args.pbi_id, args.destination)
         archive_existed_before = (repo / ".ralph" / "archive").is_dir()
         new_path = repo / ".ralph" / args.destination / args.pbi_id
+        # Detect the partial-failure retry: HEAD still has the PBI in
+        # blocked/, but the working tree already moved it to
+        # ``new_path`` (frontmatter + HISTORY already updated). Skip
+        # write_frontmatter / append_history / _move_directory and go
+        # straight to commit so the audit isn't duplicated and the
+        # commit lands.
+        is_retry = (
+            not old_path.is_dir()
+            and new_path.is_dir()
+            and is_path_in_head(repo, f".ralph/blocked/{args.pbi_id}")
+        )
 
         if args.dry_run:
             print(
@@ -186,23 +213,24 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        entry_file = _resolve_entry_file(old_path)
-        frontmatter, body = read_frontmatter(entry_file)
-        frontmatter["status"] = args.destination
-        frontmatter["updated_at"] = _now_iso()
-        if args.destination == "inbox":
-            frontmatter["attempts"] = 0
-        write_frontmatter(entry_file, frontmatter, body)
+        if not is_retry:
+            entry_file = _resolve_entry_file(old_path)
+            frontmatter, body = read_frontmatter(entry_file)
+            frontmatter["status"] = args.destination
+            frontmatter["updated_at"] = _now_iso()
+            if args.destination == "inbox":
+                frontmatter["attempts"] = 0
+            write_frontmatter(entry_file, frontmatter, body)
 
-        action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
-        append_history(
-            old_path,
-            actor="ralph-triage",
-            action=action_name,
-            detail=args.note,
-        )
+            action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
+            append_history(
+                old_path,
+                actor="ralph-triage",
+                action=action_name,
+                detail=args.note,
+            )
 
-        _move_directory(old_path, new_path)
+            _move_directory(old_path, new_path)
 
         commit_message = f"chore(queue): triage {args.pbi_id} (blocked -> {args.destination})"
         commit_sha = commit_paths(
