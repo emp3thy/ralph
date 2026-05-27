@@ -712,3 +712,40 @@ def test_terminal_outcome_removes_work_tree(
 # False) and exercises claim → spawn → persist → terminal-outcome moves
 # end-to-end. The legacy single-checkout path therefore has dense
 # regression coverage already; no dedicated test added here.
+
+
+def test_event_log_lives_in_queue_worktree_under_worktree_mode(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode every ``open_log`` call must target the queue
+    worktree, not the primary checkout. Otherwise events (notably
+    ``PBI_OPENED`` from ``move_inbox_to_current``) silently land in a
+    stray ``.ralph/state/events.db`` in the primary checkout — never
+    committed/pushed with the queue branch and invisible to the cycle
+    detector after a process restart."""
+    _populate_inbox(fake_repo)
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p", _stub_spawn("partial")
+    )
+
+    iterate_once(cfg_for_repo_worktree)
+
+    queue_wt = queue_worktree_path(fake_repo)
+    queue_db = queue_wt / ".ralph" / "state" / "events.db"
+    primary_db = fake_repo / ".ralph" / "state" / "events.db"
+    assert queue_db.is_file(), (
+        f"event log must live in the queue worktree; expected at {queue_db}"
+    )
+    assert not primary_db.exists(), (
+        f"primary checkout should never get a stray events.db; found {primary_db}"
+    )
+    # And the PBI_OPENED event from move_inbox_to_current actually lives there.
+    event_log = open_log(queue_wt)
+    try:
+        events = event_log.recent(window=timedelta(hours=1), now=datetime.now(tz=UTC))
+    finally:
+        event_log.close()
+    pbi_opened = [e for e in events if e.kind == EventType.PBI_OPENED]
+    assert pbi_opened, "PBI_OPENED event missing from queue-worktree event log"

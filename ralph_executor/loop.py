@@ -32,6 +32,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from ralph_executor import git_ops
@@ -65,6 +66,22 @@ from ralph_executor.worktree import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _event_log_root(cfg: ExecutorConfig) -> Path:
+    """Repo root that holds ``.ralph/state/events.db`` for ``open_log``.
+
+    In worktree mode ``.ralph/`` lives in the queue worktree, not the
+    primary checkout (which is typically on ``main`` and has no
+    ``.ralph/`` directory). Routing every ``open_log`` call through this
+    helper keeps the event database in a single place and stops events
+    from silently leaking into a stray ``.ralph/state/events.db`` in the
+    primary checkout.
+    """
+    if cfg.use_worktrees:
+        return queue_worktree_path(cfg.repo_path)
+    return cfg.repo_path
+
 
 IterationOutcome = Literal[
     "idle",
@@ -113,7 +130,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
     it without dependency-injection (reconciliation #9).
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_event_log_root(cfg))
     try:
         events = event_log.recent(window=timedelta(hours=72), now=now)
     finally:
@@ -289,7 +306,7 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     if cfg.use_worktrees:
         return _claim_pbi_worktree(cfg, pbi)
 
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_event_log_root(cfg))
     try:
         moved = move_inbox_to_current(
             cfg,
@@ -327,7 +344,7 @@ def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     # the primary checkout when the operator happens to have main checked
     # out there.
     git_ops.fetch(cfg.repo_path)
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_event_log_root(cfg))
     try:
         moved = move_inbox_to_current(
             cfg,
@@ -399,7 +416,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     ``PR_GREEN_THEN_RED`` event.
     """
     now = datetime.now(tz=UTC)
-    event_log = open_log(cfg.repo_path)
+    event_log = open_log(_event_log_root(cfg))
     try:
         # --- Spawn Claude ------------------------------------------------
         if cfg.use_worktrees:
@@ -539,7 +556,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # inside the PBI dir. The move_current_to_* paths handle their
         # own commits via git mv, but partial/error outcomes leave the
         # PBI in current/ with dirty files that would otherwise be lost.
-        event_log = open_log(cfg.repo_path)
+        event_log = open_log(_event_log_root(cfg))
         try:
             _persist_iteration_writes(
                 cfg,
