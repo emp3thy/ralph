@@ -143,6 +143,71 @@ def test_reconcile_summary_counts_include_errors(
     assert "2 errors" in out
 
 
+def test_reconcile_subcommand_prints_current_section_when_stale_orphan_present(
+    fake_repo_with_orphan: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`ralph-executor reconcile` prints the current/ section after the
+    pending-pr section, deleting an orphan whose sibling lives in done/."""
+    from ralph_executor.sweep.types import ReconcileReport
+
+    queue = fake_repo_with_orphan / ".ralph"
+    orphan = queue / "current" / "MERGED-X"
+    orphan.mkdir()
+    (orphan / "HISTORY.md").write_text("iter\n", encoding="utf-8")
+    sibling = queue / "done" / "MERGED-X"
+    sibling.mkdir()
+    (sibling / "PBI.md").write_text("---\nid: MERGED-X\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ralph_executor.cli.reconcile_all",
+        lambda ctx, *, dry_run=False: ReconcileReport(actions={}, errors={}),
+    )
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
+    monkeypatch.setenv("GH_TOKEN", "fake")
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "0")
+    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "MERGED-X" in out
+    assert "deleted_done_sibling" in out
+    assert "1 current/ entries inspected" in out
+    assert not orphan.exists()
+
+
+def test_reconcile_subcommand_current_dry_run_does_not_delete(
+    fake_repo_with_orphan: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--dry-run flag flows through to the current/ pass too."""
+    from ralph_executor.sweep.types import ReconcileReport
+
+    queue = fake_repo_with_orphan / ".ralph"
+    orphan = queue / "current" / "MERGED-Y"
+    orphan.mkdir()
+    (orphan / "HISTORY.md").write_text("iter\n", encoding="utf-8")
+    sibling = queue / "done" / "MERGED-Y"
+    sibling.mkdir()
+    (sibling / "PBI.md").write_text("---\nid: MERGED-Y\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "ralph_executor.cli.reconcile_all",
+        lambda ctx, *, dry_run=False: ReconcileReport(actions={}, errors={}),
+    )
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
+    monkeypatch.setenv("GH_TOKEN", "fake")
+    monkeypatch.setenv("RALPH_USE_WORKTREES", "0")
+    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan), "--dry-run"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "would: deleted_done_sibling" in out
+    assert orphan.exists()
+
+
 def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

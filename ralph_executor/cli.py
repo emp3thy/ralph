@@ -64,9 +64,9 @@ from ralph_executor.host_select import (
     prepare_host_environment,
 )
 from ralph_executor.loop import _pr_skill_scripts_path, iterate_once, run_loop
-from ralph_executor.sweep.reconcile import reconcile_all
+from ralph_executor.sweep.reconcile import reconcile_all, reconcile_stale_current_all
 from ralph_executor.sweep.runner import SweepConfig, SweepContext
-from ralph_executor.sweep.types import ReconcileReport
+from ralph_executor.sweep.types import CurrentReconcileReport, ReconcileReport
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -417,6 +417,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     report = reconcile_all(ctx, dry_run=args.dry_run)
     _print_reconcile_report(report, dry_run=args.dry_run)
+
+    current_report = reconcile_stale_current_all(ctx, dry_run=args.dry_run)
+    _print_current_reconcile_report(current_report, dry_run=args.dry_run)
     return 0
 
 
@@ -437,6 +440,30 @@ def _print_reconcile_report(report: ReconcileReport, *, dry_run: bool) -> None:
     n_err = len(report.errors)
     total = len(report.actions) + n_err
     print(f"\n{total} orphans attempted: {n_moves} moved, {n_stays} stays, {n_err} errors.")
+
+
+def _print_current_reconcile_report(
+    report: CurrentReconcileReport,
+    *,
+    dry_run: bool,
+) -> None:
+    """Print a one-line-per-entry summary for the current/ reconciliation pass."""
+    prefix = "would: " if dry_run else ""
+    if not report.actions and not report.errors:
+        print("\nreconcile-current: no current/ entries found")
+        return
+    print()
+    print(f"{'PBI-ID':<40} {'Current/ action':<28}")
+    print("-" * 70)
+    for pbi_id, action in sorted(report.actions.items()):
+        print(f"{pbi_id:<40} {prefix}{action.value}")
+    for pbi_id, err in sorted(report.errors.items()):
+        print(f"{pbi_id:<40} ERROR: {err}")
+    n_del = sum(1 for a in report.actions.values() if a.name.startswith("DELETED_"))
+    n_keep = sum(1 for a in report.actions.values() if a.name.startswith("KEEP_"))
+    n_err = len(report.errors)
+    total = len(report.actions) + n_err
+    print(f"\n{total} current/ entries inspected: {n_del} deleted, {n_keep} kept, {n_err} errors.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
