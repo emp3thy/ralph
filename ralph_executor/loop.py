@@ -154,7 +154,11 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         now=datetime.now(tz=UTC),
     )
     sweep_ctx = SweepContext(
-        queue_root=cfg.repo_path / ".ralph",
+        # `.ralph/` lives in the queue worktree under cfg.use_worktrees,
+        # not the primary checkout (which is typically on `main` and has
+        # no `.ralph/`). Same reasoning as `_queue_repo_root` for all
+        # other `.ralph/` accesses in this module.
+        queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=sweep_cfg,
     )
