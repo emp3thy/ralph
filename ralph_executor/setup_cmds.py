@@ -50,6 +50,13 @@ CONFIG_TOML_STUB = """\
 # ado_org_url = "https://dev.azure.com/your-org"
 # ado_project = "your-ado-project"
 # halt_webhook = "https://outlook.office.com/webhook/..."
+#
+# Sweep tuning (promoted from env-only). Required for sweep to run; if
+# bot_author_email is unset, sweep is skipped each iteration with a
+# WARNING. Env overrides keep the historical RALPH_ADO_AUTHOR_EMAIL /
+# RALPH_STALE_DAYS spelling for backwards compatibility.
+# bot_author_email = "ralph-bot@example.com"
+# stale_days = 3
 """
 
 
