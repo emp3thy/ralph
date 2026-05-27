@@ -44,3 +44,14 @@
   - Existing test (`test_spawn_invokes_claude_with_pbi_context`) hits the legacy default path; no test update needed for Task 4 (worktree-mode spawn coverage lands with Task 9).
 - Tests: full `pytest` suite green (454 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
 - Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits (executor's `_persist_iteration_writes` mirrors them onto ralph-queue). Commit: `881fce2 feat(claude_spawn): spawn into work tree with RALPH_PBI_DIR pointing at queue tree` on `ralph/STAGE-B-PLAN-20a-worktree`.
+
+## Iteration 5 — 2026-05-27T12:00:00+00:00
+
+- Step: Task 5 — rewrote `prompt/PROMPT.md` "What you read" section to use `$RALPH_PBI_DIR/...` for every active-PBI file reference (HISTORY.md, PBI.md, PLAN.md, BUG.md, REPRODUCE.md, ORIGINAL.md, FEEDBACK.md). Added preamble paragraph stating the absolute-path contract and warning that `.ralph/current/...` is the queue worktree's interior — Claude's cwd in worktree mode is the code worktree, so the relative form no longer resolves the way it used to.
+- Design notes:
+  - Kept one literal `.ralph/current/...` token in the preamble inside the "Do NOT use" sentence so the existing structural test (`test_prompt_contains_required_phrase[".ralph/current/"]`) still passes — that phrase is load-bearing as a recognisable anchor for human readers, not just as a path.
+  - Reworded the `docs/INVESTIGATE.md` bullet to clarify it lives at the repo root of the **code worktree** (Claude's cwd), since that distinction now matters in worktree mode.
+  - Did NOT touch the unprefixed mentions like "Open `PLAN.md`", "Write `STUCK.md`", "Append to `HISTORY.md`" inside the per-step instructions; the preamble explicitly establishes that any PBI-file shorthand resolves under `$RALPH_PBI_DIR/`. Rewriting every shorthand would have bloated the prompt without adding clarity beyond the preamble's contract.
+  - STUCK.md never had the `.ralph/current/...` prefix in the file (it was always referred to by basename); preamble covers it.
+- Tests: full `pytest` suite green (454 passed, 2 skipped — opt-in prompt smoke). `tests/test_prompt_structure.py` 30/30 passed. `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
+- Notes: switched to `ralph/STAGE-B-PLAN-20a-worktree` to land the code commit, then back to ralph-queue for HISTORY/PLAN edits. Commit: `2ee88b6 docs(prompt): switch PBI-file references to $RALPH_PBI_DIR` on `ralph/STAGE-B-PLAN-20a-worktree`.

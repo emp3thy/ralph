@@ -151,6 +151,8 @@ Preamble line near the top:
 
 Commit: `docs(prompt): switch PBI-file references to $RALPH_PBI_DIR`
 
+- [x] Task 5 complete (iteration 5, 2026-05-27, commit 2ee88b6)
+
 ### Task 6 — `_persist_iteration_writes` simplification
 
 When use_worktrees, the function operates directly on the queue worktree (`queue_wt`); no branch switching, just `git -C queue_wt add .ralph/current/<id>/` + commit + push.
