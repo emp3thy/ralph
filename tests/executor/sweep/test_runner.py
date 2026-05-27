@@ -526,10 +526,7 @@ def test_sweep_continues_when_pr_merged_emit_raises(
     assert result.pbis_scanned == 1
     assert len(result.actions) == 1
     # The failure was logged so the operator can see it.
-    assert any(
-        "PR_MERGED" in rec.message and "WI-FLAKY1" in rec.message
-        for rec in caplog.records
-    )
+    assert any("PR_MERGED" in rec.message and "WI-FLAKY1" in rec.message for rec in caplog.records)
 
 
 def test_sweep_continues_when_pr_green_then_red_emit_raises(
@@ -557,8 +554,7 @@ def test_sweep_continues_when_pr_green_then_red_emit_raises(
     assert not pbi.exists()
     assert (queue_root / "inbox" / "WI-FLAKY2").is_dir()
     assert any(
-        "PR_GREEN_THEN_RED" in rec.message and "WI-FLAKY2" in rec.message
-        for rec in caplog.records
+        "PR_GREEN_THEN_RED" in rec.message and "WI-FLAKY2" in rec.message for rec in caplog.records
     )
 
 
