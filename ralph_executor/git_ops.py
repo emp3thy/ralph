@@ -59,6 +59,31 @@ def pull(repo: Path, branch: str, remote: str = "origin") -> None:
     _run_git(repo, "pull", "--ff-only", remote, branch)
 
 
+def clone(url: str, dest: Path, *, timeout: float = 120.0) -> None:
+    """Run ``git clone <url> <dest>`` with a wall-clock timeout.
+
+    Full (non-shallow) clone — ralph needs full history for
+    ``git diff main..`` and sweep-side investigation. Raises
+    :class:`GitCommandError` on non-zero exit; ``subprocess.TimeoutExpired``
+    propagates unchanged if the clone exceeds ``timeout`` seconds.
+    """
+    argv = ["git", "clone", url, str(dest)]
+    log.debug("git: argv=%s", argv)
+    result = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise GitCommandError(
+            argv,
+            result.returncode,
+            result.stderr.strip() or result.stdout.strip(),
+        )
+
+
 def checkout(repo: Path, branch: str) -> None:
     """Run ``git checkout <branch>`` (must already exist)."""
     _run_git(repo, "checkout", branch)

@@ -129,3 +129,56 @@ def test_git_command_error_carries_argv_and_stderr(tmp_path: Path) -> None:
     with pytest.raises(GitCommandError) as excinfo:
         git_ops.current_branch(tmp_path)  # tmp_path is not a git repo
     assert "git" in str(excinfo.value).lower()
+
+
+def test_clone_invokes_git_clone_with_url_and_dest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git_ops.clone delegates to ``git clone <url> <dest>``."""
+    captured: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.append(list(argv))
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("ralph_executor.git_ops.subprocess.run", fake_run)
+    dest = tmp_path / "newclone"
+
+    git_ops.clone("https://github.com/x/y.git", dest)
+
+    assert len(captured) == 1
+    assert captured[0][:2] == ["git", "clone"]
+    assert "https://github.com/x/y.git" in captured[0]
+    assert str(dest) in captured[0]
+
+
+def test_clone_raises_git_command_error_on_non_zero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=128,
+            stdout="",
+            stderr="fatal: repository not found",
+        )
+
+    monkeypatch.setattr("ralph_executor.git_ops.subprocess.run", fake_run)
+
+    with pytest.raises(GitCommandError, match="repository not found"):
+        git_ops.clone("https://github.com/missing/repo.git", tmp_path / "x")
+
+
+def test_clone_passes_timeout_to_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_timeout: list[object] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_timeout.append(kwargs.get("timeout"))
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("ralph_executor.git_ops.subprocess.run", fake_run)
+    git_ops.clone("https://github.com/x/y.git", tmp_path / "x", timeout=60.0)
+
+    assert captured_timeout == [60.0]
