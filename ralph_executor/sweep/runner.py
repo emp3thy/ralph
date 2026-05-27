@@ -253,7 +253,11 @@ def _read_pr_id(pbi_dir: Path) -> int:
     pr_link = pbi_dir / "PR-LINK.md"
     if not pr_link.is_file():
         raise _SweepPbiError("PR-LINK.md is missing; cannot determine PR id")
-    for line in pr_link.read_text(encoding="utf-8").splitlines():
+    try:
+        text = pr_link.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to read PR-LINK.md in {pbi_dir}: {exc}") from exc
+    for line in text.splitlines():
         if "PR ID" in line or "PR:" in line:
             match = _PR_ID_RE.search(line)
             if match:
@@ -266,8 +270,12 @@ def _read_attempts(pbi_dir: Path) -> int:
         path = pbi_dir / candidate
         if not path.is_file():
             continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise _SweepPbiError(f"failed to read {candidate} in {pbi_dir}: {exc}") from exc
         in_frontmatter = False
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in text.splitlines():
             if line.strip() == "---":
                 if in_frontmatter:
                     break
@@ -317,10 +325,12 @@ def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> 
     # Stage the move FIRST so a failure (EXDEV cross-device, EACCES
     # permission denied, ENOSPC disk full, …) doesn't leave a spurious
     # "moved" entry in HISTORY.md that contradicts what's on disk.
-    # Wrap in _SweepPbiError so the per-PBI isolation in run() catches
-    # it and the rest of the sweep continues; without this, an OSError
-    # escapes uncaught and aborts every remaining PBI in this iteration.
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Wrap mkdir + move in _SweepPbiError so the per-PBI isolation in
+    # run() catches OSError at every IO step.
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to create {dst.parent}: {exc}") from exc
     if dst.exists():
         raise _SweepPbiError(f"destination {dst} already exists")
     try:
@@ -381,16 +391,25 @@ def _emit_feedback_pbi(
         raise _SweepPbiError(f"failed to write feedback PBI {target_dir}: {exc}") from exc
 
     new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
-    sidecar_state.write_sidecar(
-        pbi_dir,
-        sidecar_state.SweepSidecar(
-            last_feedback_sweep=ctx.config.now,
-            last_feedback_round=next_round,
-            last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
-                sidecar.last_seen_comment_ids, new_ids
+    # write_sidecar calls tmp.write_text + tmp.replace; both can raise
+    # OSError (ENOSPC etc.). Wrap so it's caught per-PBI rather than
+    # escaping run() and leaving an inconsistent half-state where the
+    # feedback PBI dir was written but the sidecar wasn't (which would
+    # make every subsequent sweep try to re-create the same feedback
+    # PBI and hit "already exists; refusing to overwrite").
+    try:
+        sidecar_state.write_sidecar(
+            pbi_dir,
+            sidecar_state.SweepSidecar(
+                last_feedback_sweep=ctx.config.now,
+                last_feedback_round=next_round,
+                last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
+                    sidecar.last_seen_comment_ids, new_ids
+                ),
             ),
-        ),
-    )
+        )
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _append_history(pbi_dir, decision.reason, ctx)
 
 
