@@ -982,6 +982,7 @@ def test_show_happy_path(
     assert payload["title"] == "WI-1234: add /healthz"
     assert payload["status"] == "active"  # open → active
     assert payload["merge_status"] == "mergeable"
+    assert payload["mergeable_state"] == "clean"
     assert payload["source_branch"] == "ralph/WI-1234"
     assert payload["target_branch"] == "main"
     assert payload["is_draft"] is False
@@ -1127,6 +1128,49 @@ def test_show_merge_status_mapping(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["merge_status"] == expected_status
+    # Raw mergeable_state is also passed through verbatim — downstream
+    # callers (sweep's auto-merge predicate) gate on the host vocab.
+    assert payload["mergeable_state"] == mergeable_state
+
+
+@responses.activate
+def test_show_mergeable_state_null_passthrough(
+    env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When GitHub returns ``mergeable_state: null`` (async check not yet
+    resolved), the raw field is emitted as JSON ``null``."""
+    pr_url = _pr_url()
+    reviews_url = f"{pr_url}/reviews?per_page=100"
+    checks_url = _check_runs_url("abc123") + "?per_page=100"
+    responses.add(
+        responses.GET,
+        pr_url,
+        json={
+            "number": PR_ID,
+            "title": "x",
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "mergeable": None,
+            "mergeable_state": None,
+            "head": {"ref": "feat", "sha": "abc123"},
+            "base": {"ref": "main"},
+            "user": {"login": "u"},
+            "created_at": "2026-05-25T00:00:00Z",
+            "closed_at": None,
+            "html_url": pr_url,
+        },
+        status=200,
+    )
+    responses.add(responses.GET, reviews_url, json=[], status=200)
+    responses.add(responses.GET, checks_url, json={"check_runs": []}, status=200)
+
+    mod = _load_module("show_test_mergeable_null", SCRIPTS_DIR / "show.py")
+    exit_code = mod.main(["--repo", REPO, "--pr-id", str(PR_ID)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mergeable_state"] is None
 
 
 # ---------------------------------------------------------------------------

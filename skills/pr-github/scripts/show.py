@@ -36,6 +36,12 @@ Merge-status mapping (``mergeable_state`` -> shared vocabulary):
         blocked / behind / unknown   -> unknown
         anything else                -> unknown
 
+The raw ``mergeable_state`` string is ALSO emitted verbatim in the
+output JSON (as ``mergeable_state``).  Downstream callers that want to
+gate on GitHub's specific vocabulary (e.g. sweep's auto-merge predicate
+which requires ``clean``) read this field directly; ``null`` is emitted
+when GitHub's async check has not resolved.
+
 Exit codes: 0 success, 2 validation, 3 GitHub error.
 """
 
@@ -249,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
             "title": str(pr.get("title") or ""),
             "status": _map_pr_status(state, merged),
             "merge_status": _map_merge_status(pr),
+            "mergeable_state": (
+                str(pr["mergeable_state"]) if isinstance(pr.get("mergeable_state"), str) else None
+            ),
             "source_branch": source_branch,
             "target_branch": target_branch,
             "is_draft": bool(pr.get("draft", False)),
