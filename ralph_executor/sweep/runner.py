@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ralph_executor.safety.events import (
+    Event,
+    EventLog,
+    EventType,
+    signature_from_text,
+)
 from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
@@ -72,6 +78,12 @@ class SweepContext:
     # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
     # ``.parent.name`` is "queue", not the repo name.
     repo_name: str = ""
+    # Optional cycle-detector event sink. When provided, the sweep emits
+    # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
+    # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
+    # don't exercise event emission omit it; production wiring (loop.py)
+    # always passes one.
+    event_log: EventLog | None = None
 
 
 @dataclass(frozen=True)
@@ -265,6 +277,29 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         last_feedback_round=sidecar.last_feedback_round,
         config=ctx.config,
     )
+    # Plan 19b Task 3: detect succeeded → failed CI transition and persist
+    # the current terminal CI state into the sidecar before dispatch.
+    # Persisting only "succeeded" / "failed" (NOT "running" / "none" /
+    # "unknown") preserves the last-known terminal state across
+    # intermediate ticks — succeeded → running → failed must still emit.
+    # The pre-dispatch write means the updated sidecar travels with any
+    # subsequent move (MOVE_TO_INBOX_RETRY etc.).
+    if sidecar.last_ci_status == "succeeded" and snapshot.ci_status == "failed":
+        _emit_pr_green_then_red(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
+    if (
+        snapshot.ci_status in {"succeeded", "failed"}
+        and snapshot.ci_status != sidecar.last_ci_status
+    ):
+        sidecar = sidecar_state.SweepSidecar(
+            last_feedback_sweep=sidecar.last_feedback_sweep,
+            last_feedback_round=sidecar.last_feedback_round,
+            last_seen_comment_ids=sidecar.last_seen_comment_ids,
+            last_ci_status=snapshot.ci_status,
+        )
+        try:
+            sidecar_state.write_sidecar(pbi_dir, sidecar)
+        except OSError as exc:
+            raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _dispatch(
         pbi_dir=pbi_dir,
         decision=decision,
@@ -332,6 +367,7 @@ def _dispatch(
     a = decision.action
     if a is Action.MOVE_TO_DONE:
         _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx)
+        _emit_pr_merged_and_pbi_closed(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
     elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
         _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx)
     elif a is Action.MOVE_TO_INBOX_RETRY:
@@ -445,12 +481,117 @@ def _emit_feedback_pbi(
                 last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
                     sidecar.last_seen_comment_ids, new_ids
                 ),
+                last_ci_status=sidecar.last_ci_status,
             ),
         )
     except OSError as exc:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _append_history(pbi_dir, decision.reason, ctx)
+
+
+def _emit_pr_merged_and_pbi_closed(
+    *,
+    pbi_id: str,
+    snapshot: PrSnapshot,
+    ctx: SweepContext,
+) -> None:
+    """Emit PR_MERGED + PBI_CLOSED on a pending-pr → done transition.
+
+    Both events share the same ``signature_from_text(pr_url)`` so the
+    cycle detector's ``signature_recurrence`` and ``regression_cascade``
+    rules can match across pairs. ``files`` is included for payload-shape
+    parity with ``PR_CREATED`` but is left empty: the PR skill's ``show``
+    op does not expose the file list and adding a second REST call per
+    sweep tick was deemed out of scope for v1.
+    """
+    if ctx.event_log is None:
+        return
+    pr_url = snapshot.url
+    signature = signature_from_text(pr_url) if pr_url else ""
+    now = ctx.config.now
+    # The PBI has already been moved to done/ by the caller; if the
+    # event-log write raises (e.g. sqlite3.Error on flush), there is
+    # NO retry path — the PBI is gone from pending-pr/ and won't be
+    # rescanned. Swallow the exception with a WARNING rather than
+    # letting it propagate uncaught past the per-PBI handler (which
+    # only catches _SweepPbiError) and abort the whole sweep. The
+    # cycle detector's regression_cascade rule will be missing this
+    # pair, but that's a softer failure than a sweep-wide abort that
+    # also masks every other PBI's progress.
+    try:
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PR_MERGED,
+                recorded_at=now,
+                pbi_id=pbi_id,
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature,
+                    "files": [],
+                },
+            )
+        )
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PBI_CLOSED,
+                recorded_at=now,
+                pbi_id=pbi_id,
+                payload={"signature": signature},
+            )
+        )
+    except Exception as exc:
+        log.warning(
+            "sweep: failed to emit PR_MERGED/PBI_CLOSED for %s (PBI already moved "
+            "to done/, no retry path): %s",
+            pbi_id,
+            exc,
+        )
+
+
+def _emit_pr_green_then_red(
+    *,
+    pbi_id: str,
+    snapshot: PrSnapshot,
+    ctx: SweepContext,
+) -> None:
+    """Emit PR_GREEN_THEN_RED on a succeeded → failed CI transition.
+
+    Payload shape matches PR_CREATED / PR_MERGED so the cycle detector's
+    ``regression_cascade`` rule can pair a recent merge with a later
+    regression by signature. ``files`` is empty: the PR skill's ``show``
+    op does not expose the file list and adding a second REST call per
+    sweep tick was deemed out of scope for v1 (same reasoning as
+    ``_emit_pr_merged_and_pbi_closed``).
+    """
+    if ctx.event_log is None:
+        return
+    pr_url = snapshot.url
+    signature = signature_from_text(pr_url) if pr_url else ""
+    # Log-and-continue on event-log failure — same resilience policy as
+    # the rest of the sweep. The PBI has not yet been moved here, so a
+    # missing event only means the cycle detector won't fire its
+    # regression_cascade for this transition; the sweep continues
+    # processing other PBIs and the next tick will re-evaluate state.
+    try:
+        ctx.event_log.append(
+            Event(
+                kind=EventType.PR_GREEN_THEN_RED,
+                recorded_at=ctx.config.now,
+                pbi_id=pbi_id,
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature,
+                    "files": [],
+                },
+            )
+        )
+    except Exception as exc:
+        log.warning(
+            "sweep: failed to emit PR_GREEN_THEN_RED for %s: %s",
+            pbi_id,
+            exc,
+        )
 
 
 def _read_original_summary(pbi_dir: Path) -> str:
