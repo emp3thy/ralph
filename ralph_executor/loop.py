@@ -154,6 +154,7 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         max_attempts=cfg.max_attempts,
         stale_threshold=timedelta(days=cfg.stale_days),
         now=datetime.now(tz=UTC),
+        auto_merge_clean_prs=cfg.auto_merge_clean_prs,
     )
     # Open the event log so the sweep can emit cycle-detector events
     # (Plan 19b: PR_MERGED + PBI_CLOSED on pending-pr → done,
