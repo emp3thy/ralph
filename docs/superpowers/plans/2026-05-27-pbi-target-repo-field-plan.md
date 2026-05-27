@@ -375,7 +375,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "feat(pbi-reader): PBIRow carries ta
 - Create: `scripts/migrate_pbis_to_target_repo.py`
 - Create: `tests/scripts/test_migrate_pbis.py`
 
-- [ ] **Step 4.1: Write the failing tests first**
+- [x] **Step 4.1: Write the failing tests first**
 
 Create `tests/scripts/test_migrate_pbis.py`:
 
@@ -487,7 +487,7 @@ def test_migrate_handles_no_fence_gracefully(tmp_path: Path) -> None:
 
 (Note: tests import `pytest` for `MonkeyPatch` — add `import pytest` at the top.)
 
-- [ ] **Step 4.2: Run the failing tests**
+- [x] **Step 4.2: Run the failing tests**
 
 ```bash
 uv run pytest tests/scripts/test_migrate_pbis.py -v
@@ -495,7 +495,7 @@ uv run pytest tests/scripts/test_migrate_pbis.py -v
 
 Expected: ALL FAIL with `ModuleNotFoundError: No module named 'scripts.migrate_pbis_to_target_repo'`.
 
-- [ ] **Step 4.3: Implement the migration script**
+- [x] **Step 4.3: Implement the migration script**
 
 Create `scripts/migrate_pbis_to_target_repo.py`:
 
@@ -594,7 +594,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4.4: Run the tests — verify they pass**
+- [x] **Step 4.4: Run the tests — verify they pass**
 
 ```bash
 uv run pytest tests/scripts/test_migrate_pbis.py -v
@@ -602,7 +602,7 @@ uv run pytest tests/scripts/test_migrate_pbis.py -v
 
 Expected: 5 PASS.
 
-- [ ] **Step 4.5: Run ruff + mypy**
+- [x] **Step 4.5: Run ruff + mypy**
 
 ```bash
 uv run ruff check scripts/migrate_pbis_to_target_repo.py tests/scripts/test_migrate_pbis.py
@@ -611,7 +611,7 @@ uv run mypy --strict scripts/migrate_pbis_to_target_repo.py
 
 Expected: green.
 
-- [ ] **Step 4.6: Commit**
+- [x] **Step 4.6: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add scripts/migrate_pbis_to_target_repo.py tests/scripts/test_migrate_pbis.py

@@ -20,3 +20,10 @@
 - Tests: `tests/test_pbi_reader.py` 13/13 green. `ruff check scripts/pbi_reader.py tests/test_pbi_reader.py` clean; `mypy --strict scripts/pbi_reader.py` clean. Full `pytest tests/` shows 6 remaining failures across `tests/test_workspace_samples.py`, `tests/skills/test_ralph_add.py`, `tests/skills/test_ralph_status.py` — all collateral `missing frontmatter fields: ['target_repo']` style, scoped to Task 5 (sample edits) and Task 6 (ralph-add field).
 - Notes: still on feature branch; plan's `git -C ralph-queue` instructions remain stale (committing from the repo worktree).
 - Next iteration: Task 4 (`scripts/migrate_pbis_to_target_repo.py` + 5 tests).
+
+## Iteration 4 — 2026-05-27T21:00:00Z
+
+- Step Task 4: created `scripts/migrate_pbis_to_target_repo.py` (idempotent, EOL-preserving, hardcoded `https://github.com/emp3thy/ralph`, skip-if-present, error-if-no-fence) and `tests/scripts/test_migrate_pbis.py` covering missing-field insertion, idempotent skip, fence-position invariant, frontmatter-order preservation, and no-fence error path.
+- Tests: `tests/scripts/test_migrate_pbis.py` 5/5 green. `ruff check` + `mypy --strict scripts/migrate_pbis_to_target_repo.py` clean. Did not run full suite this iteration — same 6 collateral failures from iteration 3 are expected (Task 5/6 still pending).
+- Notes: feature branch commits per iteration 1 convention (plan's `git -C ralph-queue` instructions remain stale).
+- Next iteration: Task 5 (run migration against `.ralph/`, edit `samples/`, add `test_all_live_pbis_have_target_repo` regression sweep).
