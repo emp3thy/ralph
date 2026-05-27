@@ -1,11 +1,11 @@
 ---
 id: LOOP-PERSIST-PUSH-RACE
 type: bug
-status: current
+status: pending-pr
 severity: high
 attempts: 0
 created_at: 2026-05-27T18:00:00+00:00
-updated_at: 2026-05-27T17:10:29+00:00
+updated_at: 2026-05-27T17:29:26+00:00
 depends_on: []
 ---
 
