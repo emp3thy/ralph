@@ -271,6 +271,7 @@ def _build_document(
             "work_item_type": "issue",
             "user": user_login,
         },
+        "target_repo": f"https://github.com/{owner}/{repo}",
     }
 
 

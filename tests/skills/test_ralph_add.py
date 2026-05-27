@@ -42,7 +42,13 @@ def add_module() -> ModuleType:
 
 @pytest.fixture
 def git_repo(tmp_path: Path) -> Iterator[Path]:
-    """Build a local bare repo + a working clone with a ralph-queue branch."""
+    """Build a local bare repo + a working clone with a ralph-queue branch.
+
+    Origin's fetch URL is rewritten to an HTTPS placeholder after the
+    initial push so ralph-add's ``_derive_target_repo`` has a parseable
+    HTTPS URL. The bare remote is retained as ``pushurl`` so subsequent
+    pushes still work against the local-filesystem bare repo.
+    """
     bare = tmp_path / "remote.git"
     work = tmp_path / "work"
     subprocess.run(["git", "init", "--bare", str(bare)], check=True)
@@ -57,6 +63,10 @@ def git_repo(tmp_path: Path) -> Iterator[Path]:
     _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap ralph-queue")
     _git(work, "push", "-u", "origin", "ralph-queue")
     _git(work, "checkout", "main")
+    # Keep pushurl pointing at the bare repo; switch fetch URL to HTTPS
+    # so ralph-add can auto-derive target_repo from origin.
+    _git(work, "remote", "set-url", "--push", "origin", str(bare))
+    _git(work, "remote", "set-url", "origin", "https://github.com/emp3thy/ralph.git")
     yield work
 
 
@@ -127,6 +137,7 @@ def _doc(
     attachments: list[dict[str, str]] | None = None,
     child_ids: list[str] | None = None,
     source_host: str = "github",
+    target_repo: str = "https://github.com/emp3thy/ralph",
 ) -> dict[str, object]:
     return {
         "id": f"WI-{number}",
@@ -142,6 +153,7 @@ def _doc(
         "source_url": f"https://example.invalid/issues/{number}",
         "source_host": source_host,
         "raw": {},
+        "target_repo": target_repo,
     }
 
 
@@ -281,6 +293,7 @@ def test_work_item_id_with_path_traversal_is_rejected(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
+        "target_repo": "https://github.com/emp3thy/ralph",
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
@@ -329,6 +342,7 @@ def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
+        "target_repo": "https://github.com/emp3thy/ralph",
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
@@ -760,3 +774,149 @@ def test_generated_pbi_passes_plan1_validator(
     assert errors == [], "ralph-add-produced PBI fails Plan 1 validator:\n  - " + "\n  - ".join(
         errors
     )
+
+
+# ----------------------------------------------------------------------
+# target_repo tests (RALPH-PBI-TARGET-REPO-FIELD — Task 6)
+# ----------------------------------------------------------------------
+
+
+def _init_repo_with_origin(repo: Path, origin: str) -> None:
+    """Initialise an empty git repo with a single origin remote."""
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "remote", "add", "origin", origin)
+
+
+def test_derive_target_repo_from_https_origin(
+    tmp_path: Path,
+    add_module: ModuleType,
+) -> None:
+    """HTTPS origin (with .git suffix) -> HTTPS URL without .git suffix."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_origin(repo, "https://github.com/emp3thy/ralph.git")
+
+    assert add_module._derive_target_repo(repo) == "https://github.com/emp3thy/ralph"
+
+
+def test_derive_target_repo_from_ssh_origin(
+    tmp_path: Path,
+    add_module: ModuleType,
+) -> None:
+    """SSH origin git@host:owner/name(.git)? -> https://host/owner/name."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_origin(repo, "git@github.com:emp3thy/ralph.git")
+
+    assert add_module._derive_target_repo(repo) == "https://github.com/emp3thy/ralph"
+
+
+def test_derive_target_repo_raises_on_unparseable_origin(
+    tmp_path: Path,
+    add_module: ModuleType,
+) -> None:
+    """Local-file-path origin cannot map to an HTTPS URL; raise pointing
+    at the --target-repo escape hatch."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_origin(repo, "/some/local/path")
+
+    with pytest.raises(add_module._FatalError, match="--target-repo"):
+        add_module._derive_target_repo(repo)
+
+
+def test_ralph_add_writes_derived_target_repo_to_new_pbi(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No --target-repo flag: origin is auto-derived into PBI frontmatter."""
+    # Repoint origin to an HTTPS URL so auto-derive yields a real value.
+    # Run with --no-push since the bare remote is no longer reachable.
+    _git(git_repo, "remote", "set-url", "origin", "https://github.com/emp3thy/ralph.git")
+    doc = _doc(number=WORK_ITEM_ID, title="auto-derive test")
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    capsys.readouterr()
+
+    _git(git_repo, "checkout", "ralph-queue")
+    pbi_md = (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
+        encoding="utf-8"
+    )
+    assert "target_repo: https://github.com/emp3thy/ralph" in pbi_md
+
+
+def test_ralph_add_flag_overrides_origin(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--target-repo wins over auto-derive."""
+    _git(git_repo, "remote", "set-url", "origin", "https://github.com/A/B.git")
+    doc = _doc(number=WORK_ITEM_ID, title="flag override")
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+            "--target-repo",
+            "https://github.com/C/D",
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    capsys.readouterr()
+
+    _git(git_repo, "checkout", "ralph-queue")
+    pbi_md = (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
+        encoding="utf-8"
+    )
+    assert "target_repo: https://github.com/C/D" in pbi_md
+    assert "target_repo: https://github.com/A/B" not in pbi_md
+
+
+def test_ralph_add_rejects_invalid_target_repo_flag(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """http:// (not https://) --target-repo exits 2 with HTTPS-mentioning stderr."""
+    doc = _doc(number=WORK_ITEM_ID)
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--repo",
+            str(git_repo),
+            "--no-push",
+            "--target-repo",
+            "http://github.com/x/y",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "HTTPS" in err

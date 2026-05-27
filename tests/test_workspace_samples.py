@@ -76,6 +76,7 @@ def _write_feature_pbi(
         f"attempts: {attempts}\n"
         "created_at: 2026-05-25T00:00:00+00:00\n"
         "updated_at: 2026-05-25T00:00:00+00:00\n"
+        "target_repo: https://github.com/emp3thy/ralph\n"
         "---\n\n# body\n",
         encoding="utf-8",
     )
@@ -206,6 +207,7 @@ def test_single_null_field_treated_as_missing(tmp_path: Path) -> None:
         "attempts: 0\n"
         "created_at: 2026-05-25T00:00:00+00:00\n"
         "updated_at: 2026-05-25T00:00:00+00:00\n"
+        "target_repo: https://github.com/emp3thy/ralph\n"
         "---\n\n# body\n",
         encoding="utf-8",
     )

@@ -24,6 +24,7 @@ severity: normal
 attempts: 0
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # Add /healthz endpoint
@@ -39,6 +40,7 @@ severity: critical
 attempts: 0
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # Pod crashloops on ROSA
@@ -54,6 +56,7 @@ severity: high
 attempts: 0
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # PR feedback round 2
@@ -138,6 +141,7 @@ severity: normal
 # attempts intentionally omitted
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # Title
@@ -157,6 +161,7 @@ severity: normal
 attempts: 0
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # Title
@@ -202,6 +207,7 @@ severity: normal
 attempts: 0
 created_at: 2026-05-24
 updated_at: 2026-05-24
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # bare date in frontmatter
@@ -231,6 +237,7 @@ severity: normal
 attempts: true
 created_at: 2026-05-24T09:15:00+00:00
 updated_at: 2026-05-24T09:15:00+00:00
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # x
@@ -243,3 +250,11 @@ updated_at: 2026-05-24T09:15:00+00:00
     assert result.attempts is not True
     assert isinstance(result.attempts, int)
     assert not isinstance(result.attempts, bool)
+
+
+def test_read_pbi_carries_target_repo(tmp_path: Path) -> None:
+    """PBIRow.target_repo must mirror the frontmatter field."""
+    pbi_dir = _make_pbi(tmp_path, "WI-1234", "PBI.md", VALID_FEATURE_FRONTMATTER)
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
+    assert isinstance(result, PBIRow)
+    assert result.target_repo == "https://github.com/emp3thy/ralph"
