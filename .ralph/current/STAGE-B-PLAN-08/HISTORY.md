@@ -12,3 +12,13 @@
 - Toolchain: `ruff check` clean, `ruff format --check` clean, `mypy ralph_executor` clean (21 source files).
 - Tests: no new tests added this iteration (Task 1 is scaffold only).
 - Notes: skill name mismatch (plan says `ado-pr`, repo has `pr-github`) is load-bearing for Tasks 4 and 6 — keep an eye on it.
+
+## Iteration 2 — 2026-05-27T01:00:00+00:00
+
+- Task 2: wrote `tests/executor/sweep/test_decide_action.py` (12 tests covering every row of the sweep table + SweepConfig validation). Verified red step: collection failed with `ModuleNotFoundError: No module named 'ralph_executor.sweep.runner'`.
+- Task 3: created `ralph_executor/sweep/runner.py` with `SweepConfig`, `PbiActionRecord`, `SweepResult`, `decide_action` (pure-function core implementing the spec table), `_new_active_human_comments` helper, and stubbed `run` / `_utc_now` / `_pbi_dir_iter` for Task 6. Populated `ralph_executor/sweep/__init__.py` with the public re-exports per the canonical plan.
+- Plan deviations (intentional):
+  - Plan literally writes `from datetime import datetime, timedelta, timezone` + `timezone.utc`; ruff `UP017` rejects under py3.12. Used `from datetime import UTC, ...` + `tz=UTC` instead (semantically identical).
+- Tests: `uv run --no-sync pytest tests/executor/sweep/test_decide_action.py -v` → 12 passed (green). Full suite `uv run --no-sync pytest` → 408 passed, 2 skipped (opt-in prompt smoke).
+- Toolchain: `ruff check ralph_executor/sweep tests/executor/sweep` clean, `ruff format --check` clean, `mypy ralph_executor` clean (22 source files).
+- Notes: Task 4 next. Skill mismatch (`ado-pr` vs `pr-github`) becomes load-bearing. Task 4 invokes `show.py` + `read_threads.py` under `skills/<skill>/scripts/`; the binding belongs in the runner's call site (Task 6), so `pr_state.fetch` should accept the scripts directory as a parameter and the loop driver picks the right one.
