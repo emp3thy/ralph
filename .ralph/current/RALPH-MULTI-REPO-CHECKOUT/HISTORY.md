@@ -20,3 +20,10 @@
 - Tests: green (5/5) `uv run pytest tests/executor/test_target_clone.py`
 - Lint: ruff check + ruff format (auto-applied) + mypy --strict all clean
 - Notes: Plan's draft tests raised `GitCommandError("authentication failed")` — substituted 3-arg form `GitCommandError(argv, returncode, stderr)` (matches the real constructor; iter-1+2 same pattern). Wrapping `TargetUnreachable` includes the `GitCommandError` str repr, which includes the stderr — `match=` patterns still hit. Next iteration: Task 4 (`_resolve_path` + `workspace_root` in `config.py`, `CONFIG_TOML_STUB` doc, conftest `cfg_for_repo` fixture). Plan Step 4.9 requires checking the `conftest.py` `cfg_for_repo` for the existing pattern before constructing the workspace_root default.
+
+## Iteration 4 — 2026-05-28T01:30:00Z
+
+- Step: Task 4 — `_resolve_path` + `workspace_root` field on `ExecutorConfig` + load_config wiring + `RALPH_WORKSPACE` env override + `CONFIG_TOML_STUB` doc + conftest `cfg_for_repo` fixture
+- Tests: green (5/5 targeted) `uv run pytest tests/executor/test_config_toml.py -k workspace_root`; wider sweep `uv run pytest tests/executor tests/safety` 459/459 green
+- Lint: ruff check + ruff format (auto-applied to config.py + test file) + mypy --strict on config.py all clean
+- Notes: Plan's draft test `f'workspace_root = "{target}"'` blew up under Windows tmp paths — `\U` / `\t` in the path interpolate as TOML escape sequences (`Invalid hex value`). Fix: `.as_posix()` the path when writing the TOML literal so it round-trips through `Path()` identically. Recorded as a better-memory gotcha (id 397b291f). Next iteration: Task 5 — refactor `worktree.work_worktree_path` to take a `clone_root` parameter (sub-90% confidence step per plan; mitigation = chase all call sites first).
