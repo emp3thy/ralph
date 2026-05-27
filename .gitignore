@@ -13,6 +13,7 @@ dist/
 
 # Ralph runtime + tooling
 .ralph/
+.ralph-work/
 .worktrees/
 .superpowers/
 
