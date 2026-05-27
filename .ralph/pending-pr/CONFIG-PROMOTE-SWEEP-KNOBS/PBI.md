@@ -1,11 +1,11 @@
 ---
 id: CONFIG-PROMOTE-SWEEP-KNOBS
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T00:00:00+00:00
-updated_at: 2026-05-27T06:58:47+00:00
+updated_at: 2026-05-27T08:00:53+00:00
 depends_on: []
 ---
 
