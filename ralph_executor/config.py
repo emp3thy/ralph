@@ -422,9 +422,7 @@ def load_config() -> ExecutorConfig:
         source_label=source_label,
     )
     if stale_days <= 0:
-        raise ConfigError(
-            f"{source_label}: stale_days must be positive (got {stale_days})"
-        )
+        raise ConfigError(f"{source_label}: stale_days must be positive (got {stale_days})")
     pr_check_poll_max_attempts = _resolve_int(
         name="pr_check_poll_max_attempts",
         env_name="RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
