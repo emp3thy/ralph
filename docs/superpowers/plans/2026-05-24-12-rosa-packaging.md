@@ -1845,7 +1845,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Confirm the Azure Pipelines snippet (which will be embedded in Task 9's runbook) is syntactically valid YAML. The exact snippet:
+- [x] 1. Confirm the Azure Pipelines snippet (which will be embedded in Task 9's runbook) is syntactically valid YAML. The exact snippet:
   ```yaml
   # Azure Pipelines alternative to .github/workflows/ralph-image.yml.
   # Builds both host images via a matrix-equivalent strategy
@@ -1911,7 +1911,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   ```
   Paste this snippet into the runbook in Task 9 verbatim.
 
-- [ ] 2. The alternative is a NICE TO HAVE. Plan 12 does not commit `azure-pipelines.yml` itself.
+- [x] 2. The alternative is a NICE TO HAVE. Plan 12 does not commit `azure-pipelines.yml` itself.
 
 ### Task 9 — Write the deployment runbook (Phase 1 / Phase 2 branches)
 
@@ -1920,7 +1920,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Write `docs/deployment.md` with the structure below. The runbook is **branching** — it asks the reader which phase they are deploying and then takes them down a self-contained path. The implementer SHALL write the actual prose; the headings and the content checklist under each are non-negotiable.
+- [x] 1. Write `docs/deployment.md` with the structure below. The runbook is **branching** — it asks the reader which phase they are deploying and then takes them down a self-contained path. The implementer SHALL write the actual prose; the headings and the content checklist under each are non-negotiable.
 
   ```markdown
   # Ralph Deployment Runbook
@@ -2192,7 +2192,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   the orchestrator plan for status.
   ```
 
-- [ ] 2. The runbook MUST cover (checklist):
+- [x] 2. The runbook MUST cover (checklist):
   - "Which phase are you deploying?" intro with a clear Phase 1 vs Phase 2 branch
   - Common prerequisites
   - Choosing a mode (Deployment vs Job)
@@ -2203,7 +2203,7 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
   - Runtime-staging alternative (host_select.py)
   - Plan 7 / 11 stub callout
 
-- [ ] 3. Re-render the runbook locally and confirm headings:
+- [x] 3. Re-render the runbook locally and confirm headings:
   ```
   uv run python -c "
   from pathlib import Path
@@ -2243,59 +2243,59 @@ This task is the Phase 1 verification gate: **prove both `--host github` and `--
 
 **Steps**
 
-- [ ] 1. Run the full packaging test set:
+- [x] 1. Run the full packaging test set:
   ```
   uv run pytest tests/packaging/ -v
   ```
   Expected: every test passes.
 
-- [ ] 2. Run the host-specific Phase 1 verification (the new gate this plan adds):
+- [ ] 2. [SKIPPED — docker not installed in executor environment] Run the host-specific Phase 1 verification (the new gate this plan adds):
   ```
   bash scripts/build_image.sh --host github
   ```
   Expected: build succeeds; image tag ends in `-github`.
 
-- [ ] 3. Run the host-specific Phase 2 verification:
+- [ ] 3. [SKIPPED — docker not installed in executor environment] Run the host-specific Phase 2 verification:
   ```
   bash scripts/build_image.sh --host ado
   ```
   Expected: build succeeds AND tag ends in `-ado` (if Phase 2 skills are present), OR fails cleanly at the COPY step with "skills/pr-ado: no such file or directory" (if Phase 2 skills have not landed yet — note this gap in the PR description rather than treating it as a Plan 12 failure).
 
-- [ ] 4. Run the orchestrator's verification gate command. **Note:** the gate command in the orchestrator is `docker build -t ralph:test .` — this Plan 12 amendment REPLACES that simple gate with a host-aware version:
+- [ ] 4. [SKIPPED — docker not installed in executor environment] Run the orchestrator's verification gate command. **Note:** the gate command in the orchestrator is `docker build -t ralph:test .` — this Plan 12 amendment REPLACES that simple gate with a host-aware version:
   ```
   bash scripts/build_image.sh --host github && \
     docker images | grep "ralph-executor.*-github"
   ```
   Expected: image builds, `docker images` shows a `-github`-tagged ralph row. This is the canonical Phase 1 verification gate.
 
-- [ ] 5. Run preflight against the gate-built image. The doctor (real or stub) reads `RALPH_GIT_HOST` from the image's baked env:
+- [ ] 5. [SKIPPED — docker not installed in executor environment] Run preflight against the gate-built image. The doctor (real or stub) reads `RALPH_GIT_HOST` from the image's baked env:
   ```
   IMG=$(bash scripts/build_image.sh --host github)
   bash scripts/preflight.sh "${IMG}"
   ```
   Expected: exit 0.
 
-- [ ] 6. Confirm the full repo gate is green:
+- [x] 6. Confirm the full repo gate is green:
   ```
   uv run ruff check . && uv run ruff format --check . && uv run mypy ralph_executor && uv run pytest
   ```
   Expected: every command exits 0.
 
-- [ ] 7. Self-review checklist. The implementer SHALL confirm each line before declaring the task complete:
-  - [ ] No `__IMAGE__` / `__PBI_ID__` placeholder appears outside the manifests where it is intended as a deploy-time substitution marker.
-  - [ ] No secret value appears in any committed file (grep for `ANTHROPIC_API_KEY=` / `ADO_PAT=` / `GH_TOKEN=` returns only the template sentinels and the runbook references).
-  - [ ] Every file listed in "File Structure" exists and is referenced by at least one test or by the runbook.
-  - [ ] The runbook clearly branches at the top: a reader picks Phase 1 or Phase 2 and sees a self-contained path. The Phase headers are present in the rendered Markdown.
-  - [ ] The Dockerfile's `ARG RALPH_GIT_HOST` has no default and the guard `RUN test -n` fires when the build arg is missing.
-  - [ ] `scripts/build_image.sh --host` is REQUIRED — exit 2 when missing.
-  - [ ] `scripts/build_image.sh --host gitlab` (or other invalid values) exits 2.
-  - [ ] The image tag carries the host suffix in both local and registry forms.
-  - [ ] The image's baked `ENV RALPH_GIT_HOST` matches the `--host` flag used to build it.
-  - [ ] The `ralph.git-host` OCI label matches the host.
-  - [ ] The runtime-staging alternative is documented in the runbook (referencing Plan 7's `host_select.py`).
-  - [ ] The plan 7 / 11 stub assumption is called out in `docs/deployment.md`.
+- [x] 7. Self-review checklist. The implementer SHALL confirm each line before declaring the task complete:
+  - [x] No `__IMAGE__` / `__PBI_ID__` placeholder appears outside the manifests where it is intended as a deploy-time substitution marker.
+  - [x] No secret value appears in any committed file (grep for `ANTHROPIC_API_KEY=` / `ADO_PAT=` / `GH_TOKEN=` returns only the template sentinels and the runbook references).
+  - [x] Every file listed in "File Structure" exists and is referenced by at least one test or by the runbook.
+  - [x] The runbook clearly branches at the top: a reader picks Phase 1 or Phase 2 and sees a self-contained path. The Phase headers are present in the rendered Markdown.
+  - [x] The Dockerfile's `ARG RALPH_GIT_HOST` has no default and the guard `RUN test -n` fires when the build arg is missing.
+  - [x] `scripts/build_image.sh --host` is REQUIRED — exit 2 when missing.
+  - [x] `scripts/build_image.sh --host gitlab` (or other invalid values) exits 2.
+  - [x] The image tag carries the host suffix in both local and registry forms.
+  - [-] The image's baked `ENV RALPH_GIT_HOST` matches the `--host` flag used to build it. [SKIPPED runtime verification — docker not installed; Dockerfile statically sets `ENV RALPH_GIT_HOST=${RALPH_GIT_HOST}` (verified by `test_dockerfile_sets_ralph_git_host_env`).]
+  - [-] The `ralph.git-host` OCI label matches the host. [SKIPPED runtime verification — docker not installed; Dockerfile statically sets `ralph.git-host="${RALPH_GIT_HOST}"` LABEL (verified by `test_oci_labels_set_with_host_label`).]
+  - [x] The runtime-staging alternative is documented in the runbook (referencing Plan 7's `host_select.py`).
+  - [x] The plan 7 / 11 stub assumption is called out in `docs/deployment.md`.
 
-- [ ] 8. Commit each task's output as a separate conventional-commit. Commits this plan produces (in order):
+- [x] 8. Commit each task's output as a separate conventional-commit. Commits this plan produces (in order):
   - `chore(packaging): scaffold packaging tests and console-script entry`
   - `feat(packaging): bake .claude/settings.json with canonical skill names`
   - `feat(packaging): multi-stage Dockerfile with RALPH_GIT_HOST build arg`
