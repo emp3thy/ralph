@@ -202,6 +202,8 @@ Commit: `chore(gitignore): exclude .ralph-work/`
 
 Commit: `test(worktree): regression coverage for two-worktree execution`
 
+- [x] Task 9 complete (iteration 9, 2026-05-27, commit f565a41)
+
 ## Out of scope
 
 - KEDA pod runner (Issue #20 Phase 2)
