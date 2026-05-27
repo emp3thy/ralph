@@ -98,6 +98,12 @@ def list_worktrees(git_root: Path) -> list[dict[str, str | bool]]:
     if current:
         entries.append(current)
     for entry in entries:
+        # ``git worktree list --porcelain`` emits each block keyed by the
+        # literal token ``worktree <path>``; normalise to ``path`` so the
+        # rest of the module (and consumers) can rely on a stable key.
+        worktree_value = entry.pop("worktree", None)
+        if isinstance(worktree_value, str):
+            entry["path"] = worktree_value
         branch = entry.get("branch")
         if isinstance(branch, str):
             entry["branch"] = branch.removeprefix("refs/heads/")

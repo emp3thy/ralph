@@ -571,3 +571,59 @@ def test_tee_stream_delivers_lines_incrementally(tmp_path: Path) -> None:
     # three within a few ms of each other at exit.
     span = buf.timestamps[-1] - buf.timestamps[0]
     assert span >= 0.3, f"lines arrived in {span:.3f}s; expected >= 0.3s with 200ms child gaps"
+
+
+def test_spawn_claude_p_respects_cwd_and_pbi_dir_overrides(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> None:
+    """In worktree mode the loop passes explicit ``cwd`` and ``pbi_dir``
+    overrides so Claude runs in the per-PBI work worktree but reads
+    ``.ralph/current/<id>/`` from the queue worktree. The spawner must
+    honour both — it sets ``RALPH_PBI_DIR`` from ``pbi_dir`` and the
+    subprocess cwd from ``cwd``."""
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    # Fake the two worktree-mode paths: a separate ``code_wt`` for cwd and
+    # a separate ``queue_pbi_dir`` for RALPH_PBI_DIR. The fake claude
+    # script echoes both back via stdout so the test can assert on them
+    # without involving real git worktrees.
+    code_wt = tmp_path / "code-wt"
+    code_wt.mkdir()
+    queue_pbi_dir = tmp_path / "queue-wt-pbi"
+    queue_pbi_dir.mkdir()
+    write_claude_script(
+        fake_claude_binary,
+        "import os, sys\n"
+        "print('CWD=' + os.getcwd())\n"
+        "print('RALPH_PBI_DIR=' + os.environ.get('RALPH_PBI_DIR', ''))\n"
+        "sys.exit(0)\n",
+    )
+
+    outcome = spawn_claude_p(
+        cfg_for_repo,
+        pbi,
+        cwd=code_wt,
+        pbi_dir=queue_pbi_dir,
+    )
+
+    assert outcome.exit_code == 0
+    assert str(code_wt) in outcome.stdout
+    assert str(queue_pbi_dir) in outcome.stdout
+
+
+def test_spawn_claude_p_rejects_missing_pbi_dir(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> None:
+    """A misconfigured worktree (``RALPH_PBI_DIR`` pointing at nothing)
+    must fail fast with ``FileNotFoundError`` before the spawn — better
+    than crashing the spawned Claude with a confusing read failure."""
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    missing = tmp_path / "does-not-exist"
+
+    with pytest.raises(FileNotFoundError):
+        spawn_claude_p(cfg_for_repo, pbi, pbi_dir=missing)

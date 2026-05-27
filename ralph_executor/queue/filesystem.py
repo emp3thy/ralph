@@ -173,6 +173,13 @@ class FilesystemQueueSource:
 
     @property
     def _root(self) -> Path:
+        # In worktree mode ``.ralph/`` lives in the queue worktree, not the
+        # primary checkout (which may be on any branch). Legacy single-
+        # checkout mode keeps reading from ``cfg.repo_path``.
+        if self._config.use_worktrees:
+            from ralph_executor.worktree import queue_worktree_path
+
+            return queue_worktree_path(self._config.repo_path) / ".ralph"
         return self._config.repo_path / ".ralph"
 
     def _list_pbis(self, state: str) -> list[PBI]:

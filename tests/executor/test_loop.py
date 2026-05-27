@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +18,11 @@ from ralph_executor.loop import (
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.safety.events import EventType, open_log
+from ralph_executor.worktree import (
+    list_worktrees,
+    queue_worktree_path,
+    work_worktree_path,
+)
 from tests.executor.conftest import write_sample_pbi
 
 
@@ -35,7 +42,15 @@ def _populate_inbox(fake_repo: Path, pbi_id: str = "WI-1234", severity: str = "n
 
 
 def _stub_spawn(outcome_kind: str, pr_url: str | None = None) -> object:
-    def _fake_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    # Accept the worktree-mode ``cwd`` / ``pbi_dir`` kwargs so the same
+    # stub works for both legacy and worktree-mode iterations.
+    def _fake_spawn(
+        cfg: ExecutorConfig,
+        pbi: object,
+        *,
+        cwd: Path | None = None,
+        pbi_dir: Path | None = None,
+    ) -> ClaudeOutcome:
         return ClaudeOutcome(
             kind=outcome_kind,  # type: ignore[arg-type]
             pr_url=pr_url,
@@ -531,3 +546,169 @@ def test_file_touched_skipped_on_empty_commit(
     finally:
         event_log.close()
     assert [ev for ev in events if ev.kind == EventType.FILE_TOUCHED] == []
+
+
+# ----------------------------------------------------------------------
+# Task 9 — worktree-mode integration tests (`cfg.use_worktrees=True`).
+# The shared ``cfg_for_repo`` fixture defaults to legacy single-checkout
+# (use_worktrees=False); tests below derive a worktree-mode config so
+# both branches stay covered. The helpers tests live in
+# ``test_worktree.py`` — these focus on the loop integration.
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def cfg_for_repo_worktree(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+) -> Iterator[ExecutorConfig]:
+    """Worktree-mode variant of ``cfg_for_repo`` with best-effort cleanup.
+
+    Pytest's ``tmp_path`` cleanup trips on Windows when ``.ralph-work/``
+    still holds git-registered worktrees; force-remove them on teardown
+    so the next test (and the harness) start clean.
+    """
+    cfg = dataclasses.replace(cfg_for_repo, use_worktrees=True)
+    try:
+        yield cfg
+    finally:
+        for entry in list_worktrees(fake_repo):
+            path = entry.get("path")
+            if isinstance(path, str) and Path(path).resolve() != fake_repo.resolve():
+                subprocess.run(
+                    ["git", "-C", str(fake_repo), "worktree", "remove", "--force", path],
+                    check=False,
+                    capture_output=True,
+                )
+        subprocess.run(
+            ["git", "-C", str(fake_repo), "worktree", "prune"],
+            check=False,
+            capture_output=True,
+        )
+
+
+def test_claim_with_worktrees_creates_queue_and_work_trees(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worktree-mode claim materialises both the long-lived queue tree
+    and a per-PBI work tree without touching the primary checkout's
+    branch."""
+    _populate_inbox(fake_repo)
+    primary_before = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "claimed"
+    queue_wt = queue_worktree_path(fake_repo)
+    work_wt = work_worktree_path(fake_repo, "WI-1234")
+    # Queue worktree is on ralph-queue with the PBI moved into current/.
+    assert queue_wt.is_dir()
+    assert (queue_wt / ".ralph" / "current" / "WI-1234").is_dir()
+    # Work worktree exists on the feature branch.
+    assert work_wt.is_dir()
+    work_branch = _git(work_wt, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    assert work_branch == "ralph/WI-1234"
+    # Primary checkout's branch is untouched.
+    primary_after = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    assert primary_after == primary_before
+
+
+def test_persist_iteration_writes_worktree_mode_commits_from_queue_tree(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode ``_persist_iteration_writes`` commits and pushes
+    from the queue worktree — the primary checkout is never branch-swapped
+    and the new commit lands on ``origin/ralph-queue`` via the queue
+    worktree's push."""
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo_worktree)  # claim — creates worktrees
+
+    queue_wt = queue_worktree_path(fake_repo)
+    pbi_dir_in_queue = queue_wt / ".ralph" / "current" / "WI-1234"
+    history_path = pbi_dir_in_queue / "HISTORY.md"
+    history_before = history_path.read_text(encoding="utf-8")
+
+    def _appending_spawn(
+        cfg: ExecutorConfig,
+        pbi: object,
+        *,
+        cwd: Path | None = None,
+        pbi_dir: Path | None = None,
+    ) -> ClaudeOutcome:
+        history_path.write_text(
+            history_before + "\n## Iteration 1 — partial\n",
+            encoding="utf-8",
+        )
+        return ClaudeOutcome(
+            kind="partial",
+            pr_url=None,
+            stdout="",
+            stderr="",
+            exit_code=0,
+            duration_seconds=0.01,
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
+    head_before = _git(queue_wt, "rev-parse", "HEAD").strip()
+    primary_before = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "ran_partial"
+    head_after = _git(queue_wt, "rev-parse", "HEAD").strip()
+    assert head_after != head_before, "queue worktree must produce a new commit"
+    # Primary's HEAD is unchanged — no branch swap on the primary.
+    primary_after = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    assert primary_after == primary_before
+    # The push landed on origin/ralph-queue.
+    _git(fake_repo, "fetch", "origin")
+    remote_head = _git(fake_repo, "rev-parse", "origin/ralph-queue").strip()
+    assert remote_head == head_after
+    # No dirty files left in the queue worktree's PBI dir.
+    pbi_status = _git(queue_wt, "status", "--porcelain", ".ralph/current/WI-1234").strip()
+    assert pbi_status == "", f"queue PBI dir dirty after persist: {pbi_status!r}"
+
+
+def test_terminal_outcome_removes_work_tree(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the iteration ends in a terminal outcome (pr_created here),
+    the per-PBI work worktree is torn down. The queue worktree persists
+    across PBIs."""
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo_worktree)  # claim → worktrees created
+
+    work_wt = work_worktree_path(fake_repo, "WI-1234")
+    queue_wt = queue_worktree_path(fake_repo)
+    assert work_wt.is_dir(), "precondition: work worktree exists after claim"
+
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("pr_created", pr_url="https://example/pr/9"),
+    )
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "ran_pr_created"
+    assert not work_wt.exists(), "work worktree should be removed on pr_created"
+    # Queue worktree persists.
+    assert queue_wt.is_dir()
+    # ``ralph/WI-1234`` ref is preserved — pending-pr PBIs need it.
+    feature_ref = _git(fake_repo, "branch", "--list", "ralph/WI-1234").strip()
+    assert "ralph/WI-1234" in feature_ref
+
+
+# ``test_legacy_single_checkout_path_still_works_when_flag_false``: the
+# entire test_loop.py suite above uses ``cfg_for_repo`` (use_worktrees=
+# False) and exercises claim → spawn → persist → terminal-outcome moves
+# end-to-end. The legacy single-checkout path therefore has dense
+# regression coverage already; no dedicated test added here.
