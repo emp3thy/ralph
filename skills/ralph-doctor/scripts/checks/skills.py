@@ -1,8 +1,8 @@
 """``skills`` check for ``ralph-doctor``.
 
 Heuristic substring scan over every installed skill's ``SKILL.md`` body
-and ``scripts/**/*.py`` files. Any occurrence of ``AskUserQuestion``
-fails the check at ``error`` severity.
+and ``scripts/**/*.py`` files. Any occurrence of the interactive-prompt
+needle fails the check at ``error`` severity.
 
 Markdown regions wrapped with ``<!-- ralph-doctor: ignore -->`` ...
 ``<!-- /ralph-doctor: ignore -->`` are dropped before the search.
@@ -59,7 +59,7 @@ else:
     CheckContext = _checks_pkg.CheckContext
     CheckResult = _checks_pkg.CheckResult
 
-NEEDLE = "AskUserQuestion"
+NEEDLE = "AskUserQuestion"  # noqa: ralph-doctor
 IGNORE_MARK_OPEN = "<!-- ralph-doctor: ignore -->"
 IGNORE_MARK_CLOSE = "<!-- /ralph-doctor: ignore -->"
 PY_IGNORE = "# noqa: ralph-doctor"
@@ -79,8 +79,8 @@ def _strip_ignored_markdown_regions(text: str) -> str:
             # Unclosed ignore region — fail open: include the rest of the
             # file in the scan rather than silently suppressing it. A
             # missing close tag would otherwise hide every subsequent
-            # AskUserQuestion from this safety check, which is the wrong
-            # direction for a gate that protects unattended pods.
+            # interactive-prompt call from this safety check, which is the
+            # wrong direction for a gate that protects unattended pods.
             out.append(text[open_at:])
             break
         cursor = close_at + len(IGNORE_MARK_CLOSE)
@@ -150,7 +150,7 @@ def check(context: CheckContext) -> CheckResult:
             severity="error",
             status="fail",
             message=(
-                f"{len(offences)} skill file(s) call AskUserQuestion in their "
+                f"{len(offences)} skill file(s) call AskUserQuestion in their "  # noqa: ralph-doctor
                 f"main path; skills: {skill_names}."
             ),
             details={"offending_files": offences, "skills": skill_names},
@@ -161,7 +161,7 @@ def check(context: CheckContext) -> CheckResult:
         severity="error",
         status="pass",
         message=(
-            f"No installed skill calls AskUserQuestion in its main path "
+            f"No installed skill calls AskUserQuestion in its main path "  # noqa: ralph-doctor
             f"(scanned {skills_seen} skill(s))."
         ),
         details={"skills_scanned": skills_seen},

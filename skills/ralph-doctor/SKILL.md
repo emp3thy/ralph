@@ -1,6 +1,6 @@
 ---
 name: ralph-doctor
-description: Verify the host environment (laptop or pod) is ralph-safe BEFORE the executor starts. Runs seven preflight checks — permissions.allow coverage; hooks free of AskUserQuestion / stdin reads; skills free of AskUserQuestion in their main path; MCP servers configured with non-interactive auth; Anthropic (or Bedrock) auth resolves on cold start; staged `pr/` + `workitem-fetch/` skills match RALPH_GIT_HOST; host-specific auth check (GitHub PAT for `github`, ADO PAT for `ado`) — and refuses to let Ralph start if any error-severity check fails. Reads ~/.claude/settings.json by default; the path is configurable via --settings for tests and alternative install layouts.
+description: Verify the host environment (laptop or pod) is ralph-safe BEFORE the executor starts. Runs seven preflight checks — permissions.allow coverage; hooks free of interactive-prompt calls / stdin reads; skills free of interactive-prompt calls in their main path; MCP servers configured with non-interactive auth; Anthropic (or Bedrock) auth resolves on cold start; staged `pr/` + `workitem-fetch/` skills match RALPH_GIT_HOST; host-specific auth check (GitHub PAT for `github`, ADO PAT for `ado`) — and refuses to let Ralph start if any error-severity check fails. Reads ~/.claude/settings.json by default; the path is configurable via --settings for tests and alternative install layouts.
 ---
 
 # ralph-doctor
@@ -9,7 +9,7 @@ description: Verify the host environment (laptop or pod) is ralph-safe BEFORE th
 
 `ralph-doctor` is the preflight gate for `ralph-executor`. It catches the
 one class of failure that silently kills unattended pods: a hook or skill
-that expects a human (an `AskUserQuestion` call, a `read -p` prompt, an
+that expects a human (an <!-- ralph-doctor: ignore -->`AskUserQuestion`<!-- /ralph-doctor: ignore --> call, a `read -p` prompt, an
 OAuth refresh) — and it now also catches the host-staging class of
 failure: a pod built for one git host that was started with the wrong
 `RALPH_GIT_HOST` value, or a pod whose `host_select.py` never ran. The
@@ -97,8 +97,10 @@ Tests live at `tests/skills/test_ralph_doctor.py`.
 | Check | Severity | What it asserts | Runs when |
 |---|---|---|---|
 | `permissions` | error | `permissions.allow` covers Bash, Edit, Write, Read, Grep, Glob, Skill, and skills `pr`, `workitem-fetch` (wildcards honoured). | always |
+<!-- ralph-doctor: ignore -->
 | `hooks` | error | No active hook contains `AskUserQuestion`, `input(`, `read -p`, or `Read-Host`. `async: true` matches → warn. | always |
 | `skills` | error | No installed skill's `SKILL.md` or `scripts/*.py` calls `AskUserQuestion` (heuristic substring scan). | always |
+<!-- /ralph-doctor: ignore -->
 | `mcp` | error | No MCP server requires OAuth / browser redirect (`oauth`, `--auth`, `--login`, `BROWSER`). | always |
 | `auth` | error | Anthropic (or Bedrock if `RALPH_USE_BEDROCK=1`) auth resolves on cold start via a no-op API call. | always |
 | `host_staging` | error | Staged `pr/SKILL.md` and `workitem-fetch/SKILL.md` have frontmatter `name:` equal to `pr-<RALPH_GIT_HOST>` and `workitem-fetch-<RALPH_GIT_HOST>`. | always |
@@ -115,7 +117,7 @@ Tests live at `tests/skills/test_ralph_doctor.py`.
 
 ## Trade-offs
 
-The `skills` check is heuristic. A skill that hides `AskUserQuestion`
+The `skills` check is heuristic. A skill that hides <!-- ralph-doctor: ignore -->`AskUserQuestion`<!-- /ralph-doctor: ignore -->
 behind a dynamic call (`getattr(self, 'Ask' + 'UserQuestion')()`)
 evades the substring scan. v2 may add AST-based scanning; v1
 optimises for false-positive resistance by honouring

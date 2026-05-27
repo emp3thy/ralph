@@ -805,6 +805,28 @@ class TestSkillsCheck:
             "unclosed ignore marker must not silently suppress later content"
         )
 
+    def test_ralph_doctor_skill_does_not_self_flag(self, tmp_path: Path) -> None:
+        """The skills check scans every subdirectory of ``skills_dir``, and
+        ralph-doctor's own files mention the interactive-prompt needle (in
+        ``NEEDLE``, ``INTERACTIVE_INDICATORS``, docstrings, the SKILL.md
+        documentation table). If ralph-doctor cannot pass its own check
+        when installed alongside other skills at
+        ``~/.claude/skills/ralph-doctor/``, the pod is blocked even with a
+        correct environment — this is the false-positive self-detection
+        BugBot flagged."""
+        import shutil
+
+        mod = _load_check_module("skills")
+        settings = tmp_path / "settings.json"
+        _write_settings(settings, GOOD_SETTINGS)
+        skills_dir = _build_skills_dir(tmp_path, host="github")
+        # Copy the actual ralph-doctor skill alongside the synthetic
+        # pr/workitem-fetch dirs.
+        shutil.copytree(REPO_ROOT / "skills" / "ralph-doctor", skills_dir / "ralph-doctor")
+        ctx = _make_context(settings, skills_dir)
+        result = mod.check(ctx)
+        assert result.status == "pass", f"ralph-doctor must not self-flag; message={result.message}"
+
     def test_unclosed_ignore_marker_propagates_via_check(self, tmp_path: Path) -> None:
         """End-to-end: a SKILL.md with an unclosed ignore marker and an
         ``AskUserQuestion`` afterwards must be flagged by the skills check."""

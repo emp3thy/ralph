@@ -1,8 +1,9 @@
 """``hooks`` check for ``ralph-doctor``.
 
 Scans every ``command`` string in ``settings.json["hooks"]`` for
-interactive indicators (``AskUserQuestion``, ``input(``, ``read -p``,
-``Read-Host``). Matches in synchronous hooks fail at ``error`` severity;
+interactive indicators (the interactive-prompt needle, ``input(``,
+``read -p``, ``Read-Host``). Matches in synchronous hooks fail at
+``error`` severity;
 matches in hooks marked ``async: true`` cannot block ``claude`` directly,
 so they downgrade to ``warn``.
 """
@@ -53,7 +54,7 @@ else:
     CheckResult = _checks_pkg.CheckResult
 
 INTERACTIVE_INDICATORS: tuple[str, ...] = (
-    "AskUserQuestion",
+    "AskUserQuestion",  # noqa: ralph-doctor
     "input(",
     "read -p",
     "Read-Host",
@@ -171,6 +172,6 @@ def check(context: CheckContext) -> CheckResult:
         name="hooks",
         severity="error",
         status="pass",
-        message="No hook calls AskUserQuestion or blocks on stdin.",
+        message="No hook calls AskUserQuestion or blocks on stdin.",  # noqa: ralph-doctor
         details={"hooks_checked": len(flattened)},
     )
