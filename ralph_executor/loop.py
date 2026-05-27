@@ -38,6 +38,7 @@ from typing import Literal
 from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.git_ops import PushRebaseConflict
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     move_current_to_pending_pr,
@@ -93,6 +94,7 @@ IterationOutcome = Literal[
     "ran_pr_created",
     "ran_stuck",
     "halted",
+    "push_conflict",
 ]
 
 
@@ -660,6 +662,20 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                 event_log=event_log,
                 now=datetime.now(tz=UTC),
             )
+        except PushRebaseConflict as exc:
+            # Concurrent writer advanced the queue branch in a way that
+            # conflicts with the iteration's persist commit. The local
+            # commit was abandoned (rebase --abort), the on-disk writes
+            # remain in the queue worktree, and the next iteration will
+            # re-stage them. Log a WARNING and surface the outcome so
+            # operator dashboards see it — the loop must NOT crash.
+            log.warning(
+                "iterate_once: push conflict on %s (paths: %s); "
+                "skipping this iteration's persist, loop will retry next round",
+                cfg.queue_branch,
+                ", ".join(exc.conflict_paths) or "<unknown>",
+            )
+            return IterationResult(outcome="push_conflict", pbi_id=current.id)
         finally:
             event_log.close()
         if _check_cycle_detector(cfg, source):

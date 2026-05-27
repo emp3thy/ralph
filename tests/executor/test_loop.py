@@ -178,6 +178,42 @@ def test_iterate_once_treats_error_like_partial(
     assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
 
 
+def test_iterate_once_recovers_from_push_conflict(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PushRebaseConflict from the persist path must NOT crash the loop.
+
+    Reproduction of the LOOP-PERSIST-PUSH-RACE bug: a concurrent writer
+    advanced origin/ralph-queue in a way that conflicts with the
+    iteration's persist commit. The helper raises PushRebaseConflict;
+    iterate_once must catch it, log a warning, and return outcome
+    push_conflict so the loop keeps running.
+    """
+    from ralph_executor.git_ops import PushRebaseConflict
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim WI-1234 into current/
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+
+    def _raise_conflict(*args: object, **kwargs: object) -> None:
+        raise PushRebaseConflict(("HISTORY.md",))
+
+    monkeypatch.setattr(
+        "ralph_executor.loop._persist_iteration_writes",
+        _raise_conflict,
+    )
+
+    # No crash; outcome surfaces the conflict.
+    result = iterate_once(cfg_for_repo)
+    assert result.outcome == "push_conflict"
+    assert result.pbi_id == "WI-1234"
+
+
 def test_partial_outcome_does_not_increment_attempts(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
