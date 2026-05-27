@@ -787,6 +787,45 @@ class TestSkillsCheck:
         direct = tmp_path / "my-skill" / "scripts" / "main.py"
         assert mod._offending_skill_name(str(direct)) == "my-skill"
 
+    def test_unclosed_ignore_marker_does_not_suppress_subsequent_content(self) -> None:
+        """An unclosed ``<!-- ralph-doctor: ignore -->`` must FAIL OPEN: the
+        scanner has to keep seeing content after it. Silently dropping the
+        rest of the file would let a missing close tag mask any subsequent
+        ``AskUserQuestion`` from this safety gate."""
+        mod = _load_check_module("skills")
+        body = (
+            "# Skill\n"
+            "<!-- ralph-doctor: ignore -->\n"
+            "this text would be inside the ignore region.\n"
+            "but the close marker is missing.\n"
+            "AskUserQuestion('this must still be visible to the scanner')\n"
+        )
+        stripped = mod._strip_ignored_markdown_regions(body)
+        assert "AskUserQuestion" in stripped, (
+            "unclosed ignore marker must not silently suppress later content"
+        )
+
+    def test_unclosed_ignore_marker_propagates_via_check(self, tmp_path: Path) -> None:
+        """End-to-end: a SKILL.md with an unclosed ignore marker and an
+        ``AskUserQuestion`` afterwards must be flagged by the skills check."""
+        mod = _load_check_module("skills")
+        settings = tmp_path / "settings.json"
+        _write_settings(settings, GOOD_SETTINGS)
+        skills_dir = _build_skills_dir(tmp_path, host="github")
+        bad = skills_dir / "leaky" / "SKILL.md"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text(
+            _frontmatter("leaky")
+            + "<!-- ralph-doctor: ignore -->\n"
+            + "missing close tag\n"
+            + "AskUserQuestion('still visible')\n",
+            encoding="utf-8",
+        )
+        ctx = _make_context(settings, skills_dir)
+        result = mod.check(ctx)
+        assert result.status == "fail"
+        assert "leaky" in result.message
+
 
 # ----------------------------------------------------------------------
 # TestMcpCheck

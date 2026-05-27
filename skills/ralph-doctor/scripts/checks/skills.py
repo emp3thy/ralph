@@ -76,6 +76,12 @@ def _strip_ignored_markdown_regions(text: str) -> str:
         out.append(text[cursor:open_at])
         close_at = text.find(IGNORE_MARK_CLOSE, open_at + len(IGNORE_MARK_OPEN))
         if close_at == -1:
+            # Unclosed ignore region — fail open: include the rest of the
+            # file in the scan rather than silently suppressing it. A
+            # missing close tag would otherwise hide every subsequent
+            # AskUserQuestion from this safety check, which is the wrong
+            # direction for a gate that protects unattended pods.
+            out.append(text[open_at:])
             break
         cursor = close_at + len(IGNORE_MARK_CLOSE)
     return "".join(out)
