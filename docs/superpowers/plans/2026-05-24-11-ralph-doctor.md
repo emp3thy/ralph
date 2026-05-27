@@ -52,24 +52,24 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Confirm Plans 1, 2, and 3 are merged so the toolchain is wired correctly:
+- [x] 1. Confirm Plans 1, 2, and 3 are merged so the toolchain is wired correctly:
   ```
   uv run pytest tests/test_workspace_samples.py tests/test_ado_client.py tests/skills/test_ralph_add.py -v
   ```
   Expected: every test passes. If any fail, STOP — Plan 11 depends on `scripts.ado_client` (Plan 2) and the `skills/` package layout (Plan 3).
 
-- [ ] 2. Verify `pyproject.toml` already includes `skills` and `tests/skills` in mypy's `files` and pytest's `testpaths`:
+- [x] 2. Verify `pyproject.toml` already includes `skills` and `tests/skills` in mypy's `files` and pytest's `testpaths`:
   ```
   uv run python -c "import tomllib; data=tomllib.load(open('pyproject.toml','rb')); assert 'skills' in data['tool']['mypy']['files'], data['tool']['mypy']['files']; assert 'tests' in data['tool']['pytest']['ini_options']['testpaths']"
   ```
   Expected: exit code 0. If the assertion fails, STOP and rerun Plan 3 task 1.
 
-- [ ] 3. Create `skills/ralph-doctor/scripts/__init__.py` containing exactly:
+- [x] 3. Create `skills/ralph-doctor/scripts/__init__.py` containing exactly:
   ```python
   """Empty package marker."""
   ```
 
-- [ ] 4. Create `skills/ralph-doctor/SKILL.md` with the content below. The frontmatter is the contract Claude Code's Skill tool reads at discovery time. Keep the fenced markdown blocks inside `SKILL.md` (the JSON example, the table) — they are part of the documented contract.
+- [x] 4. Create `skills/ralph-doctor/SKILL.md` with the content below. The frontmatter is the contract Claude Code's Skill tool reads at discovery time. Keep the fenced markdown blocks inside `SKILL.md` (the JSON example, the table) — they are part of the documented contract.
   ````markdown
   ---
   name: ralph-doctor
@@ -197,7 +197,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   ````
   Expected: file is exactly that content; the frontmatter block is bounded by the two `---` fences.
 
-- [ ] 5. Stage and commit:
+- [x] 5. Stage and commit:
   ```
   git add skills/ralph-doctor/SKILL.md skills/ralph-doctor/scripts/__init__.py
   git commit -m "chore(skills): scaffold ralph-doctor skill (SKILL.md, package marker)"
