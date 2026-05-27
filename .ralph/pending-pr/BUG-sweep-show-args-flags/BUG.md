@@ -1,11 +1,11 @@
 ---
 id: BUG-sweep-show-args-flags
 type: bug
-status: current
+status: pending-pr
 severity: high
 attempts: 1
 created_at: 2026-05-27T18:05:00+00:00
-updated_at: 2026-05-27T18:22:05+00:00
+updated_at: 2026-05-27T18:31:29+00:00
 depends_on: []
 ---
 
