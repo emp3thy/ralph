@@ -8,6 +8,7 @@ function:
 The runner calls every module listed in :data:`REGISTRY` in order and
 collects the :class:`CheckResult` for each.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

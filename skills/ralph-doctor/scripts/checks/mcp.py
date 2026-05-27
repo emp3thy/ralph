@@ -125,9 +125,7 @@ def check(context: CheckContext) -> CheckResult:
             name="mcp",
             severity="error",
             status="pass",
-            message=(
-                f"no MCP servers configured (checked {settings_path} and {mcp_path})."
-            ),
+            message=(f"no MCP servers configured (checked {settings_path} and {mcp_path})."),
             details={
                 "settings_path": str(settings_path),
                 "mcp_path": str(mcp_path),
@@ -146,9 +144,7 @@ def check(context: CheckContext) -> CheckResult:
             name="mcp",
             severity="error",
             status="fail",
-            message=(
-                f"{len(offenders)} MCP server(s) require interactive auth: {listing}."
-            ),
+            message=(f"{len(offenders)} MCP server(s) require interactive auth: {listing}."),
             details={"offenders": offenders, "total_servers": len(servers)},
         )
 

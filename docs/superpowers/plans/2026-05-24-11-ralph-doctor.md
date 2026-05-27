@@ -1224,19 +1224,19 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Run the full skill test file:
+- [x] 1. Run the full skill test file:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py -v
   ```
   Expected: every test (TestRunnerExitCodes + TestHostDispatch + TestPermissionsCheck + TestHooksCheck + TestSkillsCheck + TestMcpCheck + TestAuthCheck + TestHostStagingCheck + TestGithubAuthCheck + TestAdoAuthCheck) passes. If any fail, STOP and fix the check or runner — do NOT change the tests.
 
-- [ ] 2. Run the full project test suite to confirm no regression:
+- [x] 2. Run the full project test suite to confirm no regression:
   ```
   uv run pytest -v
   ```
   Expected: every test in the repo passes.
 
-- [ ] 3. Run the lint / type / format gates:
+- [x] 3. Run the lint / type / format gates:
   ```
   uv run ruff check skills/ralph-doctor tests/skills/test_ralph_doctor.py
   uv run ruff format --check skills/ralph-doctor tests/skills/test_ralph_doctor.py
@@ -1244,20 +1244,20 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
   ```
   Expected: all three commands pass with zero findings. Fix any inline; this is the conventions self-review step.
 
-- [ ] 4. Smoke the runner end-to-end against this developer's real `~/.claude/settings.json` (offline checks only). The developer's local laptop is Phase 1 — set `RALPH_GIT_HOST=github`:
+- [x] 4. Smoke the runner end-to-end against this developer's real `~/.claude/settings.json` (offline checks only). The developer's local laptop is Phase 1 — set `RALPH_GIT_HOST=github`:
   ```
   RALPH_GIT_HOST=github uv run python skills/ralph-doctor/scripts/check.py --skip auth,github_auth,host_staging
   ```
   Expected: JSON document on stdout with `summary.passes >= 4`; human summary on stderr listing each check; exit code 0 if the local config is ralph-safe. If it returns non-zero, that's a real finding — record it (the doctor is doing its job) but do NOT change the doctor to ignore it.
 
-- [ ] 5. Smoke the host-dispatcher behaviour (no real env needed — settings.json missing → exit 2 is expected, but we're checking the host dispatch wins first):
+- [x] 5. Smoke the host-dispatcher behaviour (no real env needed — settings.json missing → exit 2 is expected, but we're checking the host dispatch wins first):
   ```
   uv run python skills/ralph-doctor/scripts/check.py
   echo "exit=$?"
   ```
   Expected: exit 2; stderr contains `RALPH_GIT_HOST is not set` and the pointer to the orchestrator file.
 
-- [ ] 6. Stage and commit any format / lint fixes from step 3 (skip if none):
+- [x] 6. Stage and commit any format / lint fixes from step 3 (skip if none):
   ```
   git add -A
   git commit -m "chore(ralph-doctor): apply ruff format + lint fixes"

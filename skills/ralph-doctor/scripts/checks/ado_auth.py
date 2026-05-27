@@ -91,9 +91,7 @@ def check(context: CheckContext) -> CheckResult:
             name="ado_auth",
             severity="error",
             status="fail",
-            message=(
-                f"ado_auth check cannot run; missing required env vars: {', '.join(missing)}"
-            ),
+            message=(f"ado_auth check cannot run; missing required env vars: {', '.join(missing)}"),
             details={"missing": missing},
         )
 
@@ -102,10 +100,7 @@ def check(context: CheckContext) -> CheckResult:
     project = os.environ["ADO_PROJECT"].strip()
     repo = os.environ["ADO_REPOSITORY"].strip()
 
-    url = (
-        f"{org}/{project}/_apis/git/repositories/{repo}"
-        f"/pullrequests/{NON_EXISTENT_PR_ID}"
-    )
+    url = f"{org}/{project}/_apis/git/repositories/{repo}/pullrequests/{NON_EXISTENT_PR_ID}"
 
     try:
         response = requests.get(
@@ -129,9 +124,7 @@ def check(context: CheckContext) -> CheckResult:
             name="ado_auth",
             severity="error",
             status="pass",
-            message=(
-                f"ADO PAT works (404 on non-existent PR {NON_EXISTENT_PR_ID}, as expected)."
-            ),
+            message=(f"ADO PAT works (404 on non-existent PR {NON_EXISTENT_PR_ID}, as expected)."),
             details={
                 "status_code": 404,
                 "org": org,
@@ -145,8 +138,6 @@ def check(context: CheckContext) -> CheckResult:
         name="ado_auth",
         severity="error",
         status="fail",
-        message=(
-            f"ADO probe returned {status} (expected 404); body preview: {preview!r}"
-        ),
+        message=(f"ADO probe returned {status} (expected 404); body preview: {preview!r}"),
         details={"status_code": status, "url": url},
     )
