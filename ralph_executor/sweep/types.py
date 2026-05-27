@@ -66,6 +66,7 @@ class PrSnapshot:
     threads: tuple[ThreadSnapshot, ...]
     last_activity_at: datetime
     url: str
+    merge_state: str = ""
 
 
 class Action(StrEnum):
