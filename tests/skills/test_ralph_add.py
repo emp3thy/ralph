@@ -298,6 +298,56 @@ def test_work_item_id_with_path_traversal_is_rejected(
     assert "evil" not in repo_root_names
 
 
+def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
+    tmp_path: Path,
+    git_repo: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for fourth BugBot finding on PR #25: Path(...).name
+    does NOT strip newlines on POSIX. A fetcher emitting
+    ``{\"id\": \"WI-1234\\nstatus: complete\"}`` would inject an extra
+    YAML key into the PBI's frontmatter, flipping
+    ``status: inbox`` to ``status: complete`` and causing the
+    executor to skip the PBI as if it were already done.
+
+    The sanitizer now enforces a strict ``[A-Za-z0-9._-]+`` whitelist
+    on top of ``Path(...).name`` so any control character / shell
+    metacharacter / whitespace causes a clean rejection."""
+    doc: dict[str, object] = {
+        "id": "WI-1234\nstatus: complete",
+        "type": "feature",
+        "severity": "normal",
+        "title": "x",
+        "body_markdown": "x",
+        "acceptance_markdown": "- x.",
+        "repro_steps_markdown": "",
+        "attachments": [],
+        "child_ids": [],
+        "parent_id": None,
+        "source_url": "https://example.invalid/issues/x",
+        "source_host": "github",
+        "raw": {},
+    }
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
+    # Clean rejection (exit 2), not silent acceptance with a polluted frontmatter.
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "safe id alphabet" in err or "id=" in err
+    # Critical: NO PBI directory was written under either the intended
+    # WI-1234 OR the polluted "WI-1234\nstatus: complete" name.
+    _git(git_repo, "checkout", "ralph-queue")
+    inbox = git_repo / ".ralph" / "inbox"
+    if inbox.exists():
+        present = {p.name for p in inbox.iterdir()}
+        for entry in present:
+            assert "status:" not in entry, f"newline-injected name landed: {entry!r}"
+
+
 def test_dry_run_with_expand_children_reports_zero_attachments(
     tmp_path: Path,
     git_repo: Path,

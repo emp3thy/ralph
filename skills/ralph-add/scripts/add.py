@@ -14,6 +14,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -284,25 +285,44 @@ def _render_reproduce(doc: dict[str, Any]) -> str:
     return header + steps + "\n"
 
 
+# PBI ids in the wild are alphanumeric + ``-``, ``_``, ``.`` (e.g.
+# ``WI-1234``, ``STAGE-B-PLAN-19a-loop-events``, ``BUG-...``). Anything
+# outside this whitelist is treated as a sanitization failure —
+# rejecting (rather than silently mangling) catches fetcher bugs and
+# hostile payloads early.
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
 def _safe_path_component(value: object, *, field: str) -> str:
-    """Strip directory components from a fetcher-supplied string so it is
-    safe to use as a single path component under ``.ralph/inbox/``.
+    """Sanitize a fetcher-supplied id / name for use as a path component
+    AND as a YAML frontmatter scalar.
 
     add.py is host-agnostic; it must not trust that every fetcher (current
-    GitHub, future ADO, third-party) sanitizes names / ids. A hostile or
-    buggy fetcher emitting ``"../../sensitive"`` for either a work-item id
-    or an attachment name would otherwise escape the target directory via
-    Path's join semantics. ``Path(...).name`` reduces any such value to
-    its final path component.
+    GitHub, future ADO, third-party) sanitizes its output. The defence is
+    layered:
 
-    Raises ``_FatalError`` when the result is empty (e.g. input was
-    ``"../"`` or ``""``) so a degenerate value can't silently become a
-    write to the parent directory itself.
+    1. ``Path(str(value)).name`` strips directory separators so a value
+       like ``"../../sensitive"`` cannot escape the target directory via
+       Path's join semantics.
+    2. Whitelist check against ``[A-Za-z0-9._-]+``. ``Path(...).name``
+       alone does NOT strip newlines on POSIX (newlines are legal filename
+       characters there). Without this second check, a value like
+       ``"WI-1234\\nstatus: complete"`` would survive sanitization and
+       inject extra YAML keys when embedded into frontmatter via
+       ``f"id: {pbi_id}"``, e.g. flipping ``status: inbox`` to
+       ``status: complete`` and causing the executor to skip the PBI.
+
+    Raises ``_FatalError`` when the result is empty OR fails the whitelist.
     """
     name = Path(str(value)).name
     if not name:
         raise _FatalError(
             f"{field}={value!r} resolves to empty after directory-component stripping"
+        )
+    if not _SAFE_PATH_RE.match(name):
+        raise _FatalError(
+            f"{field}={value!r} contains characters outside the safe id alphabet "
+            f"([A-Za-z0-9._-]); reject to prevent YAML / path injection"
         )
     return name
 
@@ -450,16 +470,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise _FatalError(
                     f"work item {root_doc['id']} has no child links; nothing to expand"
                 )
+            # Sanitize once; both call sites that embed root id into a
+            # child PBI's frontmatter / fields use this value.
+            root_parent_id = _safe_path_component(root_doc["id"], field="parent_id")
             for child_id in child_ids:
                 child_doc = _invoke_fetcher(fetcher, child_id)
-                child_doc["parent_id"] = str(root_doc["id"])
+                child_doc["parent_id"] = root_parent_id
                 child_severity = severity_override or str(child_doc["severity"])
                 if not args.dry_run:
                     pbi_dir = _write_pbi_directory(
                         base_dir=repo,
                         doc=child_doc,
                         severity=child_severity,
-                        parent_id=str(root_doc["id"]),
+                        parent_id=root_parent_id,
                     )
                 else:
                     pbi_dir = (
