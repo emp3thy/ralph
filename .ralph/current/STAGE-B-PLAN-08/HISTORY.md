@@ -22,3 +22,15 @@
 - Tests: `uv run --no-sync pytest tests/executor/sweep/test_decide_action.py -v` → 12 passed (green). Full suite `uv run --no-sync pytest` → 408 passed, 2 skipped (opt-in prompt smoke).
 - Toolchain: `ruff check ralph_executor/sweep tests/executor/sweep` clean, `ruff format --check` clean, `mypy ralph_executor` clean (22 source files).
 - Notes: Task 4 next. Skill mismatch (`ado-pr` vs `pr-github`) becomes load-bearing. Task 4 invokes `show.py` + `read_threads.py` under `skills/<skill>/scripts/`; the binding belongs in the runner's call site (Task 6), so `pr_state.fetch` should accept the scripts directory as a parameter and the loop driver picks the right one.
+
+## Iteration 3 — 2026-05-27T02:00:00+00:00
+
+- Task 4: created `ralph_executor/sweep/pr_state.py` (host-agnostic subprocess wrapper around `show.py` + `read_threads.py` under any PR-skill scripts dir). Wrote `tests/executor/sweep/test_pr_state.py` (5 tests covering merged-no-threads, active-with-threads, last_activity_at fallback to comments, non-zero exit, non-JSON output). Red step confirmed: collection failed with `ModuleNotFoundError: No module named 'ralph_executor.sweep.pr_state'`.
+- Plan deviations (intentional):
+  - Plan literally writes `from datetime import datetime, timezone` + `timezone.utc`; ruff `UP017` rejects under py3.12. Used `from datetime import UTC, ...` + `tzinfo=UTC` instead.
+  - Added a defensive non-object JSON check after `json.loads` so the subprocess output can be safely narrowed to `dict | list` for downstream parsing (mypy + safety). The plan's `fetch` already assumes the returned shape; the extra raise simply turns a future malformed payload from a silent `AttributeError` into a clear `AdoSkillError`.
+  - Plan's tests reference an unused `os` import in two places; removed both — ruff `F401` would otherwise fail.
+  - Docstrings and comments now describe the PR skill generically (`show.py` / `read_threads.py`) so the binding to either `ado-pr` or `pr-github` is decided by the loop driver in Task 6.
+- Tests: `uv run --no-sync pytest tests/executor/sweep/test_pr_state.py -v` → 5 passed.
+- Toolchain: `ruff check` clean, `ruff format` (1 file reformatted then clean), `mypy ralph_executor` clean (23 source files).
+- Notes: Task 5 next (sidecar state + feedback PBI renderer). No host-binding work yet; both are pure-Python file/template logic.
