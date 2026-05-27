@@ -240,8 +240,15 @@ def read_pbi(
             message=(f"status={status_value!r} not in allowed set {sorted(ALLOWED_STATUSES)}"),
         )
 
+    # bool is a subclass of int in Python — `isinstance(True, int)` is
+    # True. Without the explicit bool exclusion, a frontmatter line like
+    # `attempts: true` would survive validation and propagate as `True`
+    # into JSON output (`"attempts": true` instead of an integer),
+    # breaking callers that expect a numeric field.
     attempts_raw = parsed.get("attempts")
-    attempts = attempts_raw if isinstance(attempts_raw, int) else 0
+    attempts = (
+        attempts_raw if isinstance(attempts_raw, int) and not isinstance(attempts_raw, bool) else 0
+    )
 
     pbi_id_raw = parsed.get("id")
     pbi_id = pbi_id_raw if isinstance(pbi_id_raw, str) and pbi_id_raw.strip() else pbi_dir.name

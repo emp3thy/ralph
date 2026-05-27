@@ -299,6 +299,38 @@ def test_repos_file_aggregates_across_repos(
     assert len(payload["rows"]) == 10
 
 
+def test_two_repos_sharing_basename_do_not_collide(
+    tmp_path: Path,
+    show_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Regression for BugBot MEDIUM on PR #26: two repos with the same
+    basename (e.g. ``/team-a/svc`` and ``/team-b/svc``) used to map to
+    the same worktree directory name. The second iteration's setup
+    would call ``git worktree remove`` against a directory registered
+    against the FIRST repo, leaving a stale entry that prune never sees.
+
+    Mitigation: per-repo path-hash suffix in the worktree dir name.
+    Asserts both repos resolve cleanly and emit rows for both."""
+    a = tmp_path / "team-a"
+    a.mkdir()
+    b = tmp_path / "team-b"
+    b.mkdir()
+    repo_a = _init_repo_with_pbis(a, "svc")
+    repo_b = _init_repo_with_pbis(b, "svc")
+    assert repo_a.name == repo_b.name  # collision precondition: same basename
+
+    cfg = tmp_path / "repos.txt"
+    cfg.write_text(f"{repo_a}\n{repo_b}\n", encoding="utf-8")
+    exit_code = show_module.main(["--repos-file", str(cfg), "--json"])
+    assert exit_code == 0, "two repos with same basename must not abort"
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["repos"]) == 2
+    # Both repos contribute rows — if the worktrees collided, the second
+    # one's PBIs would either be missing or duplicated.
+    assert len(payload["rows"]) == 10
+
+
 def test_malformed_pbi_becomes_question_row(
     tmp_path: Path,
     show_module: ModuleType,

@@ -186,3 +186,32 @@ def test_enumerate_state_walks_pbis(tmp_path: Path) -> None:
 def test_enumerate_state_unknown_state_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         enumerate_state(tmp_path, "limbo")
+
+
+def test_attempts_true_is_rejected_as_bool(tmp_path: Path) -> None:
+    """Regression for BugBot LOW on PR #26: bool is a subclass of int in
+    Python, so ``isinstance(True, int)`` is True. Without an explicit
+    bool exclusion, a frontmatter ``attempts: true`` would survive
+    validation and propagate as Python ``True``, then serialize to JSON
+    as ``\"attempts\": true`` (a boolean) instead of the integer
+    callers expect."""
+    body = """---
+id: WI-7
+type: feature
+status: inbox
+severity: normal
+attempts: true
+created_at: 2026-05-24T09:15:00+00:00
+updated_at: 2026-05-24T09:15:00+00:00
+---
+
+# x
+"""
+    pbi_dir = _make_pbi(tmp_path, "WI-7", "PBI.md", body)
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
+    assert isinstance(result, PBIRow), f"expected PBIRow, got {result}"
+    assert result.attempts == 0
+    # AND specifically not the Python True that bool-int conflation would produce.
+    assert result.attempts is not True
+    assert isinstance(result.attempts, int)
+    assert not isinstance(result.attempts, bool)

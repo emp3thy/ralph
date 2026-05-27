@@ -187,7 +187,15 @@ def _extract_queue_snapshot(
         raise _FatalError(f"{config.path} is not a git repository (no .git/ directory)")
     _ensure_branch_exists(config.path, config.branch)
 
-    worktree_dir = worktree_root / f"{config.name}__{config.branch}"
+    # Disambiguate repos that share a basename. Two unrelated checkouts
+    # like /team-a/service and /team-b/service both have name=="service";
+    # without the path-hash suffix they would collide on the same
+    # worktree_dir, and the second iteration's `git worktree remove`
+    # would fail (the dir is registered against the FIRST repo's git
+    # database, not the second), leaving a stale entry that subsequent
+    # `git worktree prune` runs would never see.
+    path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
+    worktree_dir = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
     if worktree_dir.exists():
         _remove_worktree(config.path, worktree_dir)
 
