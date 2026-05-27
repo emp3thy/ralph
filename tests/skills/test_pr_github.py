@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -1127,3 +1129,200 @@ def test_show_merge_status_mapping(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["merge_status"] == expected_status
+
+
+# ---------------------------------------------------------------------------
+# lookup_by_branch
+# ---------------------------------------------------------------------------
+
+
+_LOOKUP_SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "skills"
+    / "pr-github"
+    / "scripts"
+    / "lookup_by_branch.py"
+)
+
+
+def _run_lookup(
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Invoke lookup_by_branch.py as a subprocess.
+
+    Uses the same Python interpreter as the test runner. Returns the
+    raw CompletedProcess so callers can assert on stdout/stderr/returncode.
+    """
+    base_env = {
+        "GH_TOKEN": "fake-token",
+        "GH_OWNER": "emp3thy",
+        "PATH": os.environ.get("PATH", ""),
+    }
+    if env is not None:
+        base_env.update(env)
+    return subprocess.run(
+        [sys.executable, str(_LOOKUP_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env=base_env,
+        check=False,
+    )
+
+
+@responses.activate
+def test_lookup_by_branch_returns_open_pr() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[
+            {
+                "number": 42,
+                "state": "open",
+                "merged_at": None,
+                "html_url": "https://github.com/emp3thy/ralph/pull/42",
+            }
+        ],
+        status=200,
+    )
+    result = _run_lookup("--branch", "ralph/PBI-XYZ", "--repo", "ralph")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"] == {
+        "state": "open",
+        "url": "https://github.com/emp3thy/ralph/pull/42",
+        "pr_id": 42,
+        "merged_at": None,
+    }
+    assert payload["branch_exists"] is None
+
+
+@responses.activate
+def test_lookup_by_branch_returns_merged_pr() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[
+            {
+                "number": 25,
+                "state": "closed",
+                "merged_at": "2026-05-26T18:00:00Z",
+                "html_url": "https://github.com/emp3thy/ralph/pull/25",
+            }
+        ],
+        status=200,
+    )
+    result = _run_lookup("--branch", "ralph/STAGE-B-PLAN-03", "--repo", "ralph")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"]["state"] == "merged"
+    assert payload["pr"]["merged_at"] == "2026-05-26T18:00:00Z"
+
+
+@responses.activate
+def test_lookup_by_branch_returns_closed_unmerged_pr() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[
+            {
+                "number": 7,
+                "state": "closed",
+                "merged_at": None,
+                "html_url": "https://github.com/emp3thy/ralph/pull/7",
+            }
+        ],
+        status=200,
+    )
+    result = _run_lookup("--branch", "ralph/x", "--repo", "ralph")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"]["state"] == "closed"
+
+
+@responses.activate
+def test_lookup_by_branch_returns_null_when_no_pr() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[],
+        status=200,
+    )
+    result = _run_lookup("--branch", "ralph/never-existed", "--repo", "ralph")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"] is None
+    assert payload["branch_exists"] is None
+
+
+@responses.activate
+def test_lookup_by_branch_checks_branch_exists_when_flag_set() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[],
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/branches/ralph/PBI-Z",
+        status=200,
+        json={"name": "ralph/PBI-Z"},
+    )
+    result = _run_lookup(
+        "--branch", "ralph/PBI-Z", "--repo", "ralph", "--include-branch-check"
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"] is None
+    assert payload["branch_exists"] is True
+
+
+@responses.activate
+def test_lookup_by_branch_reports_branch_missing() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        json=[],
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/branches/ralph/PBI-DEAD",
+        status=404,
+        json={"message": "Branch not found"},
+    )
+    result = _run_lookup(
+        "--branch", "ralph/PBI-DEAD", "--repo", "ralph", "--include-branch-check"
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pr"] is None
+    assert payload["branch_exists"] is False
+
+
+def test_lookup_by_branch_missing_gh_token_exits_2() -> None:
+    result = _run_lookup(
+        "--branch", "ralph/x", "--repo", "ralph",
+        env={"GH_TOKEN": "", "GH_OWNER": "emp3thy"},
+    )
+    assert result.returncode == 2
+    assert "GH_TOKEN" in result.stderr
+
+
+def test_lookup_by_branch_missing_branch_arg_exits_2() -> None:
+    result = _run_lookup("--repo", "ralph")
+    assert result.returncode == 2
+
+
+@responses.activate
+def test_lookup_by_branch_github_500_exits_3() -> None:
+    responses.add(
+        responses.GET,
+        "https://api.github.com/repos/emp3thy/ralph/pulls",
+        status=500,
+        json={"message": "Internal server error"},
+    )
+    result = _run_lookup("--branch", "ralph/x", "--repo", "ralph")
+    assert result.returncode == 3
+    assert "github error" in result.stderr
