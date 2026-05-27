@@ -983,7 +983,7 @@ git -C /c/Users/gethi/source/ralph commit -m "test(sweep): failing tests for rec
 **Files:**
 - Create: `ralph_executor/sweep/reconcile.py`
 
-- [ ] **Step 4.1: Write the module skeleton**
+- [x] **Step 4.1: Write the module skeleton**
 
 Create `ralph_executor/sweep/reconcile.py`:
 
@@ -1044,7 +1044,7 @@ class _LookupResult:
     branch_exists: bool | None
 ```
 
-- [ ] **Step 4.2: Add the subprocess invocation + JSON parser**
+- [x] **Step 4.2: Add the subprocess invocation + JSON parser**
 
 Append to the same file:
 
@@ -1114,7 +1114,7 @@ def _invoke_lookup(
     )
 ```
 
-- [ ] **Step 4.3: Add the per-orphan reconcile function**
+- [x] **Step 4.3: Add the per-orphan reconcile function**
 
 Append to the same file:
 
@@ -1221,7 +1221,7 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat()
 ```
 
-- [ ] **Step 4.4: Add `reconcile_all`**
+- [x] **Step 4.4: Add `reconcile_all`**
 
 Append:
 
@@ -1266,7 +1266,7 @@ def reconcile_all(
     return ReconcileReport(actions=actions, errors=errors)
 ```
 
-- [ ] **Step 4.5: Run the failing tests**
+- [x] **Step 4.5: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/sweep/test_reconcile.py -v
@@ -1276,7 +1276,7 @@ Expected: **all PASS**.
 
 If `test_reconcile_orphan_invokes_lookup_with_correct_args` fails because the argv order differs: the test asserts `--branch` and `--include-branch-check` are present and that the branch value follows `--branch`. The implementation's argv builder in Step 4.2 satisfies both. If something else moved, update the implementation to match the test contract (the test is the spec).
 
-- [ ] **Step 4.6: Run ruff + mypy**
+- [x] **Step 4.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check ralph_executor/sweep/reconcile.py
@@ -1285,7 +1285,7 @@ uv run mypy --strict ralph_executor/sweep/reconcile.py
 
 Expected: green.
 
-- [ ] **Step 4.7: Commit**
+- [x] **Step 4.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/sweep/reconcile.py
