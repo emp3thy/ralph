@@ -9,12 +9,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
 from ralph_executor.sweep.reconcile import (
     ReconcileError,
     reconcile_all,
     reconcile_orphan,
 )
-
 from ralph_executor.sweep.runner import SweepConfig, SweepContext
 from ralph_executor.sweep.types import ReconcileAction
 
