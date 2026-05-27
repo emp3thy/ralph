@@ -608,6 +608,51 @@ def test_run_sweep_does_not_read_env_for_promoted_knobs(
     assert 'os.environ.get("RALPH_STALE_DAYS"' not in src
 
 
+def test_run_sweep_queue_root_uses_queue_worktree_under_worktree_mode(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In worktree mode the sweep's ``queue_root`` must point at the
+    queue worktree's ``.ralph/`` (where pending-pr/ actually lives), not
+    at the primary checkout's ``.ralph/`` (which is empty — main has no
+    queue state). Without this fix the sweep scans 0 PBIs while
+    pending-pr/ accumulates orphans in the queue worktree."""
+    from dataclasses import replace
+
+    from ralph_executor.loop import _run_sweep
+
+    captured: dict[str, object] = {}
+
+    class _SpySweepContext:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "ralph_executor.sweep.runner.SweepContext",
+        _SpySweepContext,
+    )
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "ralph_executor.sweep.run",
+        lambda ctx: SimpleNamespace(pbis_scanned=0, actions=[], errors=[]),
+    )
+    monkeypatch.setattr(
+        "ralph_executor.loop._pr_skill_scripts_path",
+        lambda cfg: fake_repo,
+    )
+
+    cfg = replace(cfg_for_repo_worktree, bot_author_email="ralph@x.test")
+    _run_sweep(cfg, FilesystemQueueSource(cfg))
+
+    expected = queue_worktree_path(fake_repo) / ".ralph"
+    assert captured["queue_root"] == expected, (
+        f"sweep queue_root must point at the queue worktree's .ralph/; "
+        f"got {captured['queue_root']!r}, expected {expected!r}"
+    )
+
+
 def test_file_touched_skipped_on_empty_commit(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
