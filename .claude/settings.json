@@ -1,0 +1,43 @@
+{
+  "_comment": "Ralph v1 baked settings.json. DO NOT add interactive permissions here. dangerouslySkipPermissions is intentional and is paired with an explicit permissions.allow list for every tool Ralph might call. The Skill(pr) and Skill(workitem-fetch) entries are the canonical staged names; the Dockerfile copies the chosen host's skill directory into those canonical paths so this settings.json is host-agnostic.",
+  "dangerouslySkipPermissions": true,
+  "model": "claude-opus-4-7",
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "Read",
+      "Grep",
+      "Glob",
+      "Task",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "Skill(pr)",
+      "Skill(workitem-fetch)",
+      "Skill(ralph-add)",
+      "Skill(ralph-status)",
+      "Skill(ralph-cancel)",
+      "Skill(ralph-promote)",
+      "Skill(ralph-triage)",
+      "Skill(ralph-doctor)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(sudo *)",
+      "Bash(curl http://*)",
+      "Bash(wget http://*)"
+    ]
+  },
+  "env": {
+    "RALPH_LOG_LEVEL": "INFO"
+  },
+  "_v2_memory_mcp_permissions_commented_out": [
+    "mcp__better-memory__memory_retrieve",
+    "mcp__better-memory__memory_observe",
+    "mcp__better-memory__memory_record_use",
+    "mcp__better-memory__memory_start_episode",
+    "mcp__better-memory__memory_close_episode"
+  ]
+}

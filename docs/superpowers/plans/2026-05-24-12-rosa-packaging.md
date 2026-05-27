@@ -1116,14 +1116,14 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `.claude/settings.json` with the exact content listed in the ".claude/settings.json (full content the implementer writes)" section above. No edits.
+- [x] 1. Write `.claude/settings.json` with the exact content listed in the ".claude/settings.json (full content the implementer writes)" section above. No edits.
 
-- [ ] 2. Confirm valid JSON:
+- [x] 2. Confirm valid JSON:
   ```
   uv run python -c "import json; json.load(open('.claude/settings.json'))"
   ```
 
-- [ ] 3. Create `tests/packaging/test_settings_json.py`:
+- [x] 3. Create `tests/packaging/test_settings_json.py`:
   ```python
   """Tests for the baked .claude/settings.json."""
 
@@ -1203,7 +1203,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       assert any("memory_retrieve" in entry for entry in reserved)
   ```
 
-- [ ] 4. Run the new tests:
+- [x] 4. Run the new tests:
   ```
   uv run pytest tests/packaging/test_settings_json.py -v
   ```
