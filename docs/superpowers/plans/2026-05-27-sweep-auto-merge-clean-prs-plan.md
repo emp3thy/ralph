@@ -282,21 +282,21 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
 - Modify: `ralph_executor/sweep/runner.py`
 - Modify: `tests/executor/sweep/test_decide_action.py`
 
-- [ ] **Step 6.1: Add `MERGE_PR` enum value**
+- [x] **Step 6.1: Add `MERGE_PR` enum value**
 
   In `ralph_executor/sweep/types.py`, in the `Action` StrEnum:
   ```python
   MERGE_PR = "merge-pr"
   ```
 
-- [ ] **Step 6.2: Add `auto_merge_clean_prs` to `SweepConfig`**
+- [x] **Step 6.2: Add `auto_merge_clean_prs` to `SweepConfig`**
 
   In `ralph_executor/sweep/runner.py`'s `SweepConfig`:
   ```python
   auto_merge_clean_prs: bool = False
   ```
 
-- [ ] **Step 6.3: Add the predicate branch to `decide_action`**
+- [x] **Step 6.3: Add the predicate branch to `decide_action`**
 
   In `decide_action`, AFTER the new-comments check, BEFORE the stale check:
   ```python
@@ -304,7 +304,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
       return Decision(action=Action.MERGE_PR, reason="auto-merging clean PR")
   ```
 
-- [ ] **Step 6.4: Tests**
+- [x] **Step 6.4: Tests**
 
   In `tests/executor/sweep/test_decide_action.py`, update `_snapshot` to accept `merge_state` kwarg (default ""). Add:
   - `test_flag_off_clean_is_noop`: `auto_merge_clean_prs=False`, `merge_state="clean"` → `NOOP`.
@@ -312,7 +312,7 @@ All tasks ≥ 90%. Cross-checked against actual line numbers and patterns in the
   - `test_flag_on_dirty_is_not_merge_pr`: `auto_merge_clean_prs=True`, `merge_state="dirty"` → `NOOP` (or matches stale/etc., but NOT `MERGE_PR`).
   - `test_new_comments_preempt_merge_pr`: `auto_merge_clean_prs=True`, `merge_state="clean"`, new active human comment → `CREATE_FEEDBACK_PBI`.
 
-- [ ] **Step 6.5: `uv run pytest tests/executor/sweep/test_decide_action.py` until green.**
+- [x] **Step 6.5: `uv run pytest tests/executor/sweep/test_decide_action.py` until green.**
 
 ---
 

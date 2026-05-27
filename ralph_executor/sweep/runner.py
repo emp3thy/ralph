@@ -49,6 +49,7 @@ class SweepConfig:
     max_attempts: int
     stale_threshold: timedelta
     now: datetime
+    auto_merge_clean_prs: bool = False
 
     def __post_init__(self) -> None:
         if not self.ralph_author_email:
@@ -162,6 +163,9 @@ def decide_action(
             reason=f"{len(new_comments)} new active comment(s) since last sweep",
             new_comments=new_comments,
         )
+
+    if config.auto_merge_clean_prs and pr.merge_state == "clean":
+        return Decision(action=Action.MERGE_PR, reason="auto-merging clean PR")
 
     if config.now - pr.last_activity_at >= config.stale_threshold:
         return Decision(
