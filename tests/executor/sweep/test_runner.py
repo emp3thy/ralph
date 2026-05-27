@@ -252,20 +252,38 @@ def test_sweep_with_empty_pending_returns_zero_scanned(
     assert result.actions == ()
 
 
-def test_missing_pr_link_md_is_recorded_as_error(
+def test_run_reconciles_orphan_when_pr_link_missing(
     queue_root: Path,
     fake_ado_pr_skill: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pbi_dir = queue_root / "pending-pr" / "WI-CORRUPT"
+    """Sweep no longer surfaces missing PR-LINK.md as a sweep error;
+    instead it calls reconcile_orphan and continues."""
+    from ralph_executor.sweep.types import ReconcileAction
+
+    pbi_dir = queue_root / "pending-pr" / "WI-ORPHAN"
     pbi_dir.mkdir()
     (pbi_dir / "PBI.md").write_text(
-        "---\nid: WI-CORRUPT\ntype: feature\nstatus: pending-pr\n"
+        "---\nid: WI-ORPHAN\ntype: feature\nstatus: pending-pr\n"
         "severity: normal\nattempts: 1\n"
         "created_at: 2026-05-20T08:00:00+00:00\n"
         "updated_at: 2026-05-20T08:00:00+00:00\n---\n",
         encoding="utf-8",
     )
 
+    captured: list[Path] = []
+
+    def _fake_reconcile(pbi: Path, ctx: SweepContext, **kwargs: Any) -> ReconcileAction:
+        del ctx, kwargs
+        captured.append(pbi)
+        return ReconcileAction.MOVED_TO_INBOX
+
+    monkeypatch.setattr(
+        "ralph_executor.sweep.reconcile.reconcile_orphan",
+        _fake_reconcile,
+    )
+
     result = run(ctx=_ctx(queue_root, fake_ado_pr_skill))
-    assert any("PR-LINK" in e for e in result.errors)
-    assert pbi_dir.exists()
+    assert result.errors == ()
+    assert captured == [pbi_dir]
+    assert all(r.pbi_id != "WI-ORPHAN" for r in result.actions)
