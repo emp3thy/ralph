@@ -70,6 +70,11 @@ CONFIG_TOML_STUB = """\
 # still wanted to review is unrecoverable. Env override:
 # RALPH_AUTO_MERGE_CLEAN_PRS=1.
 # auto_merge_clean_prs = false
+#
+# Where target-repo clones live. Default: ~/ralph-workspaces.
+# Each target gets a subdir: <workspace_root>/clones/<owner>-<name>/.
+# Env override: RALPH_WORKSPACE.
+# workspace_root = "~/ralph-workspaces"
 """
 
 
