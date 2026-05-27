@@ -1,11 +1,11 @@
 ---
 id: EXECUTOR-PERMISSION-MODE-SCOPED
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T18:55:00+00:00
-updated_at: 2026-05-27T22:15:53+00:00
+updated_at: 2026-05-27T22:55:01+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---
