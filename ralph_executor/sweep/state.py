@@ -31,7 +31,12 @@ SIDECAR_FILENAME = ".ralph-state.json"
 class SweepSidecar:
     last_feedback_sweep: datetime | None
     last_feedback_round: int
-    last_seen_comment_ids: set[str] = field(default_factory=set)
+    # frozenset, not set — @dataclass(frozen=True) auto-generates __hash__
+    # which calls hash() on every field. A plain set is unhashable, so a
+    # SweepSidecar used as a dict key / set member would raise TypeError.
+    # No call site does that today, but the frozen=True annotation
+    # implies hashability — keep the contract honest.
+    last_seen_comment_ids: frozenset[str] = field(default_factory=frozenset)
 
 
 def load_sidecar(pbi_dir: Path) -> SweepSidecar:
@@ -41,7 +46,7 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,
-            last_seen_comment_ids=set(),
+            last_seen_comment_ids=frozenset(),
         )
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -49,13 +54,13 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,
-            last_seen_comment_ids=set(),
+            last_seen_comment_ids=frozenset(),
         )
     if not isinstance(raw, dict):
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,
-            last_seen_comment_ids=set(),
+            last_seen_comment_ids=frozenset(),
         )
     sweep_raw = raw.get("last_feedback_sweep")
     sweep_dt: datetime | None
@@ -69,7 +74,7 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
     return SweepSidecar(
         last_feedback_sweep=sweep_dt,
         last_feedback_round=int(raw.get("last_feedback_round", 0) or 0),
-        last_seen_comment_ids={str(x) for x in (raw.get("last_seen_comment_ids") or [])},
+        last_seen_comment_ids=frozenset(str(x) for x in (raw.get("last_seen_comment_ids") or [])),
     )
 
 
@@ -90,6 +95,6 @@ def write_sidecar(pbi_dir: Path, sidecar: SweepSidecar) -> None:
     tmp.replace(pbi_dir / SIDECAR_FILENAME)
 
 
-def merge_seen_comment_ids(existing: set[str], new: Iterable[str]) -> set[str]:
+def merge_seen_comment_ids(existing: frozenset[str], new: Iterable[str]) -> frozenset[str]:
     """Return the union of ``existing`` and ``new`` (never shrinks)."""
-    return existing | {str(x) for x in new}
+    return existing | frozenset(str(x) for x in new)

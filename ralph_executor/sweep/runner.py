@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -93,7 +94,7 @@ def decide_action(
     *,
     pr: PrSnapshot,
     attempts: int,
-    last_seen_comment_ids: set[str],
+    last_seen_comment_ids: AbstractSet[str],
     last_feedback_round: int,
     config: SweepConfig,
 ) -> Decision:
@@ -159,7 +160,7 @@ def decide_action(
 def _new_active_human_comments(
     *,
     pr: PrSnapshot,
-    last_seen_comment_ids: set[str],
+    last_seen_comment_ids: AbstractSet[str],
     ralph_author_email: str,
 ) -> tuple[CommentSnapshot, ...]:
     """Filter the PR's threads to comments that warrant a new FEEDBACK PBI."""
@@ -313,11 +314,24 @@ def _dispatch(
 
 
 def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> None:
-    _append_history(src, reason, ctx)
+    # Stage the move FIRST so a failure (EXDEV cross-device, EACCES
+    # permission denied, ENOSPC disk full, …) doesn't leave a spurious
+    # "moved" entry in HISTORY.md that contradicts what's on disk.
+    # Wrap in _SweepPbiError so the per-PBI isolation in run() catches
+    # it and the rest of the sweep continues; without this, an OSError
+    # escapes uncaught and aborts every remaining PBI in this iteration.
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         raise _SweepPbiError(f"destination {dst} already exists")
-    shutil.move(str(src), str(dst))
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError as exc:
+        raise _SweepPbiError(f"failed to move {src} to {dst}: {exc}") from exc
+    # Append history to the NEW location — src no longer exists after
+    # a successful move. Original behaviour wrote to src BEFORE move,
+    # so on success the entry travelled along; preserve that semantic
+    # by writing to dst after the move completes.
+    _append_history(dst, reason, ctx)
 
 
 def _append_history(pbi_dir: Path, reason: str, ctx: SweepContext) -> None:

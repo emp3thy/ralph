@@ -126,6 +126,15 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
             raw_days,
         )
         stale_days = 3
+    # SweepConfig.__post_init__ rejects stale_threshold <= 0 — without
+    # this guard, RALPH_STALE_DAYS=0 (or negative) would surface as an
+    # uncaught ValueError from __post_init__ that aborts iterate_once.
+    if stale_days <= 0:
+        log.warning(
+            "sweep: RALPH_STALE_DAYS=%d is not positive; falling back to 3",
+            stale_days,
+        )
+        stale_days = 3
 
     from ralph_executor.sweep import run as run_sweep
     from ralph_executor.sweep.runner import SweepConfig, SweepContext
