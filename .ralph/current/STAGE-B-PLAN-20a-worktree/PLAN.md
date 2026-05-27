@@ -177,6 +177,8 @@ Queue worktree persists across PBIs.
 
 Commit: `feat(loop): clean up per-PBI work tree on terminal outcomes`
 
+- [x] Task 7 complete (iteration 7, 2026-05-27, commit 4aef065)
+
 ### Task 8 — `.ralph-work/` gitignore
 
 Add `.ralph-work/` to root `.gitignore`. Worktrees are not tracked content; the entries under `.git/worktrees/` are what makes them work.
