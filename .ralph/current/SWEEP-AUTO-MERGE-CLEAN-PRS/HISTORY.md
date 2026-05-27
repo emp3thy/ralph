@@ -65,3 +65,11 @@
 - Tests: `uv run pytest tests/executor/sweep/test_runner.py -q` → 23 passed (existing tests unaffected; runner-side MERGE_PR coverage lands in Task 9 alongside the conftest shim). Full `tests/executor/sweep/` → 74 passed.
 - Lint: `uv run ruff check ralph_executor/sweep/runner.py` → all checks passed. `uv run ruff format --check` → already formatted. `uv run mypy ralph_executor/sweep/runner.py` → no issues.
 - Notes: Pyright reports a spurious "_dispatch_merge_pr is not defined" diagnostic at the call site because the helper is defined later in the module. Python resolves the name at call time (function bodies are not eagerly bound), and mypy agrees there is no issue. Placement matches the file's existing convention (helpers below `_dispatch`).
+
+## Iteration 8 — 2026-05-28T00:30:00+00:00
+
+- Task 8: Threaded `auto_merge_clean_prs=cfg.auto_merge_clean_prs` into the `SweepConfig(...)` constructor in `ralph_executor/loop.py::_run_sweep` (line 152). One-line plumbing; the cli.py `reconcile` call site builds a non-sweep `SweepConfig` that doesn't dispatch merges, so it intentionally keeps the default (False).
+- Task 8: Extended `test_run_sweep_passes_cfg_values_to_sweep_config` in `tests/executor/test_loop.py` to set `auto_merge_clean_prs=True` on the replaced cfg + assert the spy captured it. The pre-existing spy fixture continues to guard env-vs-cfg drift for the new field via the same `dataclasses.replace` channel.
+- Tests: `uv run pytest tests/executor/test_loop.py tests/executor/test_loop_integration.py -q` → 35 passed.
+- Lint: `uv run ruff check` on touched files → clean. `uv run ruff format --check` → already formatted. `uv run mypy ralph_executor/loop.py` → no issues.
+- Notes: No change to `ralph_executor/cli.py::reconcile`'s `SweepConfig(...)` — that path drives `reconcile_all` (orphan/race reconciliation), not `run_sweep`, and the `decide_action` predicate is dormant there since `auto_merge_clean_prs` defaults to False. If a future PBI wires reconcile to merge, the explicit-False default is the right starting state.
