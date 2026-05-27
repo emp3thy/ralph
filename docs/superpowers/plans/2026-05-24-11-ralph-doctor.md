@@ -852,7 +852,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/permissions.py`. Module structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/permissions.py`. Module structure:
   - Module docstring summarising the rule: coverage of `Bash`, `Edit`, `Write`, `Read`, `Grep`, `Glob`, `Skill`, plus the host-pure skills `pr` and `workitem-fetch`. An entry covers a tool if it is exactly the tool name, `Tool(...)` (anything between parens), or the global `*`.
   - Imports: `json`, `Path`, plus `CheckContext` / `CheckResult` from `. import` (relative).
   - Module constants:
@@ -871,13 +871,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - If either non-empty → `fail` with details `{"missing": missing, "missing_skills": missing_skills, "allow": allow}` and a message naming both lists.
     - Otherwise → `pass` with message `f"permissions.allow covers all {len(REQUIRED_TOOLS)} required tools and {len(REQUIRED_SKILLS)} required skills."` and details `{"required_tools": list(REQUIRED_TOOLS), "required_skills": list(REQUIRED_SKILLS), "allow_entries": len(allow)}`.
 
-- [ ] 2. Run the permissions tests:
+- [x] 2. Run the permissions tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestPermissionsCheck -v
   ```
   Expected: every test passes. If any fail, fix the check — do NOT change the tests.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/permissions.py
   git commit -m "feat(ralph-doctor): implement permissions check"
