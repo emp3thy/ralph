@@ -774,9 +774,7 @@ class TestSkillsCheck:
         assert result.status == "pass"
         assert "no skills directory" in result.message.lower()
 
-    def test_offending_skill_name_handles_nested_scripts_subdir(
-        self, tmp_path: Path
-    ) -> None:
+    def test_offending_skill_name_handles_nested_scripts_subdir(self, tmp_path: Path) -> None:
         """``_scan_skill`` uses ``scripts_dir.rglob('*.py')`` so an offending
         file can sit several levels below ``scripts/``. The helper must
         report the SKILL directory, not the intermediate subdirectory it
