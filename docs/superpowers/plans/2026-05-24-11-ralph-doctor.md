@@ -1123,7 +1123,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/github_auth.py`. The check probes GitHub's REST API to prove (a) the PAT works at all (`GET /user`) and (b) the PAT has scopes covering the `/repos/...` surface that the `pr-github` skill needs (`GET /repos/{owner}/test-permissions` — a sentinel repo name; 404 means "auth and scopes work, this repo just doesn't exist", which is exactly the cheap proof we want).
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/github_auth.py`. The check probes GitHub's REST API to prove (a) the PAT works at all (`GET /user`) and (b) the PAT has scopes covering the `/repos/...` surface that the `pr-github` skill needs (`GET /repos/{owner}/test-permissions` — a sentinel repo name; 404 means "auth and scopes work, this repo just doesn't exist", which is exactly the cheap proof we want).
 
   Structure:
   - Module docstring: explains the two-step probe. References the GitHub REST docs for `GET /user` (documented as the standard auth-test endpoint) and `GET /repos/{owner}/{repo}` (returns 404 for non-existent repos when scopes are sufficient; 403 when scopes are insufficient).
@@ -1162,13 +1162,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - Step 2: call `_repo_scope_probe`. If `not ok` → `fail` with message `f"GH_TOKEN auth ok (/user returned 2xx) but scope probe failed: {scope_msg}"`, details `{"step": "repo_scope", "status_code": scope_status, "owner": owner}`.
     - Otherwise → `pass` with message `f"GitHub auth resolved (/user 2xx; /repos/{owner}/{TEST_REPO_NAME} scope probe: {scope_msg})."` and details `{"user_status": user_status, "scope_status": scope_status, "owner": owner}`.
 
-- [ ] 2. Run the github_auth tests:
+- [x] 2. Run the github_auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestGithubAuthCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/github_auth.py
   git commit -m "feat(ralph-doctor): implement github_auth check (Phase 1: /user + scope probe)"
