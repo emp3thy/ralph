@@ -1010,7 +1010,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/auth.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/auth.py`. Structure:
   - Module docstring: POSTs a tiny single-message body to `/v1/messages/count_tokens` — the endpoint requires the API key but does not consume quota. 2xx → pass; non-2xx → fail. Under `RALPH_USE_BEDROCK=1`, probes Bedrock via boto3.
   - Module constants:
     ```python
@@ -1043,13 +1043,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     return _anthropic_probe()
     ```
 
-- [ ] 2. Run the auth tests:
+- [x] 2. Run the auth tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestAuthCheck -v
   ```
   Expected: every test passes. `responses` intercepts the POST to `https://api.anthropic.com/v1/messages/count_tokens`.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/auth.py
   git commit -m "feat(ralph-doctor): implement auth check (Anthropic + Bedrock cold start)"
