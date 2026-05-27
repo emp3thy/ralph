@@ -101,3 +101,13 @@
   - `_stub_spawn` now accepts kwarg-only `cwd` / `pbi_dir` overrides so the same stub works for both legacy and worktree-mode iterations.
 - Tests: full `uv run --no-sync pytest` green (464 passed, 2 skipped — opt-in prompt smoke). `ruff check`, `ruff format --check`, `mypy ralph_executor scripts skills tests` all clean.
 - Notes: code commit on `ralph/STAGE-B-PLAN-20a-worktree` is `f565a41 test(worktree): regression coverage for two-worktree execution`. PLAN.md's Task 9 checkbox is now ticked; next iteration ships the PR per "How to ship a PR" in `prompt/PROMPT.md`.
+
+## Iteration 10 — 2026-05-27T06:00:00+00:00 — PR created
+
+- PR: #29 (https://github.com/emp3thy/ralph/pull/29)
+- Branch: ralph/STAGE-B-PLAN-20a-worktree → base `main`
+- Title: STAGE-B-PLAN-20a-worktree: two-worktree executor refactor
+- Diff: 15 files, +945/-39 (worktree.py, loop.py, claude_spawn.py, config.py, filesystem.py, movements.py, PROMPT.md, .gitignore, plus tests).
+- Pushed `ralph/STAGE-B-PLAN-20a-worktree` (9 commits, d20581a..f565a41) to origin; `gh pr create --base main` returned PR URL above.
+- All PLAN.md tasks (1–9) checked. Iteration 9 already confirmed full pytest / ruff / mypy clean (464 passed, 2 skipped). No code changes this iteration.
+- Per `prompt/PROMPT.md` "How to ship a PR", PBI now exits to the executor for the move from `current/` to `pending-pr/`.
