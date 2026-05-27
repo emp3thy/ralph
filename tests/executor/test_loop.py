@@ -520,6 +520,90 @@ def test_file_touched_event_emitted_on_iteration_commit(
     )
 
 
+def test_run_sweep_skips_when_bot_author_email_empty(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without bot_author_email set, sweep must skip with a WARNING that
+    still mentions the legacy env-var name so operators grepping logs see
+    the same anchor."""
+    from dataclasses import replace
+
+    from ralph_executor.loop import _run_sweep
+
+    # Ensure no inherited env can satisfy the sweep — only cfg matters.
+    monkeypatch.delenv("RALPH_ADO_AUTHOR_EMAIL", raising=False)
+
+    cfg = replace(cfg_for_repo, bot_author_email="")
+    source = FilesystemQueueSource(cfg)
+    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+        _run_sweep(cfg, source)
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("bot_author_email" in m for m in msgs), msgs
+    assert any("RALPH_ADO_AUTHOR_EMAIL" in m for m in msgs), msgs
+
+
+def test_run_sweep_passes_cfg_values_to_sweep_config(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SweepConfig must be constructed from cfg fields, not from os.environ."""
+    from dataclasses import replace
+
+    from ralph_executor.loop import _run_sweep
+
+    # If _run_sweep regressed to reading env, this poisoned env would
+    # cause SweepConfig to be built with the env value rather than cfg's.
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "WRONG@example.com")
+    monkeypatch.setenv("RALPH_STALE_DAYS", "999")
+
+    captured: dict[str, object] = {}
+
+    class _SpySweepConfig:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "ralph_executor.sweep.runner.SweepConfig",
+        _SpySweepConfig,
+    )
+
+    # Stub out the actual sweep run so we don't need a real PR skill on disk.
+    monkeypatch.setattr(
+        "ralph_executor.sweep.run",
+        lambda ctx: None,
+    )
+    # Bypass the scripts-path check.
+    monkeypatch.setattr(
+        "ralph_executor.loop._pr_skill_scripts_path",
+        lambda cfg: fake_repo,
+    )
+
+    cfg = replace(cfg_for_repo, bot_author_email="ralph@x.test", stale_days=5)
+    _run_sweep(cfg, FilesystemQueueSource(cfg))
+
+    assert captured["ralph_author_email"] == "ralph@x.test"
+    assert captured["stale_threshold"] == timedelta(days=5)
+    assert captured["max_attempts"] == cfg.max_attempts
+
+
+def test_run_sweep_does_not_read_env_for_promoted_knobs(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a regression where someone re-adds os.environ.get for these
+    two names inside _run_sweep."""
+    import ralph_executor.loop as loop_mod
+
+    src = Path(loop_mod.__file__).read_text(encoding="utf-8")
+    assert 'os.environ.get("RALPH_ADO_AUTHOR_EMAIL"' not in src
+    assert 'os.environ.get("RALPH_STALE_DAYS"' not in src
+
+
 def test_file_touched_skipped_on_empty_commit(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
