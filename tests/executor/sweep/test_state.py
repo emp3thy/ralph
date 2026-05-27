@@ -26,10 +26,46 @@ def test_round_trip_sidecar(tmp_path: Path) -> None:
         last_feedback_sweep=datetime(2026, 5, 24, 12, 0, tzinfo=UTC),
         last_feedback_round=2,
         last_seen_comment_ids=frozenset({"10:1", "10:2", "11:5"}),
+        last_ci_status="succeeded",
     )
     write_sidecar(tmp_path, sidecar)
     loaded = load_sidecar(tmp_path)
     assert loaded == sidecar
+
+
+def test_missing_sidecar_has_empty_ci_status(tmp_path: Path) -> None:
+    sidecar = load_sidecar(tmp_path)
+    assert sidecar.last_ci_status == ""
+
+
+def test_legacy_sidecar_without_ci_status_loads_empty(tmp_path: Path) -> None:
+    (tmp_path / ".ralph-state.json").write_text(
+        json.dumps(
+            {
+                "last_feedback_sweep": "2026-05-24T08:00:00+00:00",
+                "last_feedback_round": 1,
+                "last_seen_comment_ids": ["10:1"],
+            }
+        )
+    )
+    sidecar = load_sidecar(tmp_path)
+    assert sidecar.last_ci_status == ""
+    assert sidecar.last_feedback_round == 1
+
+
+def test_non_string_ci_status_falls_back_to_empty(tmp_path: Path) -> None:
+    (tmp_path / ".ralph-state.json").write_text(
+        json.dumps(
+            {
+                "last_feedback_sweep": None,
+                "last_feedback_round": 0,
+                "last_seen_comment_ids": [],
+                "last_ci_status": 42,
+            }
+        )
+    )
+    sidecar = load_sidecar(tmp_path)
+    assert sidecar.last_ci_status == ""
 
 
 def test_corrupt_sidecar_returns_default(tmp_path: Path) -> None:
