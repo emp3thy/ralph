@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +112,14 @@ def _coerce_datetime(value: Any) -> datetime | None:
             return datetime.fromisoformat(value)
         except ValueError:
             return None
+    # PyYAML parses a bare-date YAML value (e.g. ``created_at: 2026-05-24``,
+    # without a time component) as a ``datetime.date`` — NOT a
+    # ``datetime.datetime``. Without this branch, every such PBI would
+    # silently lose its timestamp (age column "?", JSON field null).
+    # Check after the datetime branch because datetime IS-A date in
+    # Python's class hierarchy.
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
     return None
 
 

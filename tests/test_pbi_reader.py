@@ -188,6 +188,34 @@ def test_enumerate_state_unknown_state_raises(tmp_path: Path) -> None:
         enumerate_state(tmp_path, "limbo")
 
 
+def test_bare_date_in_frontmatter_is_coerced_to_datetime(tmp_path: Path) -> None:
+    """Regression for BugBot LOW on PR #26: PyYAML parses a bare-date
+    YAML value (`created_at: 2026-05-24`, without time component) as a
+    ``datetime.date``, not ``datetime.datetime``. Without an explicit
+    date branch in ``_coerce_datetime`` the timestamp silently
+    becomes None and the age column shows ``?``."""
+    body = """---
+id: WI-8
+type: feature
+status: inbox
+severity: normal
+attempts: 0
+created_at: 2026-05-24
+updated_at: 2026-05-24
+---
+
+# bare date in frontmatter
+"""
+    pbi_dir = _make_pbi(tmp_path, "WI-8", "PBI.md", body)
+    result = read_pbi(pbi_dir, repo_path=tmp_path, repo_name="svc", state="inbox")
+    assert isinstance(result, PBIRow), f"expected PBIRow, got {result}"
+    assert result.created_at is not None
+    assert result.updated_at is not None
+    assert result.created_at.year == 2026
+    assert result.created_at.month == 5
+    assert result.created_at.day == 24
+
+
 def test_attempts_true_is_rejected_as_bool(tmp_path: Path) -> None:
     """Regression for BugBot LOW on PR #26: bool is a subclass of int in
     Python, so ``isinstance(True, int)`` is True. Without an explicit

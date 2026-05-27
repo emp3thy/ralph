@@ -368,13 +368,17 @@ def test_snapshot_failure_cleans_up_partial_worktree(
     # imports `enumerate_state` directly into its namespace).
     monkeypatch.setattr(show_module, "enumerate_state", _boom)
 
-    # Cleanup runs in the inner except + finally; the catch-all in
-    # main() converts the unexpected exception to exit 2 + clean stderr.
+    # Per-repo failure → captured into top_level_errors → JSON `errors`
+    # populated → exit 2. The partial worktree is still cleaned up by
+    # the inner except + finally.
     exit_code = show_module.main(["--repo", str(git_repo_with_pbis), "--json"])
     assert exit_code == 2
-    err = capsys.readouterr().err
-    assert "PermissionError" in err
-    assert "simulated state-dir access denial" in err
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["errors"], "per-repo error must appear in JSON errors array"
+    msg = " ".join(payload["errors"])
+    assert "PermissionError" in msg
+    assert "simulated state-dir access denial" in msg
 
     # No stale worktree entry left in the service repo's .git/worktrees/
     worktrees_dir = git_repo_with_pbis / ".git" / "worktrees"

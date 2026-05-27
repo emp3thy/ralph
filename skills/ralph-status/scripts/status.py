@@ -371,27 +371,30 @@ def main(argv: list[str] | None = None) -> int:
 
     worktree_root = Path(tempfile.mkdtemp(prefix="ralph-status-"))
     snapshots: list[RepoSnapshot] = []
+    # Per-repo failures land here and propagate to the JSON `errors`
+    # field, per the SKILL.md contract: "Repos that could not be
+    # inspected at all appear in the top-level errors array and cause
+    # exit code 2." Without this, a single bad repo aborts the whole
+    # run and downstream JSON consumers never see per-repo detail.
+    top_level_errors: list[str] = []
     try:
         for config in configs:
             # _extract_queue_snapshot may call _create_worktree (which
             # registers an entry in the service repo's .git/worktrees/)
             # and THEN fail in enumerate_state (e.g. PermissionError on
-            # a state dir). Without this guard, the unfinished worktree
-            # never gets appended to `snapshots` and the finally block
-            # below never cleans it up — leaving stale git metadata in
-            # the service repo. Catch broadly, best-effort prune the
-            # candidate path under worktree_root, then re-raise so the
-            # outer handlers see the original error.
+            # a state dir). Guard the call so a partial worktree gets
+            # cleaned up AND a failing repo doesn't kill the whole run.
             try:
                 snap = _extract_queue_snapshot(config, states=states, worktree_root=worktree_root)
-            except Exception:
+            except Exception as exc:
                 if not args.no_cleanup:
                     path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
                     candidate = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
                     if candidate.exists():
                         with contextlib.suppress(Exception):
                             _remove_worktree(config.path, candidate)
-                raise
+                top_level_errors.append(f"{config.path}: {type(exc).__name__}: {exc}")
+                continue
             snapshots.append(snap)
 
         all_rows: list[PBIRow | PBIRowError] = []
@@ -399,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
             all_rows.extend(snap.rows)
 
         if args.emit_json:
-            sys.stdout.write(_render_json(snapshots, top_level_errors=[]))
+            sys.stdout.write(_render_json(snapshots, top_level_errors=top_level_errors))
         else:
             sys.stdout.write(_render_table(all_rows))
             repo_count = len(snapshots)
@@ -408,7 +411,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"# {pbi_count} PBI(s) across {repo_count} repo(s) (states: {', '.join(states)})",
                 file=sys.stderr,
             )
-        return 0
+            for err in top_level_errors:
+                print(f"# repo-level error: {err}", file=sys.stderr)
+        # Exit 2 if any per-repo failure happened, 0 only if every
+        # repo inspected cleanly. Matches the SKILL.md contract.
+        return 2 if top_level_errors else 0
     except _FatalError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -420,10 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except Exception as exc:
-        # Catch-all so unexpected runtime failures (PermissionError,
-        # OSError, etc. from the reader) produce a clean error + exit 2
-        # rather than a raw traceback. The finally block below still
-        # runs and removes any partial worktree state.
+        # Catch-all for failures OUTSIDE the per-repo loop (e.g. an
+        # unexpected error during _render_json / _render_table). The
+        # per-repo failures are already captured in top_level_errors
+        # above; this is the safety net for everything else.
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     finally:
