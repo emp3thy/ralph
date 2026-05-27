@@ -14,7 +14,7 @@
 |---|---|---|
 | 1. Failing config tests | 98% | Pattern exists at `test_config_toml.py:157+` (gh_owner/halt_webhook promotion). Direct replication. |
 | 2. Promote knobs in config | 95% | Mechanical add to known patterns. Dataclass field-order trap is explicit in Step 2.3 (defaults must come last because `pr_check_poll_*` fields have none). |
-| 3. Failing sweep tests | 90% | Uses `dataclasses.replace` + monkeypatches against `ralph_executor.sweep.runner.SweepConfig`. Risk: the monkeypatch path is the right import target — if `loop.py` imports `SweepConfig` differently (e.g. `from ralph_executor.sweep.runner import SweepConfig`), the patch must target the local name. Mitigation: Step 3.2 patches at the canonical location; if the test fails for that reason, switch the patch target to `ralph_executor.loop.SweepConfig`. |
+| 3. Failing sweep tests | 95% | Fixtures + imports pre-flighted against `tests/executor/test_loop.py:17` (`from ralph_executor.queue.filesystem import FilesystemQueueSource`) and `loop.py:492` (`FilesystemQueueSource(cfg)` — not `cfg.repo_path`). Monkeypatch targets on `ralph_executor.sweep.runner.SweepConfig` and `ralph_executor.sweep.run` work because `_run_sweep` does lazy `from X import Y` inside the function body, which re-resolves attributes on the source module at call time. |
 | 4. Refactor _run_sweep | 95% | Lines + replacement code explicit. Only risk: existing tests elsewhere that `setenv` these names — Step 4.3 includes a grep to find them. |
 | 5. Stub doc update | 96% | Append text. Conditional test branch (skip if no existing snapshot test) avoids fabricating new test surface. |
 | 6. Full-suite gate | 92% | Could surface a latent test that monkeypatched the env vars and is no longer wired to the new path. Step 6.1's "Common failure modes" lists the two known shapes + fixes. |
@@ -369,14 +369,14 @@ def test_run_sweep_skips_when_bot_author_email_empty(
     still mentions the legacy env-var name so operators grepping logs see
     the same anchor."""
     from dataclasses import replace
-    from ralph_executor.filesystem_queue import FilesystemQueueSource
+    from ralph_executor.queue.filesystem import FilesystemQueueSource
     from ralph_executor.loop import _run_sweep
 
     # Ensure no inherited env can satisfy the sweep — only cfg matters.
     monkeypatch.delenv("RALPH_ADO_AUTHOR_EMAIL", raising=False)
 
     cfg = replace(cfg_for_repo, bot_author_email="")
-    source = FilesystemQueueSource(cfg.repo_path)
+    source = FilesystemQueueSource(cfg)
     with caplog.at_level("WARNING", logger="ralph_executor.loop"):
         _run_sweep(cfg, source)
 
@@ -394,7 +394,7 @@ def test_run_sweep_passes_cfg_values_to_sweep_config(
     from dataclasses import replace
     from datetime import timedelta
 
-    from ralph_executor.filesystem_queue import FilesystemQueueSource
+    from ralph_executor.queue.filesystem import FilesystemQueueSource
     from ralph_executor.loop import _run_sweep
 
     # If _run_sweep regressed to reading env, this poisoned env would
@@ -425,7 +425,7 @@ def test_run_sweep_passes_cfg_values_to_sweep_config(
     )
 
     cfg = replace(cfg_for_repo, bot_author_email="ralph@x.test", stale_days=5)
-    _run_sweep(cfg, FilesystemQueueSource(cfg.repo_path))
+    _run_sweep(cfg, FilesystemQueueSource(cfg))
 
     assert captured["ralph_author_email"] == "ralph@x.test"
     assert captured["stale_threshold"] == timedelta(days=5)
