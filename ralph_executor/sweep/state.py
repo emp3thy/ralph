@@ -48,9 +48,16 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
             last_feedback_round=0,
             last_seen_comment_ids=frozenset(),
         )
+    # Catch OSError alongside JSONDecodeError: an EACCES / ESTALE /
+    # ENOSPC from read_text would otherwise propagate through
+    # _process_pbi and run()'s except _SweepPbiError, aborting all
+    # remaining PBIs. Returning the default sidecar is the right
+    # behaviour — same as the existing JSONDecodeError + non-dict
+    # branches: missing/unreadable file = "never swept", let the sweep
+    # proceed.
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,

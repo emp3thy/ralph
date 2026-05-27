@@ -417,6 +417,10 @@ def _read_original_summary(pbi_dir: Path) -> str:
     for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
         path = pbi_dir / candidate
         if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise _SweepPbiError(f"failed to read {candidate} in {pbi_dir}: {exc}") from exc
             # First 40 lines; enough for context, bounded for file size.
-            return "\n".join(path.read_text(encoding="utf-8").splitlines()[:40])
+            return "\n".join(text.splitlines()[:40])
     return "(no original PBI body found)"
