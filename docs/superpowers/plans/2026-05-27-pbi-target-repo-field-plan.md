@@ -272,7 +272,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "feat(validate): add target_repo to 
 - Modify: `scripts/pbi_reader.py:65-85` (PBIRow dataclass) + `read_pbi` parse logic
 - Modify: `tests/test_pbi_reader.py`
 
-- [ ] **Step 3.1: Add a failing test**
+- [x] **Step 3.1: Add a failing test**
 
 Append to `tests/test_pbi_reader.py`:
 
@@ -301,7 +301,7 @@ def test_read_pbi_carries_target_repo(tmp_path: Path) -> None:
     assert row.target_repo == "https://github.com/emp3thy/ralph"
 ```
 
-- [ ] **Step 3.2: Run the test — verify it fails**
+- [x] **Step 3.2: Run the test — verify it fails**
 
 ```bash
 uv run pytest tests/test_pbi_reader.py::test_read_pbi_carries_target_repo -v
@@ -309,7 +309,7 @@ uv run pytest tests/test_pbi_reader.py::test_read_pbi_carries_target_repo -v
 
 Expected: FAIL with `AttributeError: 'PBIRow' object has no attribute 'target_repo'` or similar.
 
-- [ ] **Step 3.3: Add `target_repo` to `PBIRow` dataclass**
+- [x] **Step 3.3: Add `target_repo` to `PBIRow` dataclass**
 
 In `scripts/pbi_reader.py`, find `@dataclass(frozen=True) class PBIRow:` (line 65). Add the new field at the end:
 
@@ -332,7 +332,7 @@ class PBIRow:
     target_repo: str   # NEW
 ```
 
-- [ ] **Step 3.4: Parse the field in `read_pbi`**
+- [x] **Step 3.4: Parse the field in `read_pbi`**
 
 In `read_pbi` (around line 142), find the `return PBIRow(...)` block. Add the new kwarg:
 
@@ -345,7 +345,7 @@ In `read_pbi` (around line 142), find the `return PBIRow(...)` block. Add the ne
 
 (Use `or ""` so a missing field yields empty string rather than `None`; validation already enforces presence on disk, but the reader is tolerant per its docstring.)
 
-- [ ] **Step 3.5: Run the test — verify it passes**
+- [x] **Step 3.5: Run the test — verify it passes**
 
 ```bash
 uv run pytest tests/test_pbi_reader.py::test_read_pbi_carries_target_repo -v
@@ -353,14 +353,14 @@ uv run pytest tests/test_pbi_reader.py::test_read_pbi_carries_target_repo -v
 
 Expected: PASS.
 
-- [ ] **Step 3.6: Run ruff + mypy**
+- [x] **Step 3.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check scripts/pbi_reader.py
 uv run mypy --strict scripts/pbi_reader.py
 ```
 
-- [ ] **Step 3.7: Commit**
+- [x] **Step 3.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue add scripts/pbi_reader.py tests/test_pbi_reader.py
