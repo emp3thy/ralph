@@ -470,6 +470,56 @@ def test_spawn_passes_stream_json_flags_to_claude(
     )
 
 
+def test_spawn_passes_permission_mode_flag_to_claude(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """Spawner must pass ``--permission-mode <cfg.claude_permission_mode>``
+    BEFORE ``-p`` so the spawned claude subprocess does not inherit the
+    host's ``~/.claude/settings.json`` ``defaultMode``. Putting the flag
+    after ``-p`` would make claude consume ``--permission-mode`` as the
+    prompt value (commander/yargs)."""
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    write_claude_script(
+        fake_claude_binary,
+        "import sys\nprint('\\n'.join(sys.argv[1:]))\nsys.exit(0)\n",
+    )
+    outcome = spawn_claude_p(cfg_for_repo, pbi)
+    argv_lines = outcome.stdout.splitlines()
+    assert "--permission-mode" in argv_lines
+    flag_index = argv_lines.index("--permission-mode")
+    assert argv_lines[flag_index + 1] == "bypassPermissions", (
+        f"--permission-mode value should be bypassPermissions; got {argv_lines[flag_index + 1]!r}"
+    )
+    p_index = argv_lines.index("-p")
+    assert flag_index < p_index, (
+        "--permission-mode must precede -p so claude doesn't consume the flag as the prompt value"
+    )
+
+
+def test_spawn_passes_overridden_permission_mode(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """A non-default ``claude_permission_mode`` (set by TOML/env) flows
+    through ``_build_argv`` unchanged. Mirrors the operator escape hatch
+    for stricter modes like ``acceptEdits`` or ``plan``."""
+    import dataclasses
+
+    custom_cfg = dataclasses.replace(cfg_for_repo, claude_permission_mode="acceptEdits")
+    pbi = _setup_current_pbi(custom_cfg, fake_repo)
+    write_claude_script(
+        fake_claude_binary,
+        "import sys\nprint('\\n'.join(sys.argv[1:]))\nsys.exit(0)\n",
+    )
+    outcome = spawn_claude_p(custom_cfg, pbi)
+    argv_lines = outcome.stdout.splitlines()
+    flag_index = argv_lines.index("--permission-mode")
+    assert argv_lines[flag_index + 1] == "acceptEdits"
+
+
 def test_summarise_stream_json_line_extracts_assistant_text() -> None:
     """Assistant events get summarised to their first text block so the
     operator sees what Claude is actually saying, not the JSON envelope."""

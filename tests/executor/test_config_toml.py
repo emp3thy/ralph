@@ -31,6 +31,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_LOG_LEVEL",
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
+        "RALPH_CLAUDE_PERMISSION_MODE",
         "RALPH_GIT_HOST",
         "GH_OWNER",
         "ADO_ORG_URL",
@@ -150,6 +151,37 @@ def test_env_git_host_wins_over_toml(clean_env: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("RALPH_GIT_HOST", "ado")
     cfg = load_config()
     assert cfg.git_host == "ado"
+
+
+def test_claude_permission_mode_default(clean_env: Path) -> None:
+    """No TOML key + no env -> bypassPermissions default. The executor
+    spawns claude non-interactively and cannot answer permission prompts."""
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "bypassPermissions"
+
+
+def test_claude_permission_mode_picked_up_from_toml(clean_env: Path) -> None:
+    """Operators pinning a stricter mode (e.g. ``acceptEdits`` or
+    ``plan``) for a particular project can do so via TOML rather than
+    exporting env every shell."""
+    _write_toml(clean_env, 'claude_permission_mode = "acceptEdits"\n')
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "acceptEdits"
+
+
+def test_env_claude_permission_mode_wins_over_toml(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, 'claude_permission_mode = "acceptEdits"\n')
+    monkeypatch.setenv("RALPH_CLAUDE_PERMISSION_MODE", "plan")
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "plan"
+
+
+def test_invalid_claude_permission_mode_in_toml_raises(clean_env: Path) -> None:
+    _write_toml(clean_env, 'claude_permission_mode = "yolo"\n')
+    with pytest.raises(ConfigError, match="claude_permission_mode"):
+        load_config()
 
 
 def test_git_host_empty_when_neither_set(clean_env: Path) -> None:

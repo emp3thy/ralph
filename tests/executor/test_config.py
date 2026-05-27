@@ -33,6 +33,7 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_LOG_LEVEL",
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
+        "RALPH_CLAUDE_PERMISSION_MODE",
         "RALPH_USE_WORKTREES",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
     ):
@@ -49,6 +50,7 @@ def test_load_config_uses_defaults(env_minimal: Path) -> None:
     assert cfg.log_level == logging.INFO
     assert cfg.iteration_sleep_seconds == 30.0
     assert cfg.claude_binary == "claude"
+    assert cfg.claude_permission_mode == "bypassPermissions"
     assert cfg.anthropic_api_key == "fake-key"
     assert cfg.use_worktrees is True
 
@@ -60,6 +62,7 @@ def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_mini
     monkeypatch.setenv("RALPH_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("RALPH_ITERATION_SLEEP_SECONDS", "0.5")
     monkeypatch.setenv("RALPH_CLAUDE_BINARY", "/usr/local/bin/claude")
+    monkeypatch.setenv("RALPH_CLAUDE_PERMISSION_MODE", "acceptEdits")
     cfg = load_config()
     assert cfg.queue_branch == "custom-queue"
     assert cfg.main_branch == "trunk"
@@ -67,6 +70,18 @@ def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_mini
     assert cfg.log_level == logging.DEBUG
     assert cfg.iteration_sleep_seconds == 0.5
     assert cfg.claude_binary == "/usr/local/bin/claude"
+    assert cfg.claude_permission_mode == "acceptEdits"
+
+
+def test_load_config_invalid_permission_mode(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    """A value outside the claude CLI's documented enum must raise
+    ConfigError at load time — not silently flow through and surface as
+    a confusing claude subprocess exit-1 later."""
+    monkeypatch.setenv("RALPH_CLAUDE_PERMISSION_MODE", "yolo")
+    with pytest.raises(ConfigError, match="claude_permission_mode"):
+        load_config()
 
 
 def test_load_config_missing_repo_path_falls_back_to_cwd(
