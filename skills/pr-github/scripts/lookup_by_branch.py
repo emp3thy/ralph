@@ -44,6 +44,12 @@ from _common import (  # noqa: E402
     load_client,
 )
 
+# _map_pr_state below raises HttpError (not FatalError) on unexpected GitHub
+# states. The string came from the API response, so an unknown value is a
+# host-response problem — exit 3 (via main's HttpError handler) makes
+# reconcile.py treat it as KEEP_API_ERROR and retry next sweep, instead of
+# exiting 1 with an uncaught traceback.
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -82,7 +88,7 @@ def _map_pr_state(raw_state: str, merged_at: str | None) -> str:
         if merged_at:
             return "merged"
         return "closed"
-    raise FatalError(f"unexpected GitHub PR state: {raw_state!r}")
+    raise HttpError(f"unexpected GitHub PR state: {raw_state!r}")
 
 
 def _lookup_pr(

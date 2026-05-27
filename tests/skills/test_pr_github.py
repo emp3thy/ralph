@@ -1338,3 +1338,33 @@ def test_lookup_by_branch_github_500_exits_3(
     rc = lookup_by_branch_module.main(["--branch", "ralph/x", "--repo", REPO])
     assert rc == 3
     assert "github error" in capsys.readouterr().err
+
+
+@responses.activate
+def test_lookup_by_branch_unexpected_state_exits_3(
+    lookup_by_branch_module: ModuleType,
+    env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression: BugBot PR #31 found that _map_pr_state previously raised
+    # FatalError on an unexpected state, but main() only caught HttpError,
+    # so the script exited 1 with a traceback. reconcile.py then logged a
+    # spurious ReconcileError instead of treating it as KEEP_API_ERROR.
+    responses.add(
+        responses.GET,
+        _lookup_pulls_url(),
+        json=[
+            {
+                "number": 99,
+                "state": "weird",
+                "merged_at": None,
+                "html_url": "https://github.com/example-org/service-auth/pull/99",
+            }
+        ],
+        status=200,
+    )
+    rc = lookup_by_branch_module.main(["--branch", "ralph/x", "--repo", REPO])
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert "github error" in err
+    assert "unexpected GitHub PR state" in err

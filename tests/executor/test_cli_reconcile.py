@@ -106,6 +106,43 @@ def test_reconcile_subcommand_reports_no_orphans_cleanly(
     assert "no orphans" in out
 
 
+def test_reconcile_summary_counts_include_errors(
+    fake_repo_with_orphan: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression: BugBot PR #31 flagged that the summary line used
+    # len(report.actions) as the headline count, so "3 successes + 2 errors"
+    # printed "3 orphans processed … 2 errors" (counts didn't add up).
+    # Fix: total = len(actions) + len(errors), label "attempted".
+    from ralph_executor.sweep.types import ReconcileAction, ReconcileReport
+
+    def _fake_reconcile_all(ctx: object, *, dry_run: bool = False) -> ReconcileReport:
+        return ReconcileReport(
+            actions={
+                "ORPHAN-A": ReconcileAction.MOVED_TO_DONE,
+                "ORPHAN-B": ReconcileAction.MOVED_TO_INBOX,
+                "ORPHAN-C": ReconcileAction.KEEP_PENDING,
+            },
+            errors={
+                "ORPHAN-D": "lookup failed",
+                "ORPHAN-E": "subprocess died",
+            },
+        )
+
+    monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
+    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
+    monkeypatch.setenv("GH_TOKEN", "fake")
+    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "5 orphans attempted" in out
+    assert "2 moved" in out
+    assert "1 stays" in out
+    assert "2 errors" in out
+
+
 def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

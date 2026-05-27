@@ -428,10 +428,8 @@ def _print_reconcile_report(report: ReconcileReport, *, dry_run: bool) -> None:
     n_moves = sum(1 for a in report.actions.values() if a.name.startswith("MOVED_"))
     n_stays = sum(1 for a in report.actions.values() if a.name.startswith("KEEP_"))
     n_err = len(report.errors)
-    print(
-        f"\n{len(report.actions)} orphans processed: "
-        f"{n_moves} moved, {n_stays} stays, {n_err} errors."
-    )
+    total = len(report.actions) + n_err
+    print(f"\n{total} orphans attempted: {n_moves} moved, {n_stays} stays, {n_err} errors.")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
