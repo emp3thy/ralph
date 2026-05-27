@@ -61,6 +61,11 @@ DEFAULT_STALE_DAYS = 3
 # ``claude_spawn.spawn_claude_p`` (subprocess-scoped, NOT exported to
 # ralph's parent env).
 DEFAULT_BASH_MAX_TIMEOUT_MS = 900_000
+# Sweep auto-merge opt-in (Plan SWEEP-AUTO-MERGE-CLEAN-PRS). When True,
+# the sweep auto-merges PRs that GitHub reports as
+# ``mergeable_state == "clean"`` (CI green + required approvals + no
+# conflicts + branch up-to-date). Default False — operators opt in.
+DEFAULT_AUTO_MERGE_CLEAN_PRS = False
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -99,6 +104,10 @@ _TOML_KNOWN_KEYS = frozenset(
         # single-checkout setups can opt out with `use_worktrees = false`
         # in TOML or `RALPH_USE_WORKTREES=0` in the environment.
         "use_worktrees",
+        # Sweep auto-merge opt-in. Default False; operators opt in via
+        # TOML or RALPH_AUTO_MERGE_CLEAN_PRS=1. See
+        # DEFAULT_AUTO_MERGE_CLEAN_PRS for the semantics.
+        "auto_merge_clean_prs",
     }
 )
 
@@ -166,6 +175,13 @@ class ExecutorConfig:
     # min); Claude Code's own default is 600_000 (10 min). Strictly
     # positive (validated in ``load_config``).
     bash_max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS
+    # Sweep auto-merge opt-in. When True the sweep act path merges PRs
+    # that GitHub reports as ``mergeable_state == "clean"`` via the
+    # ``pr-github`` skill's ``merge_pr`` op. Default False — flag must be
+    # set in TOML (``auto_merge_clean_prs = true``) or env
+    # (``RALPH_AUTO_MERGE_CLEAN_PRS=1``). Merging a PR a human still
+    # wanted to review is unrecoverable; opt in carefully.
+    auto_merge_clean_prs: bool = DEFAULT_AUTO_MERGE_CLEAN_PRS
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -479,6 +495,13 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_USE_WORKTREES,
         source_label=source_label,
     )
+    auto_merge_clean_prs = _resolve_bool(
+        name="auto_merge_clean_prs",
+        env_name="RALPH_AUTO_MERGE_CLEAN_PRS",
+        toml_value=toml_overrides.get("auto_merge_clean_prs"),
+        default=DEFAULT_AUTO_MERGE_CLEAN_PRS,
+        source_label=source_label,
+    )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -500,4 +523,5 @@ def load_config() -> ExecutorConfig:
         bot_author_email=bot_author_email,
         stale_days=stale_days,
         bash_max_timeout_ms=bash_max_timeout_ms,
+        auto_merge_clean_prs=auto_merge_clean_prs,
     )
