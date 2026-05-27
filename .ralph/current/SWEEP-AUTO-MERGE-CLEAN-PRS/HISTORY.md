@@ -27,3 +27,13 @@
 - Tests: `uv run pytest tests/skills/test_pr_github.py -q` → 67 passed. (Markdown-only change; no test references SKILL.md text.)
 - Lint: `uv run ruff check .` → All checks passed.
 - Notes: Used op name `merge_pr` (underscore) to match plan + PBI wording; sibling ops use hyphens externally but plan/spec explicitly say `merge_pr`. The `pr-ado` SKILL.md is unchanged — this PBI is GitHub-only (per `target_repo` + spec); ADO mirror is a follow-up.
+
+## Iteration 4 — 2026-05-27T22:30:00+00:00
+
+- Task 4: Added `DEFAULT_AUTO_MERGE_CLEAN_PRS = False` constant + `ExecutorConfig.auto_merge_clean_prs: bool = DEFAULT_AUTO_MERGE_CLEAN_PRS` field. Added `"auto_merge_clean_prs"` to `_TOML_KNOWN_KEYS`. Added `_resolve_bool` call after `use_worktrees`. Threaded through the `ExecutorConfig(...)` constructor at the bottom of `load_config`.
+- Task 4: Extended `CONFIG_TOML_STUB` in `setup_cmds.py` with a commented `auto_merge_clean_prs = false` block, documenting the opt-in semantics + env override.
+- Task 4: Added `RALPH_AUTO_MERGE_CLEAN_PRS` to the env-cleanup fixtures in both `tests/executor/test_config.py::env_minimal` and `tests/executor/test_config_toml.py::clean_env` so no host env leak influences other tests.
+- Task 4: Three new env-level cases in `test_config.py` (`test_load_config_auto_merge_clean_prs_default_false`, `_env_true`, `_env_invalid`). Four TOML-level cases in `test_config_toml.py` (`_default_false`, `_toml_true`, `_env_wins_over_toml`, `_toml_wrong_type_raises`).
+- Tests: `uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -q` → 55 passed.
+- Lint: `uv run ruff check` on changed files → All checks passed. `uv run ruff format --check` → 4 files already formatted. `uv run mypy ralph_executor/config.py ralph_executor/setup_cmds.py` → no issues.
+- Notes: Pyright "function ... is not accessed" warnings on the new field's assignment are spurious (constructor uses it); same for pyright noise about pytest fixture params — pre-existing pattern across the file.
