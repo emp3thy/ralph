@@ -4,12 +4,18 @@ The sidecar lets the sweep distinguish "PR has new active comments" from
 "PR has comments we already turned into a feedback PBI last round". Without
 this, the sweep would loop forever generating duplicate feedback PBIs.
 
+``last_ci_status`` tracks the prior tick's CI bucket so the runner can
+detect green→red transitions (Plan 19b PR_GREEN_THEN_RED emission). The
+empty string is the "never observed" sentinel for backward compatibility
+with sidecars written before Plan 19b.
+
 Storage layout (per-PBI, NOT global):
 
     {
       "last_feedback_sweep": "2026-05-24T12:00:00+00:00",
       "last_feedback_round": 2,
-      "last_seen_comment_ids": ["10:1", "10:2", "11:5"]
+      "last_seen_comment_ids": ["10:1", "10:2", "11:5"],
+      "last_ci_status": "succeeded"
     }
 
 Comment ids are stored as ``"<thread_id>:<comment_id>"`` so they remain
@@ -37,6 +43,7 @@ class SweepSidecar:
     # No call site does that today, but the frozen=True annotation
     # implies hashability — keep the contract honest.
     last_seen_comment_ids: frozenset[str] = field(default_factory=frozenset)
+    last_ci_status: str = ""
 
 
 def load_sidecar(pbi_dir: Path) -> SweepSidecar:
@@ -47,6 +54,7 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
             last_feedback_sweep=None,
             last_feedback_round=0,
             last_seen_comment_ids=frozenset(),
+            last_ci_status="",
         )
     # Catch OSError alongside JSONDecodeError: an EACCES / ESTALE /
     # ENOSPC from read_text would otherwise propagate through
@@ -62,12 +70,14 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
             last_feedback_sweep=None,
             last_feedback_round=0,
             last_seen_comment_ids=frozenset(),
+            last_ci_status="",
         )
     if not isinstance(raw, dict):
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,
             last_seen_comment_ids=frozenset(),
+            last_ci_status="",
         )
     sweep_raw = raw.get("last_feedback_sweep")
     sweep_dt: datetime | None
@@ -83,18 +93,21 @@ def load_sidecar(pbi_dir: Path) -> SweepSidecar:
     # otherwise raise ValueError / TypeError from int() / iteration
     # and escape every per-PBI guard. Treat as corrupt → default.
     try:
+        ci_raw = raw.get("last_ci_status")
         return SweepSidecar(
             last_feedback_sweep=sweep_dt,
             last_feedback_round=int(raw.get("last_feedback_round", 0) or 0),
             last_seen_comment_ids=frozenset(
                 str(x) for x in (raw.get("last_seen_comment_ids") or [])
             ),
+            last_ci_status=str(ci_raw) if isinstance(ci_raw, str) else "",
         )
     except (ValueError, TypeError):
         return SweepSidecar(
             last_feedback_sweep=None,
             last_feedback_round=0,
             last_seen_comment_ids=frozenset(),
+            last_ci_status="",
         )
 
 
@@ -109,6 +122,7 @@ def write_sidecar(pbi_dir: Path, sidecar: SweepSidecar) -> None:
         ),
         "last_feedback_round": sidecar.last_feedback_round,
         "last_seen_comment_ids": sorted(sidecar.last_seen_comment_ids),
+        "last_ci_status": sidecar.last_ci_status,
     }
     tmp = pbi_dir / (SIDECAR_FILENAME + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")

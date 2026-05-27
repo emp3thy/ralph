@@ -445,6 +445,7 @@ def _emit_feedback_pbi(
                 last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
                     sidecar.last_seen_comment_ids, new_ids
                 ),
+                last_ci_status=sidecar.last_ci_status,
             ),
         )
     except OSError as exc:
