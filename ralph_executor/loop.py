@@ -168,13 +168,21 @@ def _persist_iteration_writes(
     iteration. No-ops cleanly when the index ends up empty and when the
     PBI was already moved out of current/ by a sibling code path.
 
+    In worktree mode (``cfg.use_worktrees=True``) all git operations run
+    against the long-lived queue worktree at
+    ``<repo>/.ralph-work/queue/`` — no branch switching on the primary
+    checkout. Legacy single-checkout mode keeps the original behaviour
+    (``_ensure_on_queue_branch`` swaps the primary to ``cfg.queue_branch``
+    before staging).
+
     Emits ``FILE_TOUCHED`` to ``event_log`` when a new commit lands and
     the diff is non-empty. The cycle detector reserves the event for
     future per-iteration rules (no current rule reads it; emit for
     forward compatibility).
     """
     _ensure_on_queue_branch(cfg)
-    pbi_dir = cfg.repo_path / ".ralph" / "current" / pbi_id
+    queue_repo = queue_worktree_path(cfg.repo_path) if cfg.use_worktrees else cfg.repo_path
+    pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
     if not pbi_dir.is_dir():
         # PBI was moved out of current/ by handle_stuck or
         # move_current_to_pending_pr — nothing to persist here.
@@ -182,15 +190,15 @@ def _persist_iteration_writes(
     # Use add_all_changes so deletions of tracked files (e.g. Claude
     # removing a resolved STUCK.md) are staged too — bare `git add <dir>`
     # would skip them and leave index + working tree divergent.
-    git_ops.add_all_changes(cfg.repo_path, pbi_dir)
-    head_before = git_ops.rev_parse_head(cfg.repo_path)
+    git_ops.add_all_changes(queue_repo, pbi_dir)
+    head_before = git_ops.rev_parse_head(queue_repo)
     message = f"chore(queue): persist iteration writes for {pbi_id}"
-    head_after = git_ops.commit_index(cfg.repo_path, message)
+    head_after = git_ops.commit_index(queue_repo, message)
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
-        git_ops.push(cfg.repo_path, cfg.queue_branch)
+        git_ops.push(queue_repo, cfg.queue_branch)
         if event_log is not None:
-            files = git_ops.diff_names(cfg.repo_path, head_before, head_after)
+            files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:
                 recorded_at = now if now is not None else datetime.now(tz=UTC)
                 event_log.append(
