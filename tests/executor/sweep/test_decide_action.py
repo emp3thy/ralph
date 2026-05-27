@@ -16,6 +16,7 @@ from ralph_executor.sweep.runner import SweepConfig, decide_action
 from ralph_executor.sweep.types import (
     Action,
     CommentSnapshot,
+    Decision,
     PrSnapshot,
     ThreadSnapshot,
 )
@@ -97,7 +98,7 @@ def _decide(
     attempts: int = 1,
     last_seen_comment_ids: set[str] | None = None,
     config: SweepConfig | None = None,
-):
+) -> Decision:
     return decide_action(
         pr=pr,
         attempts=attempts,

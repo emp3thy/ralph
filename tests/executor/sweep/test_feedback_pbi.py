@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from ralph_executor.sweep.feedback_pbi import render
 from ralph_executor.sweep.types import (
     CommentSnapshot,
+    FeedbackPbiBundle,
     PrSnapshot,
     ThreadSnapshot,
 )
@@ -53,7 +54,7 @@ def _render(
     round_number: int = 1,
     new_comments: tuple[CommentSnapshot, ...] | None = None,
     summary: str = "# Original feature ask",
-):
+) -> FeedbackPbiBundle:
     return render(
         pr=_snapshot(threads=()),
         originating_pbi_id="WI-1234",

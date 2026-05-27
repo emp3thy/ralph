@@ -27,11 +27,13 @@ import overrides in production; the loop itself stays untouched.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from ralph_executor import git_ops
@@ -86,14 +88,85 @@ class IterationResult:
 
 
 def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
-    """Stub — Plan 8 fills this in.
+    """Drive one sweep over ``.ralph/pending-pr/`` (Plan 8).
 
-    In Plan 8 this will iterate ``source.pending_pr_pbis()`` and call
-    ``ado-pr show``/``ado-pr read-threads`` to detect PR state changes.
-    In v1 (this plan) it is intentionally a no-op so the loop's
-    single-PBI focus discipline is testable without Plan 8.
+    Builds a ``SweepContext`` from the executor config and current
+    environment, then delegates to ``ralph_executor.sweep.run``. The
+    ``source`` argument is unused — the sweep reads ``.ralph/pending-pr/``
+    directly from the filesystem so it can stay isolated from the queue
+    abstraction.
+
+    Production-safety: the sweep needs ``RALPH_ADO_AUTHOR_EMAIL`` (to skip
+    Ralph-authored PR comments so the loop doesn't feed back into itself)
+    and a PR-skill scripts directory matching the configured git host. If
+    either is missing the sweep is skipped with a WARNING — the loop must
+    keep running rather than abort, since pre-Plan-8 deployments and the
+    bulk of the executor test suite don't set these.
     """
-    log.debug("sweep stub invoked (Plan 8 will replace this)")
+    del source  # sweep walks the filesystem directly
+    ralph_email = os.environ.get("RALPH_ADO_AUTHOR_EMAIL", "").strip()
+    if not ralph_email:
+        log.warning("sweep: RALPH_ADO_AUTHOR_EMAIL is not set; skipping sweep this iteration")
+        return
+
+    scripts_path = _pr_skill_scripts_path(cfg)
+    if not scripts_path.is_dir():
+        log.warning(
+            "sweep: PR-skill scripts directory not found at %s; skipping",
+            scripts_path,
+        )
+        return
+
+    raw_days = os.environ.get("RALPH_STALE_DAYS", "3").strip() or "3"
+    try:
+        stale_days = int(raw_days)
+    except ValueError:
+        log.warning(
+            "sweep: RALPH_STALE_DAYS=%r is not an integer; falling back to 3",
+            raw_days,
+        )
+        stale_days = 3
+
+    from ralph_executor.sweep import run as run_sweep
+    from ralph_executor.sweep.runner import SweepConfig, SweepContext
+
+    sweep_cfg = SweepConfig(
+        ralph_author_email=ralph_email,
+        max_attempts=cfg.max_attempts,
+        stale_threshold=timedelta(days=stale_days),
+        now=datetime.now(tz=UTC),
+    )
+    sweep_ctx = SweepContext(
+        queue_root=cfg.repo_path / ".ralph",
+        ado_pr_scripts_path=scripts_path,
+        config=sweep_cfg,
+    )
+    result = run_sweep(ctx=sweep_ctx)
+    log.info(
+        "sweep: scanned %d PBIs (actions=%d, errors=%d)",
+        result.pbis_scanned,
+        len(result.actions),
+        len(result.errors),
+    )
+
+
+def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
+    """Return the on-disk scripts directory for the configured PR skill.
+
+    ``cfg.git_host == "github"`` → ``skills/pr-github/scripts/``.
+    ``cfg.git_host == "ado"``    → ``skills/ado-pr/scripts/``.
+    Empty / unknown host: prefer ``pr-github`` if it exists, else fall
+    back to ``ado-pr`` (existence is verified by the caller).
+    """
+    host = (cfg.git_host or "").strip().lower()
+    if host == "github":
+        return cfg.repo_path / "skills" / "pr-github" / "scripts"
+    if host == "ado":
+        return cfg.repo_path / "skills" / "ado-pr" / "scripts"
+    pr_github = cfg.repo_path / "skills" / "pr-github" / "scripts"
+    if pr_github.is_dir():
+        return pr_github
+    return cfg.repo_path / "skills" / "ado-pr" / "scripts"
 
 
 def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
