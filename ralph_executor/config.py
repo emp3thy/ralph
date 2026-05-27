@@ -55,6 +55,12 @@ DEFAULT_USE_WORKTREES = True
 # Sweep stale-PR threshold in days. PRs older than this in pending-pr/
 # get moved to blocked/. Promoted from RALPH_STALE_DAYS env-only.
 DEFAULT_STALE_DAYS = 3
+# Claude Code per-bash-tool ceiling in milliseconds. 15 minutes; Claude
+# Code's own default is 600_000 (10 min). Propagated to the spawned
+# claude subprocess via the BASH_MAX_TIMEOUT_MS env var in
+# ``claude_spawn.spawn_claude_p`` (subprocess-scoped, NOT exported to
+# ralph's parent env).
+DEFAULT_BASH_MAX_TIMEOUT_MS = 900_000
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -81,6 +87,10 @@ _TOML_KNOWN_KEYS = frozenset(
         # in .ralph/config.toml instead of exporting RALPH_* every shell.
         "bot_author_email",
         "stale_days",
+        # Claude Code per-bash-tool ceiling (ms). Propagated to the
+        # spawned claude subprocess via BASH_MAX_TIMEOUT_MS — see
+        # claude_spawn.spawn_claude_p.
+        "bash_max_timeout_ms",
         # CI-green verifier budget — see DEFAULT_PR_CHECK_POLL_* above.
         "pr_check_poll_max_attempts",
         "pr_check_poll_interval_seconds",
@@ -150,6 +160,12 @@ class ExecutorConfig:
     # ``load_config``).
     bot_author_email: str = ""
     stale_days: int = DEFAULT_STALE_DAYS
+    # Claude Code bash-tool ceiling in milliseconds. Set on the Claude
+    # subprocess env in ``claude_spawn.spawn_claude_p`` (subprocess-scoped
+    # bridge — NOT exported to ralph's parent env). Default 900_000 (15
+    # min); Claude Code's own default is 600_000 (10 min). Strictly
+    # positive (validated in ``load_config``).
+    bash_max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -431,6 +447,17 @@ def load_config() -> ExecutorConfig:
     )
     if stale_days <= 0:
         raise ConfigError(f"{source_label}: stale_days must be positive (got {stale_days})")
+    bash_max_timeout_ms = _resolve_int(
+        name="bash_max_timeout_ms",
+        env_name="BASH_MAX_TIMEOUT_MS",
+        toml_value=toml_overrides.get("bash_max_timeout_ms"),
+        default=DEFAULT_BASH_MAX_TIMEOUT_MS,
+        source_label=source_label,
+    )
+    if bash_max_timeout_ms <= 0:
+        raise ConfigError(
+            f"{source_label}: bash_max_timeout_ms must be positive (got {bash_max_timeout_ms})"
+        )
     pr_check_poll_max_attempts = _resolve_int(
         name="pr_check_poll_max_attempts",
         env_name="RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
@@ -472,4 +499,5 @@ def load_config() -> ExecutorConfig:
         use_worktrees=use_worktrees,
         bot_author_email=bot_author_email,
         stale_days=stale_days,
+        bash_max_timeout_ms=bash_max_timeout_ms,
     )
