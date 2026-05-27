@@ -144,10 +144,10 @@ def test_move_inbox_to_current_emits_no_event_when_event_log_omitted(
     assert [ev for ev in events if ev.kind == EventType.PBI_OPENED] == []
 
 
-def test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file(
+def test_same_file_thrashing_trips_after_ten_distinct_prs_touching_one_file(
     cfg_for_repo: ExecutorConfig, fake_repo: Path
 ) -> None:
-    """End-to-end wiring: six PR_CREATED events through ``move_current_to_pending_pr``
+    """End-to-end wiring: ten PR_CREATED events through ``move_current_to_pending_pr``
     sharing a single file trip ``evaluate_same_file_thrashing``.
 
     This is the integration counterpart to the pure-function detector tests
@@ -156,7 +156,7 @@ def test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file(
     """
     target_file = "src/auth/handler.py"
     _git(fake_repo, "checkout", "ralph-queue")
-    for i in range(6):
+    for i in range(10):
         pbi_dir = write_sample_pbi(fake_repo, pbi_id=f"WI-2{i:03d}")
         _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
         _git(fake_repo, "commit", "-m", f"inbox: WI-2{i:03d}")
@@ -165,7 +165,7 @@ def test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file(
     now = datetime.now(tz=UTC)
     event_log = open_log(fake_repo)
     try:
-        for i in range(6):
+        for i in range(10):
             pbi_id = f"WI-2{i:03d}"
             source = FilesystemQueueSource(cfg_for_repo)
             inbox = [p for p in source.inbox_pbis() if p.id == pbi_id]
@@ -177,15 +177,15 @@ def test_same_file_thrashing_trips_after_six_distinct_prs_touching_one_file(
                 event_log=event_log,
                 pr_url=f"https://example.com/pr/{pbi_id}",
                 touched_files=[target_file],
-                now=now - timedelta(hours=20 - i),
+                now=now - timedelta(hours=20 - i * 2),
             )
         events = event_log.recent(window=timedelta(hours=24), now=now)
     finally:
         event_log.close()
 
     pr_created = [ev for ev in events if ev.kind == EventType.PR_CREATED]
-    assert len(pr_created) == 6
-    assert {ev.pbi_id for ev in pr_created} == {f"WI-2{i:03d}" for i in range(6)}
+    assert len(pr_created) == 10
+    assert {ev.pbi_id for ev in pr_created} == {f"WI-2{i:03d}" for i in range(10)}
 
     signal = evaluate_same_file_thrashing(events, now)
     assert signal is not None

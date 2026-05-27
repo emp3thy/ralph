@@ -162,14 +162,14 @@ class TestWhackAMole:
 
 
 class TestSameFileThrashing:
-    def test_trips_when_one_file_has_6_PRs_in_24h(self, now: datetime) -> None:
+    def test_trips_when_one_file_has_10_PRs_in_24h(self, now: datetime) -> None:
         target = "src/auth/handler.py"
         events: list[Event] = []
-        for i in range(6):
+        for i in range(10):
             events.append(
                 make_event(
                     kind=EventType.PR_CREATED,
-                    recorded_at=offset(now, hours=-(20 - i)),
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
                     pbi_id=f"WI-{i}",
                     payload={"files": [target]},
                 )
@@ -178,16 +178,16 @@ class TestSameFileThrashing:
         assert signal is not None
         assert target in signal.description
 
-    def test_does_not_trip_at_5_PRs(self, now: datetime) -> None:
+    def test_does_not_trip_at_9_PRs(self, now: datetime) -> None:
         target = "src/auth/handler.py"
         events: list[Event] = [
             make_event(
                 kind=EventType.PR_CREATED,
-                recorded_at=offset(now, hours=-(20 - i)),
+                recorded_at=offset(now, hours=-(20 - i * 2)),
                 pbi_id=f"WI-{i}",
                 payload={"files": [target]},
             )
-            for i in range(5)
+            for i in range(9)
         ]
         assert evaluate_same_file_thrashing(_events(events), now) is None
 
@@ -200,7 +200,7 @@ class TestSameFileThrashing:
                 pbi_id=f"WI-{i}",
                 payload={"files": [target]},
             )
-            for i in range(6)
+            for i in range(10)
         ]
         assert evaluate_same_file_thrashing(_events(events), now) is None
 
@@ -430,11 +430,11 @@ class TestEvaluateAll:
         sig = "AssertionError in handler.py:42"
         events: list[Event] = []
         # Trip same_file_thrashing.
-        for i in range(6):
+        for i in range(10):
             events.append(
                 make_event(
                     kind=EventType.PR_CREATED,
-                    recorded_at=offset(now, hours=-(20 - i)),
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
                     pbi_id=f"WI-{i}",
                     payload={"files": [target]},
                 )
