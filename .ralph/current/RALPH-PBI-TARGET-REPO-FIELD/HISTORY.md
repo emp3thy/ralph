@@ -45,3 +45,17 @@
 - Notes: Inlined the validator rather than importing from `scripts.validate_samples` because the skill loads via `importlib.util.spec_from_file_location` from outside the pytest rootdir and the `scripts.` package wouldn't reliably resolve in production. Duplication is 10 lines; both helpers must stay in lockstep.
 - Next iteration: Task 7 (`skills/workitem-fetch-github/scripts/schema.py` — add `target_repo` to `REQUIRED_KEYS` + WorkItemJson typed dict; one-line note in `prompt/PROMPT.md`).
 
+## Iteration 7 — 2026-05-27T20:46:27Z
+
+- Step 7.1: added `target_repo` to `WorkItemJson` TypedDict + `REQUIRED_KEYS` in `skills/workitem-fetch-github/scripts/schema.py`; added string-type check in `validate()`. Updated `_load_schema_validator`'s fallback `required` tuple in `skills/ralph-add/scripts/add.py` to match. GitHub fetcher `_build_document` now emits `target_repo: https://github.com/{owner}/{repo}`. Test fixtures in `tests/skills/test_ralph_add.py` and `tests/skills/test_workitem_fetch_github.py` updated to include the new field.
+- Step 7.2: added one-line informational note to `prompt/PROMPT.md` (no behaviour change — metadata only this PBI).
+- Tests: green — `uv run pytest tests/` 647 passed / 2 skipped; `uv run ruff check` clean; `uv run ruff format --check` clean; `uv run mypy ralph_executor scripts skills tests` clean.
+- Notes: Task 7 complete. Plan checkboxes 7.1–7.4 ticked. Task 8 (full-suite gate + push + PR) remains for next iteration.
+
+## Iteration 8 — 2026-05-27T22:30:00Z
+
+- Step Task 8: ran the full verification gate. `uv run pytest tests/` 647 passed / 2 skipped (~4m). `uv run ruff check ralph_executor/ skills/ scripts/ tests/` clean. `uv run ruff format --check ralph_executor/ skills/ scripts/ tests/` clean (108 files). `uv run mypy ralph_executor scripts skills tests` clean (105 source files). `uv run python scripts/validate_samples.py samples` all OK across the three canonical samples.
+- Tests: green across the whole gate; PBI implementation complete.
+- Notes: Plan boxes 8.1–8.3 ticked. Push + PR creation handled in the same iteration. Brought iter 7 HISTORY entry across from ralph-queue so the feature-branch HISTORY captures the full attempt arc before the PR commit.
+- Next iteration: none — PBI ships.
+

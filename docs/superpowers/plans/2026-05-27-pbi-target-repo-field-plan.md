@@ -1018,7 +1018,7 @@ git -C /c/Users/gethi/ralph-queue commit -m "feat(schema): workitem-fetch JSON g
 
 **Files:** none modified directly; verification + push.
 
-- [ ] **Step 8.1: Run the full pytest suite**
+- [x] **Step 8.1: Run the full pytest suite**
 
 ```bash
 uv run pytest tests/ -v
@@ -1030,7 +1030,7 @@ Expected: all green. Common failure modes:
 - A test asserting on the full PBI.md frontmatter dict: update the expected dict to include `target_repo`.
 - A test fixture that builds a PBI.md without the field and then validates: add the field to the fixture.
 
-- [ ] **Step 8.2: Run ruff format check + mypy across the whole package**
+- [x] **Step 8.2: Run ruff format check + mypy across the whole package**
 
 ```bash
 uv run ruff check ralph_executor/ skills/ scripts/ tests/
@@ -1038,7 +1038,7 @@ uv run ruff format --check ralph_executor/ skills/ scripts/ tests/
 uv run mypy --strict ralph_executor/ scripts/
 ```
 
-- [ ] **Step 8.3: Verify the live queue still validates**
+- [x] **Step 8.3: Verify the live queue still validates**
 
 ```bash
 uv run python scripts/validate_samples.py
@@ -1046,7 +1046,7 @@ uv run python scripts/validate_samples.py
 
 (If that script has its own CLI entry point; otherwise rely on `test_all_live_pbis_have_target_repo` from Task 5.) Expected: all PBIs report clean.
 
-- [ ] **Step 8.4: Push the branch**
+- [x] **Step 8.4: Push the branch**
 
 ```bash
 git -C /c/Users/gethi/ralph-queue push origin ralph-queue
