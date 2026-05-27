@@ -84,6 +84,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         log_level=20,
         iteration_sleep_seconds=0.0,
         claude_binary=str(fake_claude),
+        claude_permission_mode="bypassPermissions",
         anthropic_api_key="fake-key",
         git_host="github",
         gh_owner="",

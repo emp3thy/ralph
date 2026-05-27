@@ -177,6 +177,32 @@ claude_skills_dir = "C:/Users/you/.claude/skills" # was $RALPH_CLAUDE_SKILLS_DIR
 Secrets stay env-only: `GH_TOKEN`, `ADO_PAT`, optional
 `ANTHROPIC_API_KEY`.
 
+### Claude subprocess permission mode
+
+The executor spawns each `claude -p` invocation with an explicit
+`--permission-mode` argument so the spawned subprocess never inherits
+the host's `~/.claude/settings.json` `defaultMode`. Default is
+`bypassPermissions` because ralph runs Claude non-interactively and
+cannot answer permission prompts. Operators do NOT need to relax the
+host's global `defaultMode` for ralph to run — leaving it at `"auto"`
+is fine.
+
+Override per project via TOML:
+
+```toml
+claude_permission_mode = "acceptEdits"   # was $RALPH_CLAUDE_PERMISSION_MODE
+```
+
+…or per shell via env:
+
+```bash
+export RALPH_CLAUDE_PERMISSION_MODE=plan
+```
+
+Allowed values mirror the claude CLI's `--permission-mode` enum:
+`acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`,
+`plan`. An unrecognised value raises `ConfigError` at startup.
+
 ## Development
 
 ```bash

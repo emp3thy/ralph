@@ -46,6 +46,23 @@ DEFAULT_MAX_ATTEMPTS = 20
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_ITERATION_SLEEP_SECONDS = 30.0
 DEFAULT_CLAUDE_BINARY = "claude"
+# Permission mode passed to the spawned ``claude -p`` subprocess via
+# ``--permission-mode``. Setting it explicitly stops the executor's
+# Claude subprocess from inheriting the host's
+# ``~/.claude/settings.json`` ``defaultMode``, so a host configured in
+# ``auto`` mode (with its safety classifier) does not have to be
+# globally relaxed just to let ralph write files like
+# ``.claude/settings.json``. Default is ``bypassPermissions`` because
+# ralph runs in non-interactive ``-p`` mode and cannot answer permission
+# prompts.
+DEFAULT_CLAUDE_PERMISSION_MODE = "bypassPermissions"
+# Mirrors the claude CLI's documented ``--permission-mode`` enum (see
+# ``claude --help``). Validated in ``load_config`` so a typo surfaces
+# immediately rather than being passed through to claude (which exits 1
+# on an unrecognised value).
+_VALID_CLAUDE_PERMISSION_MODES = frozenset(
+    {"acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"}
+)
 # CI-green verifier budget (Plan 18, Task 6). 6 polls × 30 s = 3-minute
 # wall budget per iteration; longer waits roll over into the next
 # iteration via classify_outcome -> ``partial``.
@@ -81,6 +98,10 @@ _TOML_KNOWN_KEYS = frozenset(
         "log_level",
         "iteration_sleep_seconds",
         "claude_binary",
+        # Permission mode for the spawned claude subprocess. See
+        # DEFAULT_CLAUDE_PERMISSION_MODE above for why this is
+        # bypassPermissions by default.
+        "claude_permission_mode",
         "git_host",
         # Per-host project identifiers + alerting. Promoted from env-only
         # in this layer because they are project state, not secrets.
@@ -133,6 +154,14 @@ class ExecutorConfig:
     log_level: int
     iteration_sleep_seconds: float
     claude_binary: str
+    # Permission mode forwarded to the spawned ``claude -p`` subprocess
+    # via ``--permission-mode``. Default ``"bypassPermissions"`` —
+    # the executor runs Claude non-interactively and cannot answer
+    # permission prompts, so the spawned subprocess must not inherit a
+    # host ``defaultMode`` that prompts. Allowed values are the claude
+    # CLI's documented ``--permission-mode`` enum (validated in
+    # ``load_config``).
+    claude_permission_mode: str
     anthropic_api_key: str
     # Empty string = "not set in TOML/env"; host_select falls back to
     # reading ``RALPH_GIT_HOST`` directly and errors if that is also
@@ -412,6 +441,18 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_CLAUDE_BINARY,
         source_label=source_label,
     )
+    claude_permission_mode = _resolve_str(
+        name="claude_permission_mode",
+        env_name="RALPH_CLAUDE_PERMISSION_MODE",
+        toml_value=toml_overrides.get("claude_permission_mode"),
+        default=DEFAULT_CLAUDE_PERMISSION_MODE,
+        source_label=source_label,
+    )
+    if claude_permission_mode not in _VALID_CLAUDE_PERMISSION_MODES:
+        raise ConfigError(
+            f"{source_label}: claude_permission_mode={claude_permission_mode!r} "
+            f"not in {sorted(_VALID_CLAUDE_PERMISSION_MODES)}"
+        )
     git_host = _resolve_str(
         name="git_host",
         env_name="RALPH_GIT_HOST",
@@ -511,6 +552,7 @@ def load_config() -> ExecutorConfig:
         log_level=log_level,
         iteration_sleep_seconds=sleep_seconds,
         claude_binary=claude_binary,
+        claude_permission_mode=claude_permission_mode,
         anthropic_api_key=anthropic_key,
         git_host=git_host,
         gh_owner=gh_owner,
