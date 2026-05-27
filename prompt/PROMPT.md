@@ -33,14 +33,20 @@ Operating principles:
 
 ## What you read
 
-The current PBI lives at `.ralph/current/<PBI-id>/` (relative to the repo
-root). Its `type` frontmatter field on the entry file dictates which
-files to read and in what order.
+All file paths in this prompt that refer to the active PBI use
+`$RALPH_PBI_DIR/...` (set by the executor — an absolute path to the
+PBI directory inside the queue worktree). Read and write to those
+absolute paths. Do NOT use the relative `.ralph/current/...` path —
+your current working directory is the code worktree, not the queue
+worktree.
+
+The `type` frontmatter field on the PBI entry file dictates which files
+to read and in what order.
 
 **All PBI types — always read first, in this order:**
 
 1. `prompt/PROMPT.md` (this file)
-2. `.ralph/current/<PBI-id>/HISTORY.md` — what you (in past iterations)
+2. `$RALPH_PBI_DIR/HISTORY.md` — what you (in past iterations)
    have already tried on this PBI
 
 Then continue with the per-type read order:
@@ -53,9 +59,9 @@ Entry file: `PBI.md`. Required siblings: `PBI.md`, `PLAN.md`,
 Read in this order:
 
 1. `prompt/PROMPT.md`
-2. `.ralph/current/<PBI-id>/HISTORY.md`
-3. `.ralph/current/<PBI-id>/PBI.md`
-4. `.ralph/current/<PBI-id>/PLAN.md`
+2. `$RALPH_PBI_DIR/HISTORY.md`
+3. `$RALPH_PBI_DIR/PBI.md`
+4. `$RALPH_PBI_DIR/PLAN.md`
 
 ### Bug PBI — read order
 
@@ -65,12 +71,13 @@ Entry file: `BUG.md`. Required siblings: `BUG.md`, `REPRODUCE.md`,
 Read in this order:
 
 1. `prompt/PROMPT.md`
-2. `.ralph/current/<PBI-id>/HISTORY.md`
-3. `.ralph/current/<PBI-id>/BUG.md`
-4. `.ralph/current/<PBI-id>/REPRODUCE.md`
-5. `docs/INVESTIGATE.md` (at the **repo root**, NOT inside the PBI
-   directory — this is the per-service debugging guide written and
-   maintained by the service's engineers)
+2. `$RALPH_PBI_DIR/HISTORY.md`
+3. `$RALPH_PBI_DIR/BUG.md`
+4. `$RALPH_PBI_DIR/REPRODUCE.md`
+5. `docs/INVESTIGATE.md` (at the **repo root** of the code worktree —
+   i.e. your current working directory — NOT inside the PBI directory.
+   This is the per-service debugging guide written and maintained by
+   the service's engineers.)
 
 If `docs/INVESTIGATE.md` does not exist for this service, note that in
 `HISTORY.md` and proceed without it — but write `STUCK.md` if the absence
@@ -84,9 +91,9 @@ Entry file: `FEEDBACK.md`. Required siblings: `FEEDBACK.md`, `PR-LINK.md`,
 Read in this order:
 
 1. `prompt/PROMPT.md`
-2. `.ralph/current/<PBI-id>/HISTORY.md`
-3. `.ralph/current/<PBI-id>/ORIGINAL.md`
-4. `.ralph/current/<PBI-id>/FEEDBACK.md`
+2. `$RALPH_PBI_DIR/HISTORY.md`
+3. `$RALPH_PBI_DIR/ORIGINAL.md`
+4. `$RALPH_PBI_DIR/FEEDBACK.md`
 
 `FEEDBACK.md` itself contains explicit per-round instructions (decide
 correct / not / unclear; apply or reply; set thread status). Those

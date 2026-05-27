@@ -92,6 +92,9 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        # Integration loop tests cover the legacy single-checkout path;
+        # worktree-mode coverage lives in the dedicated Task 9 suite.
+        use_worktrees=False,
     )
     return work, cfg
 
