@@ -149,6 +149,84 @@ def push(repo: Path, branch: str, remote: str = "origin") -> None:
     _run_git(repo, "push", remote, branch)
 
 
+class PushRebaseConflict(RuntimeError):
+    """Raised when :func:`push_with_rebase` aborted a rebase due to conflicts.
+
+    ``conflict_paths`` lists the files git reported as conflicted before the
+    rebase was aborted. Callers (``iterate_once``) use this for the log
+    payload; this helper does NOT attempt to auto-resolve conflicts — the
+    local branch is restored to its pre-rebase HEAD via ``rebase --abort``
+    and the caller decides whether to skip the iteration or surface it to
+    the operator.
+    """
+
+    def __init__(self, conflict_paths: tuple[str, ...]) -> None:
+        super().__init__(f"rebase conflict on: {', '.join(conflict_paths) or '<unknown>'}")
+        self.conflict_paths = conflict_paths
+
+
+def push_with_rebase(repo: Path, *, remote: str, branch: str) -> None:
+    """Fetch ``remote/branch``, rebase local commits onto it if needed, push.
+
+    Safe against the common race where a concurrent writer advances
+    ``remote/branch`` between iteration start and push: instead of failing
+    with a non-fast-forward rejection, the local commits are replayed on
+    top of the new remote tip and pushed.
+
+    Raises:
+        PushRebaseConflict: the rebase aborted because of conflict markers
+            (file-level overlap between local commits and the new remote
+            commits). The local branch is restored to its pre-rebase HEAD.
+        GitCommandError: any other git failure (network, auth, corrupt
+            repo state). Existing semantics — propagate and let the
+            operator intervene.
+
+    One retry is attempted on a second-attempt race (the rebase window
+    itself got raced again); a second push failure propagates.
+    """
+    _run_git(repo, "fetch", remote, branch)
+    counts = _run_git(
+        repo,
+        "rev-list",
+        "--count",
+        "--left-right",
+        f"HEAD...{remote}/{branch}",
+    ).stdout
+    _ahead, behind = counts.strip().split()
+    del _ahead  # only the "behind" side decides whether to rebase
+    if int(behind) > 0:
+        _rebase_onto_remote(repo, remote=remote, branch=branch)
+    try:
+        _run_git(repo, "push", remote, branch)
+    except GitCommandError:
+        # Window between rebase and push was raced again — fetch, rebase
+        # one more time, then retry the push. A second failure propagates
+        # to the caller: >2 writers racing in <5 seconds is a real human
+        # problem worth interrupting on.
+        _run_git(repo, "fetch", remote, branch)
+        _rebase_onto_remote(repo, remote=remote, branch=branch)
+        _run_git(repo, "push", remote, branch)
+
+
+def _rebase_onto_remote(repo: Path, *, remote: str, branch: str) -> None:
+    """Rebase HEAD onto ``remote/branch``; raise on conflicts after abort.
+
+    Helper for :func:`push_with_rebase`. The double-rebase shape (initial
+    + post-race retry) is identical, so the conflict-detection + abort
+    logic lives here.
+    """
+    rebase = _run_git(repo, "rebase", f"{remote}/{branch}", check=False)
+    if rebase.returncode == 0:
+        return
+    conflict_paths: tuple[str, ...] = ()
+    try:
+        diff = _run_git(repo, "diff", "--name-only", "--diff-filter=U", check=False)
+        conflict_paths = tuple(line for line in diff.stdout.splitlines() if line.strip())
+    finally:
+        _run_git(repo, "rebase", "--abort", check=False)
+    raise PushRebaseConflict(conflict_paths)
+
+
 def mv(repo: Path, src: Path, dst: Path) -> None:
     """Run ``git mv <src> <dst>``, creating ``dst``'s parent dirs if needed."""
     dst.parent.mkdir(parents=True, exist_ok=True)

@@ -38,6 +38,7 @@ from typing import Literal
 from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.git_ops import PushRebaseConflict
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     move_current_to_pending_pr,
@@ -93,6 +94,7 @@ IterationOutcome = Literal[
     "ran_pr_created",
     "ran_stuck",
     "halted",
+    "push_conflict",
 ]
 
 
@@ -305,7 +307,11 @@ def _persist_iteration_writes(
     head_after = git_ops.commit_index(queue_repo, message)
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
-        git_ops.push(queue_repo, cfg.queue_branch)
+        # push_with_rebase rebases the local persist commit onto a raced
+        # origin/<queue_branch> instead of failing the push outright. The
+        # caller (iterate_once) catches PushRebaseConflict and converts
+        # it to a recoverable LoopResult so the loop keeps running.
+        git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
         if event_log is not None:
             files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:
@@ -641,7 +647,23 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
     current = source.current_pbi()
     if current is not None:
         # Current occupied → run Ralph on it (attempt counter + spawn).
-        _outcome, result = _run_ralph(cfg, current)
+        # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
+        # ``handle_stuck`` on terminal outcomes, both of which call
+        # ``push_with_rebase`` via ``movements._move``. A concurrent
+        # writer on ``cfg.queue_branch`` can make that push raise
+        # ``PushRebaseConflict`` — without this catch the executor
+        # process would crash, exactly the failure mode this code
+        # path exists to prevent.
+        try:
+            _outcome, result = _run_ralph(cfg, current)
+        except PushRebaseConflict as exc:
+            log.warning(
+                "iterate_once: push conflict during _run_ralph for %s (paths: %s); "
+                "loop will retry next round",
+                current.id,
+                ", ".join(exc.conflict_paths) or "<unknown>",
+            )
+            return IterationResult(outcome="push_conflict", pbi_id=current.id)
         # Restore queue branch so .ralph/ is visible on disk after the call.
         _ensure_on_queue_branch(cfg)
         # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
@@ -656,6 +678,20 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                 event_log=event_log,
                 now=datetime.now(tz=UTC),
             )
+        except PushRebaseConflict as exc:
+            # Concurrent writer advanced the queue branch in a way that
+            # conflicts with the iteration's persist commit. The local
+            # commit was abandoned (rebase --abort), the on-disk writes
+            # remain in the queue worktree, and the next iteration will
+            # re-stage them. Log a WARNING and surface the outcome so
+            # operator dashboards see it — the loop must NOT crash.
+            log.warning(
+                "iterate_once: push conflict on %s (paths: %s); "
+                "skipping this iteration's persist, loop will retry next round",
+                cfg.queue_branch,
+                ", ".join(exc.conflict_paths) or "<unknown>",
+            )
+            return IterationResult(outcome="push_conflict", pbi_id=current.id)
         finally:
             event_log.close()
         if _check_cycle_detector(cfg, source):
@@ -684,7 +720,20 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         return IterationResult(outcome="idle", pbi_id=None)
 
     log.info("claiming PBI %s", picked.id)
-    claimed = _claim_pbi(cfg, picked)
+    # ``_claim_pbi`` invokes ``move_inbox_to_current`` → ``push_with_rebase``.
+    # A concurrent writer on the queue branch can make that push raise
+    # ``PushRebaseConflict``; treat it like the run-Ralph case above
+    # so the loop continues on the next iteration.
+    try:
+        claimed = _claim_pbi(cfg, picked)
+    except PushRebaseConflict as exc:
+        log.warning(
+            "iterate_once: push conflict during _claim_pbi for %s (paths: %s); "
+            "loop will retry next round",
+            picked.id,
+            ", ".join(exc.conflict_paths) or "<unknown>",
+        )
+        return IterationResult(outcome="push_conflict", pbi_id=picked.id)
     # _claim_pbi already returns to queue branch; re-assert for clarity.
     _ensure_on_queue_branch(cfg)
     if _check_cycle_detector(cfg, source):
