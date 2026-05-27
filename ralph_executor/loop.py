@@ -27,7 +27,6 @@ import overrides in production; the loop itself stays untouched.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import time
 from collections.abc import Iterator
@@ -120,17 +119,21 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
     directly from the filesystem so it can stay isolated from the queue
     abstraction.
 
-    Production-safety: the sweep needs ``RALPH_ADO_AUTHOR_EMAIL`` (to skip
-    Ralph-authored PR comments so the loop doesn't feed back into itself)
-    and a PR-skill scripts directory matching the configured git host. If
-    either is missing the sweep is skipped with a WARNING — the loop must
-    keep running rather than abort, since pre-Plan-8 deployments and the
-    bulk of the executor test suite don't set these.
+    Production-safety: the sweep needs ``cfg.bot_author_email`` (used to
+    skip ralph-authored PR comments so the loop doesn't feed back into
+    itself) and a PR-skill scripts directory matching the configured git
+    host. If either is missing the sweep is skipped with a WARNING — the
+    loop must keep running rather than abort, since pre-Plan-8 deployments
+    and the bulk of the executor test suite don't set the author email.
+    Validation of ``cfg.stale_days`` (must be positive) lives in
+    ``config.load_config``; this function trusts the value.
     """
     del source  # sweep walks the filesystem directly
-    ralph_email = os.environ.get("RALPH_ADO_AUTHOR_EMAIL", "").strip()
-    if not ralph_email:
-        log.warning("sweep: RALPH_ADO_AUTHOR_EMAIL is not set; skipping sweep this iteration")
+    if not cfg.bot_author_email:
+        log.warning(
+            "sweep: bot_author_email is not set (TOML key 'bot_author_email' "
+            "or env RALPH_ADO_AUTHOR_EMAIL); skipping sweep this iteration"
+        )
         return
 
     scripts_path = _pr_skill_scripts_path(cfg)
@@ -141,32 +144,13 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         )
         return
 
-    raw_days = os.environ.get("RALPH_STALE_DAYS", "3").strip() or "3"
-    try:
-        stale_days = int(raw_days)
-    except ValueError:
-        log.warning(
-            "sweep: RALPH_STALE_DAYS=%r is not an integer; falling back to 3",
-            raw_days,
-        )
-        stale_days = 3
-    # SweepConfig.__post_init__ rejects stale_threshold <= 0 — without
-    # this guard, RALPH_STALE_DAYS=0 (or negative) would surface as an
-    # uncaught ValueError from __post_init__ that aborts iterate_once.
-    if stale_days <= 0:
-        log.warning(
-            "sweep: RALPH_STALE_DAYS=%d is not positive; falling back to 3",
-            stale_days,
-        )
-        stale_days = 3
-
     from ralph_executor.sweep import run as run_sweep
     from ralph_executor.sweep.runner import SweepConfig, SweepContext
 
     sweep_cfg = SweepConfig(
-        ralph_author_email=ralph_email,
+        ralph_author_email=cfg.bot_author_email,
         max_attempts=cfg.max_attempts,
-        stale_threshold=timedelta(days=stale_days),
+        stale_threshold=timedelta(days=cfg.stale_days),
         now=datetime.now(tz=UTC),
     )
     sweep_ctx = SweepContext(
