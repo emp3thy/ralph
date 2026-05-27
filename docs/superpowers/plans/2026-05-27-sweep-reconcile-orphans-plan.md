@@ -1455,7 +1455,7 @@ git -C /c/Users/gethi/source/ralph commit -m "feat(sweep): wire reconcile into r
 - Modify: `ralph_executor/cli.py` (around line 165, after `scaffold_parser`)
 - Create: `tests/executor/test_cli_reconcile.py`
 
-- [ ] **Step 6.1: Write the failing CLI test**
+- [x] **Step 6.1: Write the failing CLI test**
 
 Create `tests/executor/test_cli_reconcile.py`:
 
@@ -1548,7 +1548,7 @@ def test_reconcile_dry_run_flag_flows_through(
     assert captured_calls == [True]
 ```
 
-- [ ] **Step 6.2: Run failing tests**
+- [x] **Step 6.2: Run failing tests**
 
 ```bash
 uv run pytest tests/executor/test_cli_reconcile.py -v
@@ -1556,7 +1556,7 @@ uv run pytest tests/executor/test_cli_reconcile.py -v
 
 Expected: FAIL — `argparse error: invalid choice: 'reconcile'` (or similar).
 
-- [ ] **Step 6.3: Add the subparser in `cli.py`**
+- [x] **Step 6.3: Add the subparser in `cli.py`**
 
 In `ralph_executor/cli.py`, find the end of the `scaffold_parser` block (around line 175–180). Add a new subparser after it:
 
@@ -1587,7 +1587,7 @@ In `ralph_executor/cli.py`, find the end of the `scaffold_parser` block (around 
     )
 ```
 
-- [ ] **Step 6.4: Add the dispatch + import in cli.py**
+- [x] **Step 6.4: Add the dispatch + import in cli.py**
 
 At the top of `cli.py`, add the imports for reconcile_all and SweepContext:
 
@@ -1672,7 +1672,7 @@ Add the `ReconcileReport` import alongside the existing imports:
 from ralph_executor.sweep.types import ReconcileReport
 ```
 
-- [ ] **Step 6.5: Run the failing tests**
+- [x] **Step 6.5: Run the failing tests**
 
 ```bash
 uv run pytest tests/executor/test_cli_reconcile.py -v
@@ -1682,14 +1682,14 @@ Expected: **PASS**.
 
 If a test fails because `prepare_host_environment` isn't easily mockable for the test fixture: add a `_skip_host_prep` shortcut for tests by allowing `cfg.git_host == "fake"` to bypass real staging. Or, simpler, monkeypatch `ralph_executor.cli.prepare_host_environment` in the test to return a `Path`.
 
-- [ ] **Step 6.6: Run ruff + mypy**
+- [x] **Step 6.6: Run ruff + mypy**
 
 ```bash
 uv run ruff check ralph_executor/cli.py
 uv run mypy --strict ralph_executor/cli.py
 ```
 
-- [ ] **Step 6.7: Commit**
+- [x] **Step 6.7: Commit**
 
 ```bash
 git -C /c/Users/gethi/source/ralph add ralph_executor/cli.py tests/executor/test_cli_reconcile.py

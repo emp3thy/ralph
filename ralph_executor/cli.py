@@ -63,7 +63,10 @@ from ralph_executor.host_select import (
     HostSelectionError,
     prepare_host_environment,
 )
-from ralph_executor.loop import iterate_once, run_loop
+from ralph_executor.loop import _pr_skill_scripts_path, iterate_once, run_loop
+from ralph_executor.sweep.reconcile import reconcile_all
+from ralph_executor.sweep.runner import SweepConfig, SweepContext
+from ralph_executor.sweep.types import ReconcileReport
 
 _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -194,6 +197,31 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="with_config_toml",
         action="store_false",
         help="Skip writing the .ralph/config.toml stub.",
+    )
+
+    # ``ralph-executor reconcile``
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help=(
+            "Reconcile orphan pending-pr/ directories (those without "
+            "PR-LINK.md) by looking up the PR via the host API and moving "
+            "them to done/blocked/inbox based on PR state."
+        ),
+    )
+    reconcile_repo_group = reconcile_parser.add_mutually_exclusive_group()
+    reconcile_repo_group.add_argument(
+        "--repo",
+        help="Explicit path to the repo Ralph operates on.",
+    )
+    reconcile_repo_group.add_argument(
+        "--workspace",
+        metavar="NAME",
+        help="Resolve repo path against $RALPH_HOME/NAME.",
+    )
+    reconcile_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the actions that would be taken without moving any files.",
     )
 
     return parser
@@ -341,6 +369,71 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Handler for ``ralph-executor reconcile [--dry-run]``.
+
+    Loads the executor config (with ``--repo`` / ``--workspace`` overrides
+    via ``_apply_overrides``), resolves the PR-skill scripts directory for
+    the configured git host, builds a ``SweepContext`` and delegates to
+    ``reconcile_all``. Prints a one-line-per-orphan summary table.
+
+    Returns 0 on success, 2 on config or environment errors.
+    """
+    try:
+        cfg = load_config()
+        cfg = _apply_overrides(cfg, args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    ralph_email = os.environ.get("RALPH_ADO_AUTHOR_EMAIL", "").strip() or "reconcile@ralph.local"
+    scripts_path = _pr_skill_scripts_path(cfg)
+    if not scripts_path.is_dir():
+        print(
+            f"error: PR-skill scripts directory not found at {scripts_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    from datetime import UTC, datetime, timedelta
+
+    ctx = SweepContext(
+        queue_root=cfg.repo_path / ".ralph",
+        ado_pr_scripts_path=scripts_path,
+        config=SweepConfig(
+            ralph_author_email=ralph_email,
+            max_attempts=cfg.max_attempts,
+            stale_threshold=timedelta(days=3),
+            now=datetime.now(tz=UTC),
+        ),
+    )
+
+    report = reconcile_all(ctx, dry_run=args.dry_run)
+    _print_reconcile_report(report, dry_run=args.dry_run)
+    return 0
+
+
+def _print_reconcile_report(report: ReconcileReport, *, dry_run: bool) -> None:
+    """Print a one-line-per-orphan summary table to stdout."""
+    prefix = "would: " if dry_run else ""
+    if not report.actions and not report.errors:
+        print("reconcile: no orphans found in pending-pr/")
+        return
+    print(f"{'PBI-ID':<40} {'Action':<20}")
+    print("-" * 60)
+    for pbi_id, action in sorted(report.actions.items()):
+        print(f"{pbi_id:<40} {prefix}{action.value}")
+    for pbi_id, err in sorted(report.errors.items()):
+        print(f"{pbi_id:<40} ERROR: {err}")
+    n_moves = sum(1 for a in report.actions.values() if a.name.startswith("MOVED_"))
+    n_stays = sum(1 for a in report.actions.values() if a.name.startswith("KEEP_"))
+    n_err = len(report.errors)
+    print(
+        f"\n{len(report.actions)} orphans processed: "
+        f"{n_moves} moved, {n_stays} stays, {n_err} errors."
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
@@ -373,6 +466,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             force=args.force,
             with_config_toml=args.with_config_toml,
         )
+    if args.subcommand == "reconcile":
+        return _cmd_reconcile(args)
 
     # --- default command: run the executor loop ---
     try:
