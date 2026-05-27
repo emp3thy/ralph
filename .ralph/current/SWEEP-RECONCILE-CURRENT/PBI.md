@@ -1,11 +1,11 @@
 ---
 id: SWEEP-RECONCILE-CURRENT
 type: feature
-status: inbox
+status: current
 severity: normal
 attempts: 0
 created_at: 2026-05-27T18:00:00+00:00
-updated_at: 2026-05-27T18:00:00+00:00
+updated_at: 2026-05-27T21:50:22+00:00
 depends_on: []
 ---
 
