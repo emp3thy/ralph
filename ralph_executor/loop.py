@@ -60,6 +60,7 @@ from ralph_executor.types import PBI
 from ralph_executor.worktree import (
     ensure_worktree,
     queue_worktree_path,
+    remove_worktree,
     work_worktree_path,
 )
 
@@ -232,6 +233,33 @@ def _pull_main(cfg: ExecutorConfig) -> None:
 
 def _feature_branch_name(pbi: PBI) -> str:
     return f"ralph/{pbi.id}"
+
+
+def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
+    """Remove the per-PBI work worktree on a terminal iteration outcome.
+
+    Called when the PBI leaves ``current/`` (pr_created → pending-pr,
+    handle_stuck → blocked, max-attempts → blocked). The feature branch
+    ``ralph/<PBI-ID>`` is preserved so pending-pr PBIs keep a branch to
+    point the PR at; only the working directory at
+    ``<repo>/.ralph-work/repo-<PBI-id>/`` is torn down.
+
+    No-op in legacy single-checkout mode. Tolerant of removal failures —
+    an orphan worktree is recoverable (operator can ``git worktree
+    prune``), but raising here would obscure the real terminal outcome
+    the iteration is reporting.
+    """
+    if not cfg.use_worktrees:
+        return
+    work_wt = work_worktree_path(cfg.repo_path, pbi_id)
+    try:
+        remove_worktree(cfg.repo_path, work_wt)
+    except Exception:
+        log.warning(
+            "failed to remove work worktree at %s; orphan left for manual prune",
+            work_wt,
+            exc_info=True,
+        )
 
 
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
@@ -420,6 +448,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                         f"cannot move {pbi.path} to {target}: target already exists"
                     ) from exc
                 shutil.move(str(pbi.path), str(target))
+                _cleanup_work_worktree(cfg, pbi.id)
                 dummy = ClaudeOutcome(
                     kind="error",
                     pr_url=None,
@@ -448,6 +477,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 touched_files=touched,
                 now=now,
             )
+            _cleanup_work_worktree(cfg, pbi.id)
             return outcome, IterationResult(
                 outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
             )
@@ -463,6 +493,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             if stuck_outcome is not None:
                 event_log.append(stuck_outcome.event)
                 log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
+                _cleanup_work_worktree(cfg, pbi.id)
                 return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
             # Claude reported stuck but no STUCK.md present -- fall through
             # to partial (the PBI stays in current/ for the next iteration).
