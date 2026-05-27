@@ -22,6 +22,12 @@ from ralph_executor.queue.filesystem import (
     ENTRY_FILE_BY_TYPE,
     parse_pbi_directory,
 )
+from ralph_executor.safety.events import (
+    Event,
+    EventLog,
+    EventType,
+    signature_from_text,
+)
 from ralph_executor.types import PBI, PBIStatus
 
 log = logging.getLogger(__name__)
@@ -99,26 +105,78 @@ def _move(
     return parse_pbi_directory(dst, status=target_state)
 
 
-def move_inbox_to_current(cfg: ExecutorConfig, pbi: PBI) -> PBI:
-    """Claim a PBI from inbox into the single-focus current folder."""
-    return _move(
+def move_inbox_to_current(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    event_log: EventLog | None = None,
+    now: datetime | None = None,
+) -> PBI:
+    """Claim a PBI from inbox into the single-focus current folder.
+
+    Emits ``PBI_OPENED`` to ``event_log`` when ``event_log`` is provided.
+    The cycle detector's ``whack_a_mole`` rule consumes opens vs closes
+    over a rolling window.
+    """
+    moved = _move(
         cfg,
         pbi,
         expected_state="inbox",
         target_state="current",
         commit_prefix="chore(ralph-queue)",
     )
+    if event_log is not None:
+        recorded_at = now if now is not None else datetime.now(tz=UTC)
+        event_log.append(
+            Event(
+                kind=EventType.PBI_OPENED,
+                recorded_at=recorded_at,
+                pbi_id=moved.id,
+                payload={},
+            )
+        )
+    return moved
 
 
-def move_current_to_pending_pr(cfg: ExecutorConfig, pbi: PBI) -> PBI:
-    """Promote a PBI whose PR was created from current to pending-pr."""
-    return _move(
+def move_current_to_pending_pr(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    event_log: EventLog | None = None,
+    pr_url: str | None = None,
+    touched_files: list[str] | None = None,
+    now: datetime | None = None,
+) -> PBI:
+    """Promote a PBI whose PR was created from current to pending-pr.
+
+    Emits ``PR_CREATED`` to ``event_log`` when ``event_log`` and ``pr_url``
+    are provided. The cycle detector consumes the event's ``files`` payload
+    to spot same-file thrashing across PBIs. ``touched_files`` is the
+    cumulative diff of the feature branch against main; an empty list is
+    fine if the diff cannot be computed.
+    """
+    moved = _move(
         cfg,
         pbi,
         expected_state="current",
         target_state="pending-pr",
         commit_prefix="feat(ralph-queue)",
     )
+    if event_log is not None and pr_url is not None:
+        recorded_at = now if now is not None else datetime.now(tz=UTC)
+        event_log.append(
+            Event(
+                kind=EventType.PR_CREATED,
+                recorded_at=recorded_at,
+                pbi_id=moved.id,
+                payload={
+                    "pr_url": pr_url,
+                    "signature": signature_from_text(pr_url),
+                    "files": list(touched_files or []),
+                },
+            )
+        )
+    return moved
 
 
 def move_current_to_blocked(cfg: ExecutorConfig, pbi: PBI) -> PBI:

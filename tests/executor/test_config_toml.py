@@ -36,6 +36,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "ADO_ORG_URL",
         "ADO_PROJECT",
         "RALPH_HALT_WEBHOOK",
+        "RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
+        "RALPH_PR_CHECK_POLL_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -192,6 +194,40 @@ def test_promoted_keys_empty_when_neither_set(
     assert cfg.ado_org_url == ""
     assert cfg.ado_project == ""
     assert cfg.halt_webhook == ""
+
+
+def test_pr_check_poll_defaults_when_neither_set(clean_env: Path) -> None:
+    """Plan 18 Task 6: defaults match the verifier's 6 × 30 s budget."""
+    cfg = load_config()
+    assert cfg.pr_check_poll_max_attempts == 6
+    assert cfg.pr_check_poll_interval_seconds == 30.0
+
+
+def test_pr_check_poll_knobs_picked_up_from_toml(clean_env: Path) -> None:
+    _write_toml(
+        clean_env,
+        """
+        pr_check_poll_max_attempts = 12
+        pr_check_poll_interval_seconds = 5.0
+        """,
+    )
+    cfg = load_config()
+    assert cfg.pr_check_poll_max_attempts == 12
+    assert cfg.pr_check_poll_interval_seconds == 5.0
+
+
+def test_env_wins_over_toml_for_pr_check_poll_knobs(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(
+        clean_env,
+        "pr_check_poll_max_attempts = 12\npr_check_poll_interval_seconds = 5.0\n",
+    )
+    monkeypatch.setenv("RALPH_PR_CHECK_POLL_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("RALPH_PR_CHECK_POLL_INTERVAL_SECONDS", "0.25")
+    cfg = load_config()
+    assert cfg.pr_check_poll_max_attempts == 3
+    assert cfg.pr_check_poll_interval_seconds == 0.25
 
 
 def test_toml_invalid_log_level_raises(clean_env: Path) -> None:

@@ -45,6 +45,13 @@ def fake_repo(tmp_path: Path) -> Iterator[Path]:
     _git(work, "branch", "-M", "main")
     _git(work, "remote", "add", "origin", str(bare))
     _git(work, "push", "-u", "origin", "main")
+    # Mirror the production ``.gitignore`` which excludes ``.ralph/state/``
+    # so the cycle-detector event DB (created at runtime by ``open_log``)
+    # is never staged into a commit and never blocks a branch switch.
+    (work / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
+    _git(work, "add", ".gitignore")
+    _git(work, "commit", "-m", "chore: gitignore .ralph/state/")
+    _git(work, "push", "origin", "main")
     _git(work, "checkout", "-b", "ralph-queue")
     # The queue branch starts with an empty ``.ralph/`` tree.
     (work / ".ralph" / "inbox").mkdir(parents=True)
@@ -194,6 +201,8 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         ado_org_url="",
         ado_project="",
         halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
     )
 
 

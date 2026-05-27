@@ -8,7 +8,9 @@ over events -- the log only has to write fast and read fast.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -16,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
+
+_WHITESPACE_RUN = re.compile(r"\s+")
 
 _SCHEMA_VERSION: Final[int] = 1
 _DB_RELATIVE: Final[str] = ".ralph/state/events.db"
@@ -138,6 +142,18 @@ class EventLog:
             )
             self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             self._conn.commit()
+
+
+def signature_from_text(text: str) -> str:
+    """Return a 16-hex-char sha256 of a normalised string.
+
+    Normalisation collapses internal whitespace runs to a single space,
+    strips leading/trailing whitespace, and lower-cases. The result is
+    deterministic so two callers computing a signature for "equivalent"
+    text get the same hex digest.
+    """
+    normalised = _WHITESPACE_RUN.sub(" ", text).strip().lower()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
 
 
 def open_log(repo: Path) -> EventLog:

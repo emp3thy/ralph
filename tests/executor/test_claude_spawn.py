@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from ralph_executor.claude_spawn import (
+    _query_pr_checks,
+    _summarise_stream_json_line,
+    _tee_stream,
+    _wait_for_pr_checks,
     classify_outcome,
     spawn_claude_p,
 )
@@ -188,22 +196,223 @@ def test_spawn_simulates_pr_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """spawn_claude_p resolves PR state via _query_open_pr_via_gh AFTER
-    the claude subprocess exits. Stub the helper to return a fake PR
-    URL — no real gh CLI call needed."""
+    the claude subprocess exits, then gates pr_created on
+    _wait_for_pr_checks reporting CI green. Stub both helpers — no real
+    gh CLI call needed."""
     pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
     write_claude_script(
         fake_claude_binary,
         "print('done')\n",
     )
 
-    def _fake_gh_lookup(repo_path: Path, branch: str) -> str | None:
+    def _fake_gh_lookup(_repo_path: Path, branch: str) -> str | None:
         assert branch == f"ralph/{pbi.id}"
         return "https://github.com/example/repo/pull/9999"
 
+    def _fake_wait_for_pr_checks(
+        _repo_path: Path,
+        pr_number: int,
+        *,
+        max_polls: int,
+        interval_seconds: float,
+    ) -> tuple[str, list[str]]:
+        assert pr_number == 9999
+        # cfg_for_repo carries the defaults — confirm the cfg knobs reach
+        # the verifier so the operator can actually shorten the budget.
+        assert max_polls == cfg_for_repo.pr_check_poll_max_attempts
+        assert interval_seconds == cfg_for_repo.pr_check_poll_interval_seconds
+        return ("pass", [])
+
     monkeypatch.setattr("ralph_executor.claude_spawn._query_open_pr_via_gh", _fake_gh_lookup)
+    monkeypatch.setattr("ralph_executor.claude_spawn._wait_for_pr_checks", _fake_wait_for_pr_checks)
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "pr_created"
     assert outcome.pr_url == "https://github.com/example/repo/pull/9999"
+
+
+def _fake_run_factory(
+    returncode: int, stdout: str, stderr: str = ""
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """Build a ``subprocess.run`` stand-in returning a fixed CompletedProcess.
+
+    Patched into ``ralph_executor.claude_spawn.subprocess.run`` via
+    string-form ``monkeypatch.setattr`` so ``_query_pr_checks`` exercises
+    its parsing without hitting the real gh CLI.
+    """
+
+    def _fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["gh", "pr", "checks"],
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    return _fake_run
+
+
+def test_query_pr_checks_returns_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = '[{"bucket":"pass","name":"build"},{"bucket":"pass","name":"lint"}]'
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(0, payload))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "pass"
+    assert names == []
+
+
+def test_query_pr_checks_returns_fail_with_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh exits 1 when a required check has failed, but the JSON array on
+    stdout is still authoritative — _query_pr_checks must parse it."""
+    payload = (
+        '[{"bucket":"pass","name":"build"},'
+        '{"bucket":"fail","name":"unit-tests"},'
+        '{"bucket":"fail","name":"lint"}]'
+    )
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(1, payload))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "fail"
+    assert names == ["unit-tests", "lint"]
+
+
+def test_query_pr_checks_returns_pending_on_exit_8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh exits 8 with empty stdout when a required check is still
+    pending — _query_pr_checks must classify as ``pending`` so the
+    polling loop keeps waiting rather than erroring out."""
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(8, ""))
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "pending"
+    assert names == []
+
+
+def test_query_pr_checks_returns_error_on_gh_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``gh`` not installed (FileNotFoundError) is the canonical
+    ``error`` path — _query_pr_checks must not raise."""
+
+    def _explode(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("gh not on PATH")
+
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _explode)
+    state, names = _query_pr_checks(tmp_path, 42)
+    assert state == "error"
+    assert names and "gh not on PATH" in names[0]
+
+
+def test_wait_for_pr_checks_polls_until_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two pending polls then pass — loop must keep going past pending and
+    return as soon as a terminal state arrives."""
+    sequence: list[tuple[str, list[str]]] = [
+        ("pending", []),
+        ("pending", []),
+        ("pass", []),
+    ]
+    calls = {"n": 0}
+
+    def _fake_query(_repo: Path, _num: int, **_kwargs: object) -> tuple[str, list[str]]:
+        result = sequence[calls["n"]]
+        calls["n"] += 1
+        return result
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("ralph_executor.claude_spawn._query_pr_checks", _fake_query)
+    monkeypatch.setattr("ralph_executor.claude_spawn.time.sleep", lambda s: sleeps.append(s))
+    state, names = _wait_for_pr_checks(tmp_path, 42, max_polls=6, interval_seconds=0.5)
+    assert state == "pass"
+    assert names == []
+    assert calls["n"] == 3
+    # Two sleeps between three polls; final pass does not trigger a sleep.
+    assert sleeps == [0.5, 0.5]
+
+
+def test_wait_for_pr_checks_budget_exhausted_returns_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All polls report pending — caller treats the returned ``pending``
+    as ``partial`` so the NEXT iteration re-polls. The loop must not
+    sleep after the final attempt."""
+    calls = {"n": 0}
+
+    def _always_pending(*_args: object, **_kwargs: object) -> tuple[str, list[str]]:
+        calls["n"] += 1
+        return ("pending", [])
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("ralph_executor.claude_spawn._query_pr_checks", _always_pending)
+    monkeypatch.setattr("ralph_executor.claude_spawn.time.sleep", lambda s: sleeps.append(s))
+    state, names = _wait_for_pr_checks(tmp_path, 42, max_polls=3, interval_seconds=0.25)
+    assert state == "pending"
+    assert names == []
+    assert calls["n"] == 3
+    # Two sleeps between three polls; no sleep after the last one.
+    assert sleeps == [0.25, 0.25]
+
+
+def test_classify_outcome_pass_returns_pr_created(tmp_path: Path) -> None:
+    """Default ``pr_check_state="pass"`` keeps pre-verifier callers
+    working; the explicit form behaves identically."""
+    pbi_dir = tmp_path / "WI-pass"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/1",
+        pr_check_state="pass",
+    )
+    assert outcome.kind == "pr_created"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/1"
+
+
+def test_classify_outcome_fail_returns_partial_with_stderr(tmp_path: Path) -> None:
+    """A PR exists but a required check failed → ``partial`` with the
+    failing check names appended to stderr so the next iteration's
+    Claude session can read them."""
+    pbi_dir = tmp_path / "WI-fail"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="existing stderr line",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/2",
+        pr_check_state="fail",
+        pr_check_failed_names=["unit-tests", "lint"],
+    )
+    assert outcome.kind == "partial"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/2"
+    assert "existing stderr line" in outcome.stderr
+    assert "unit-tests" in outcome.stderr
+    assert "lint" in outcome.stderr
+    assert "Fix the failures next iteration" in outcome.stderr
+
+
+def test_classify_outcome_pending_returns_partial(tmp_path: Path) -> None:
+    """Pending and error states must NOT emit a synthetic stderr line —
+    the next iteration's polling decides; we don't want Claude to chase
+    a transient pending as if it were a fail."""
+    pbi_dir = tmp_path / "WI-pending"
+    pbi_dir.mkdir()
+    outcome = classify_outcome(
+        pbi_dir=pbi_dir,
+        stdout="",
+        stderr="",
+        exit_code=0,
+        duration_seconds=1.0,
+        pr_url="https://github.com/example/repo/pull/3",
+        pr_check_state="pending",
+    )
+    assert outcome.kind == "partial"
+    assert outcome.pr_url == "https://github.com/example/repo/pull/3"
+    assert outcome.stderr == ""
 
 
 def test_spawn_simulates_stuck(
@@ -223,3 +432,142 @@ def test_spawn_simulates_stuck(
     )
     outcome = spawn_claude_p(cfg_for_repo, pbi)
     assert outcome.kind == "stuck"
+
+
+def test_spawn_passes_stream_json_flags_to_claude(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """The spawner must pass ``--output-format stream-json --verbose`` so
+    Claude flushes one JSON envelope per event on Windows. Without these
+    flags, Node block-buffers stdout when stdout is a pipe and the
+    operator sees nothing until Claude exits
+    (BUG-claude-stdout-streaming-windows)."""
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    # Print argv one element per line so the assertions below can check
+    # both presence AND ordering. Substring-matching the joined string
+    # would let `-p --output-format stream-json --verbose <prompt>` pass
+    # while still being broken (commander/yargs would treat `-p`'s value
+    # as `--output-format`).
+    write_claude_script(
+        fake_claude_binary,
+        "import sys\nprint('\\n'.join(sys.argv[1:]))\nsys.exit(0)\n",
+    )
+    outcome = spawn_claude_p(cfg_for_repo, pbi)
+    argv_lines = outcome.stdout.splitlines()
+    assert "--output-format" in argv_lines
+    assert "stream-json" in argv_lines
+    assert "--verbose" in argv_lines
+    assert "-p" in argv_lines
+    # The token immediately after `-p` must be the prompt string, not
+    # one of the stream-json flags — otherwise Claude consumes the flag
+    # as the prompt value (BugBot finding on PR #24).
+    p_index = argv_lines.index("-p")
+    prompt_token = argv_lines[p_index + 1]
+    assert prompt_token.startswith("Read ./prompt/PROMPT.md"), (
+        f"argv element after -p must be the prompt; got {prompt_token!r}"
+    )
+
+
+def test_summarise_stream_json_line_extracts_assistant_text() -> None:
+    """Assistant events get summarised to their first text block so the
+    operator sees what Claude is actually saying, not the JSON envelope."""
+    raw = '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}\n'
+    assert _summarise_stream_json_line(raw) == "assistant: hello world"
+
+
+def test_summarise_stream_json_line_handles_tool_use() -> None:
+    """tool_use blocks surface the tool name — tool calls are the most
+    interesting events to watch live."""
+    raw = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}\n'
+    )
+    assert _summarise_stream_json_line(raw) == "assistant: tool_use Bash"
+
+
+def test_summarise_stream_json_line_handles_system_event() -> None:
+    raw = '{"type":"system","subtype":"init","cwd":"/tmp"}\n'
+    assert _summarise_stream_json_line(raw) == "system/init"
+
+
+def test_summarise_stream_json_line_handles_result() -> None:
+    raw = '{"type":"result","subtype":"success","is_error":false,"duration_ms":2517}\n'
+    assert _summarise_stream_json_line(raw) == "result: success (2517 ms)"
+
+
+def test_summarise_stream_json_line_falls_back_for_non_json() -> None:
+    """Stderr lines and pre-init warnings are not JSON — fall back to
+    the raw stripped line so operators still see them."""
+    raw = "Warning: no stdin data received in 3s\n"
+    assert _summarise_stream_json_line(raw) == "Warning: no stdin data received in 3s"
+
+
+class _TimedBuf(list[str]):
+    """Subclass of list that records monotonic timestamps on append.
+
+    Used by the streaming regression test to assert lines arrived
+    incrementally during the child's lifetime, not all at once at exit.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timestamps: list[float] = []
+
+    def append(self, item: str) -> None:
+        self.timestamps.append(time.monotonic())
+        super().append(item)
+
+
+def test_tee_stream_delivers_lines_incrementally(tmp_path: Path) -> None:
+    """Regression: a child that prints ``tick-N`` with 200ms gaps and
+    flushes per line must produce a non-empty buffer BEFORE the child
+    exits, with appends spread across time rather than batched at the
+    end. This guards against Windows-pipe block-buffering on the parent
+    side. (The child-side fix — passing ``--output-format stream-json``
+    to Claude — is verified by
+    ``test_spawn_passes_stream_json_flags_to_claude``.)"""
+    script = tmp_path / "ticker.py"
+    script.write_text(
+        "import sys, time\n"
+        "for i in range(3):\n"
+        "    sys.stdout.write(f'tick-{i}\\n')\n"
+        "    sys.stdout.flush()\n"
+        "    time.sleep(0.2)\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-u", str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    buf = _TimedBuf()
+    stderr_buf: list[str] = []
+    stdout_err: list[BaseException] = []
+    stderr_err: list[BaseException] = []
+    t_out = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stdout, "[tick]", buf, stdout_err),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stderr, "[tick!]", stderr_buf, stderr_err),
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+    proc.wait()
+    t_out.join()
+    t_err.join()
+    assert not stdout_err and not stderr_err
+    assert [line.rstrip() for line in buf] == ["tick-0", "tick-1", "tick-2"]
+    # Three lines with 200ms gaps → the gap between the first append and
+    # the last must be at least 300ms. A buffered child would deliver all
+    # three within a few ms of each other at exit.
+    span = buf.timestamps[-1] - buf.timestamps[0]
+    assert span >= 0.3, f"lines arrived in {span:.3f}s; expected >= 0.3s with 200ms child gaps"
