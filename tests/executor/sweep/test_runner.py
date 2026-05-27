@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from ralph_executor.safety.events import EventLog, EventType, open_log, signature_from_text
 from ralph_executor.sweep.runner import SweepConfig, SweepContext, run
 from tests.executor.sweep.conftest import register_pr
 
@@ -35,12 +36,29 @@ def _config() -> SweepConfig:
     )
 
 
-def _ctx(queue_root: Path, fake_ado_pr_skill: Path) -> SweepContext:
+def _ctx(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    *,
+    event_log: EventLog | None = None,
+) -> SweepContext:
     return SweepContext(
         queue_root=queue_root,
         ado_pr_scripts_path=fake_ado_pr_skill,
         config=_config(),
+        event_log=event_log,
     )
+
+
+def _open_event_log(queue_root: Path) -> EventLog:
+    """Open an event log rooted at the parent of ``queue_root``.
+
+    ``open_log`` expects the *repo* path (not ``.ralph/``); its
+    ``_DB_RELATIVE`` already adds ``.ralph/state/events.db``. The sweep
+    fixture's ``queue_root`` IS ``<tmp>/repo/.ralph``, so the matching
+    repo path is ``queue_root.parent``.
+    """
+    return open_log(queue_root.parent)
 
 
 @pytest.mark.parametrize(
@@ -250,6 +268,100 @@ def test_sweep_with_empty_pending_returns_zero_scanned(
     result = run(ctx=_ctx(queue_root, fake_ado_pr_skill))
     assert result.pbis_scanned == 0
     assert result.actions == ()
+
+
+def test_sweep_emits_pr_merged_on_merge_transition(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan 19b Task 2: PR_MERGED event fires with pr_url + signature payload."""
+    make_pending_pbi("WI-MERGE1", pr_id=1100)
+    register_pr(monkeypatch, 1100, status="completed", ci_status="succeeded")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    merged_events = [e for e in events if e.kind == EventType.PR_MERGED]
+    assert len(merged_events) == 1
+    pr_url = "https://example/_git/svc/pullrequest/1100"
+    payload = merged_events[0].payload
+    assert merged_events[0].pbi_id == "WI-MERGE1"
+    assert payload["pr_url"] == pr_url
+    assert payload["signature"] == signature_from_text(pr_url)
+    assert payload["files"] == []
+
+
+def test_sweep_emits_pbi_closed_after_pr_merged(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PBI_CLOSED follows PR_MERGED with matching signature; both fire on
+    the single pending-pr → done transition."""
+    make_pending_pbi("WI-MERGE2", pr_id=1200)
+    register_pr(monkeypatch, 1200, status="completed", ci_status="succeeded")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    kinds = [e.kind for e in events if e.pbi_id == "WI-MERGE2"]
+    assert kinds == [EventType.PR_MERGED, EventType.PBI_CLOSED]
+
+    merged, closed = [e for e in events if e.pbi_id == "WI-MERGE2"]
+    expected_sig = signature_from_text("https://example/_git/svc/pullrequest/1200")
+    assert merged.payload["signature"] == expected_sig
+    assert closed.payload == {"signature": expected_sig}
+
+
+def test_sweep_does_not_emit_pr_merged_without_event_log(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward compatibility: a SweepContext without event_log still
+    moves the PBI to done/ without raising."""
+    pbi = make_pending_pbi("WI-MERGE3", pr_id=1300)
+    register_pr(monkeypatch, 1300, status="completed", ci_status="succeeded")
+
+    run(ctx=_ctx(queue_root, fake_ado_pr_skill))
+
+    assert not pbi.exists()
+    assert (queue_root / "done" / "WI-MERGE3").is_dir()
+
+
+def test_sweep_does_not_emit_events_on_non_merge_paths(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOVE_TO_BLOCKED_ABANDONED and MOVE_TO_INBOX_RETRY must NOT emit
+    PR_MERGED / PBI_CLOSED (only pending-pr → done does)."""
+    make_pending_pbi("WI-ABANDON", pr_id=1400)
+    register_pr(monkeypatch, 1400, status="abandoned", ci_status="succeeded")
+    make_pending_pbi("WI-RETRY", pr_id=1500)
+    register_pr(monkeypatch, 1500, status="active", ci_status="failed")
+
+    log_handle = _open_event_log(queue_root)
+    try:
+        run(ctx=_ctx(queue_root, fake_ado_pr_skill, event_log=log_handle))
+        events = log_handle.recent(window=timedelta(hours=1), now=NOW)
+    finally:
+        log_handle.close()
+
+    assert all(e.kind not in {EventType.PR_MERGED, EventType.PBI_CLOSED} for e in events)
 
 
 def test_run_reconciles_orphan_when_pr_link_missing(

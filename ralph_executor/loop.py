@@ -153,20 +153,29 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         stale_threshold=timedelta(days=cfg.stale_days),
         now=datetime.now(tz=UTC),
     )
-    sweep_ctx = SweepContext(
-        # `.ralph/` lives in the queue worktree under cfg.use_worktrees,
-        # not the primary checkout (which is typically on `main` and has
-        # no `.ralph/`). Same reasoning as `_queue_repo_root` for all
-        # other `.ralph/` accesses in this module.
-        queue_root=_queue_repo_root(cfg) / ".ralph",
-        ado_pr_scripts_path=scripts_path,
-        config=sweep_cfg,
-        # Always derive the repo name from the primary checkout, NOT
-        # from queue_root.parent.name — the latter would be "queue" in
-        # worktree mode (the .ralph-work/queue/ dir).
-        repo_name=cfg.repo_path.name,
-    )
-    result = run_sweep(ctx=sweep_ctx)
+    # Open the event log so the sweep can emit cycle-detector events
+    # (Plan 19b: PR_MERGED + PBI_CLOSED on pending-pr → done,
+    # PR_GREEN_THEN_RED on green→red CI transitions). Close in a finally
+    # so a sweep-side crash never leaks the SQLite handle.
+    event_log = open_log(_queue_repo_root(cfg))
+    try:
+        sweep_ctx = SweepContext(
+            # `.ralph/` lives in the queue worktree under cfg.use_worktrees,
+            # not the primary checkout (which is typically on `main` and has
+            # no `.ralph/`). Same reasoning as `_queue_repo_root` for all
+            # other `.ralph/` accesses in this module.
+            queue_root=_queue_repo_root(cfg) / ".ralph",
+            ado_pr_scripts_path=scripts_path,
+            config=sweep_cfg,
+            # Always derive the repo name from the primary checkout, NOT
+            # from queue_root.parent.name — the latter would be "queue" in
+            # worktree mode (the .ralph-work/queue/ dir).
+            repo_name=cfg.repo_path.name,
+            event_log=event_log,
+        )
+        result = run_sweep(ctx=sweep_ctx)
+    finally:
+        event_log.close()
     log.info(
         "sweep: scanned %d PBIs (actions=%d, errors=%d)",
         result.pbis_scanned,

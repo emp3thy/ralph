@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ralph_executor.safety.events import (
+    Event,
+    EventLog,
+    EventType,
+    signature_from_text,
+)
 from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
@@ -72,6 +78,12 @@ class SweepContext:
     # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
     # ``.parent.name`` is "queue", not the repo name.
     repo_name: str = ""
+    # Optional cycle-detector event sink. When provided, the sweep emits
+    # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
+    # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
+    # don't exercise event emission omit it; production wiring (loop.py)
+    # always passes one.
+    event_log: EventLog | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +344,7 @@ def _dispatch(
     a = decision.action
     if a is Action.MOVE_TO_DONE:
         _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx)
+        _emit_pr_merged_and_pbi_closed(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
     elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
         _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx)
     elif a is Action.MOVE_TO_INBOX_RETRY:
@@ -452,6 +465,48 @@ def _emit_feedback_pbi(
         shutil.rmtree(target_dir, ignore_errors=True)
         raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
     _append_history(pbi_dir, decision.reason, ctx)
+
+
+def _emit_pr_merged_and_pbi_closed(
+    *,
+    pbi_id: str,
+    snapshot: PrSnapshot,
+    ctx: SweepContext,
+) -> None:
+    """Emit PR_MERGED + PBI_CLOSED on a pending-pr → done transition.
+
+    Both events share the same ``signature_from_text(pr_url)`` so the
+    cycle detector's ``signature_recurrence`` and ``regression_cascade``
+    rules can match across pairs. ``files`` is included for payload-shape
+    parity with ``PR_CREATED`` but is left empty: the PR skill's ``show``
+    op does not expose the file list and adding a second REST call per
+    sweep tick was deemed out of scope for v1.
+    """
+    if ctx.event_log is None:
+        return
+    pr_url = snapshot.url
+    signature = signature_from_text(pr_url) if pr_url else ""
+    now = ctx.config.now
+    ctx.event_log.append(
+        Event(
+            kind=EventType.PR_MERGED,
+            recorded_at=now,
+            pbi_id=pbi_id,
+            payload={
+                "pr_url": pr_url,
+                "signature": signature,
+                "files": [],
+            },
+        )
+    )
+    ctx.event_log.append(
+        Event(
+            kind=EventType.PBI_CLOSED,
+            recorded_at=now,
+            pbi_id=pbi_id,
+            payload={"signature": signature},
+        )
+    )
 
 
 def _read_original_summary(pbi_dir: Path) -> str:
