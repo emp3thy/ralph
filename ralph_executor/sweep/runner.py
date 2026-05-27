@@ -248,6 +248,24 @@ def run(*, ctx: SweepContext) -> SweepResult:
             errors.append(f"{pbi_dir.name}: {err}")
             log.warning("sweep error for %s: %s", pbi_dir.name, err)
 
+    # Reconcile stale .ralph/current/ entries (filesystem-only janitor pass).
+    # Runs AFTER the pending-pr loop so an iteration which promotes
+    # pending-pr/<id>/ to done/<id>/ above can also delete the leftover
+    # current/<id>/ shadow in the same pass.
+    from ralph_executor.sweep.reconcile import reconcile_stale_current_all
+    from ralph_executor.sweep.types import CurrentReconcileAction
+
+    current_report = reconcile_stale_current_all(ctx)
+    for pbi_id, current_action in current_report.actions.items():
+        if current_action == CurrentReconcileAction.KEEP_NO_SIBLING:
+            log.warning(
+                "sweep: current/%s has no sibling in done/blocked/pending-pr "
+                "and no PBI.md; leaving for operator review",
+                pbi_id,
+            )
+    for pbi_id, current_err in current_report.errors.items():
+        errors.append(f"current/{pbi_id}: reconcile error: {current_err}")
+
     return SweepResult(
         pbis_scanned=len(pbis),
         actions=tuple(actions),
