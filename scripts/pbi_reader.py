@@ -77,6 +77,7 @@ class PBIRow:
     created_at: datetime | None
     updated_at: datetime | None
     title: str
+    target_repo: str
 
     def relative_pbi_dir(self) -> str:
         try:
@@ -261,6 +262,9 @@ def read_pbi(
     pbi_id_raw = parsed.get("id")
     pbi_id = pbi_id_raw if isinstance(pbi_id_raw, str) and pbi_id_raw.strip() else pbi_dir.name
 
+    target_repo_raw = parsed.get("target_repo")
+    target_repo = target_repo_raw if isinstance(target_repo_raw, str) else ""
+
     return PBIRow(
         repo_path=repo_path,
         repo_name=repo_name,
@@ -273,6 +277,7 @@ def read_pbi(
         created_at=_coerce_datetime(parsed.get("created_at")),
         updated_at=_coerce_datetime(parsed.get("updated_at")),
         title=_extract_title(body, fallback=pbi_id),
+        target_repo=target_repo,
     )
 
 
