@@ -627,3 +627,29 @@ def test_spawn_claude_p_rejects_missing_pbi_dir(
 
     with pytest.raises(FileNotFoundError):
         spawn_claude_p(cfg_for_repo, pbi, pbi_dir=missing)
+
+
+def test_spawn_claude_p_sets_bash_max_timeout_ms_from_cfg(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """``spawn_claude_p`` must export ``cfg.bash_max_timeout_ms`` to the
+    Claude subprocess env so the bash-tool ceiling matches what TOML/env
+    resolved. The stand-in claude echoes the env var so the test can
+    assert on the value without mocking ``subprocess.Popen``."""
+    from dataclasses import replace
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    write_claude_script(
+        fake_claude_binary,
+        "import os, sys\n"
+        "print('BASH_MAX_TIMEOUT_MS=' + os.environ.get('BASH_MAX_TIMEOUT_MS', ''))\n"
+        "sys.exit(0)\n",
+    )
+    cfg = replace(cfg_for_repo, bash_max_timeout_ms=420_000)
+
+    outcome = spawn_claude_p(cfg, pbi)
+
+    assert outcome.exit_code == 0
+    assert "BASH_MAX_TIMEOUT_MS=420000" in outcome.stdout

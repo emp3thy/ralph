@@ -41,6 +41,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_USE_WORKTREES",
         "RALPH_ADO_AUTHOR_EMAIL",
         "RALPH_STALE_DAYS",
+        "BASH_MAX_TIMEOUT_MS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -338,4 +339,38 @@ def test_stale_days_rejected_when_negative_in_env(
 ) -> None:
     monkeypatch.setenv("RALPH_STALE_DAYS", "-1")
     with pytest.raises(ConfigError, match="stale_days must be positive"):
+        load_config()
+
+
+def test_bash_max_timeout_ms_from_toml(clean_env: Path) -> None:
+    _write_toml(clean_env, "bash_max_timeout_ms = 1200000\n")
+    cfg = load_config()
+    assert cfg.bash_max_timeout_ms == 1_200_000
+
+
+def test_bash_max_timeout_ms_env_wins(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, "bash_max_timeout_ms = 1200000\n")
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "600000")
+    cfg = load_config()
+    assert cfg.bash_max_timeout_ms == 600_000
+
+
+def test_bash_max_timeout_ms_default(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.bash_max_timeout_ms == 900_000
+
+
+def test_bash_max_timeout_ms_rejected_when_zero(clean_env: Path) -> None:
+    _write_toml(clean_env, "bash_max_timeout_ms = 0\n")
+    with pytest.raises(ConfigError, match="bash_max_timeout_ms must be positive"):
+        load_config()
+
+
+def test_bash_max_timeout_ms_rejected_when_negative_in_env(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "-1")
+    with pytest.raises(ConfigError, match="bash_max_timeout_ms must be positive"):
         load_config()
