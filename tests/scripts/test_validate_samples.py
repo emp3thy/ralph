@@ -84,9 +84,9 @@ def test_validate_rejects_target_repo_with_embedded_newline() -> None:
     ):
         pbi = _valid_pbi_dict(target_repo=bad)
         errors = _validate_frontmatter(pbi)
-        assert any(
-            "target_repo" in e and ("newline" in e or "carriage" in e) for e in errors
-        ), f"missing newline/carriage rejection for {bad!r}: {errors}"
+        assert any("target_repo" in e and ("newline" in e or "carriage" in e) for e in errors), (
+            f"missing newline/carriage rejection for {bad!r}: {errors}"
+        )
 
 
 def test_all_live_pbis_have_target_repo() -> None:
