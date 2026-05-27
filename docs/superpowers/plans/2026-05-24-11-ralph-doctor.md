@@ -892,7 +892,7 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
 
 **Steps**
 
-- [ ] 1. Create `skills/ralph-doctor/scripts/checks/hooks.py`. Structure:
+- [x] 1. Create `skills/ralph-doctor/scripts/checks/hooks.py`. Structure:
   - Module docstring: scans every `command` string in `settings.json["hooks"]` for interactive indicators. Matches on `async: true` hooks downgrade from error to warn (async hooks cannot block claude but are still a smell).
   - Module constant:
     ```python
@@ -910,13 +910,13 @@ The dispatcher in `check.py` reads `RALPH_GIT_HOST` once per invocation and runs
     - Else if `async_offences` non-empty → return `severity="warn"`, `status="fail"`, message listing async offences, `details={"async": async_offences}`.
     - Otherwise → `severity="error"`, `status="pass"`, message `"No hook calls AskUserQuestion or blocks on stdin."`, `details={"hooks_checked": len(flattened)}`.
 
-- [ ] 2. Run the hooks tests:
+- [x] 2. Run the hooks tests:
   ```
   uv run pytest tests/skills/test_ralph_doctor.py::TestHooksCheck -v
   ```
   Expected: every test passes.
 
-- [ ] 3. Stage and commit:
+- [x] 3. Stage and commit:
   ```
   git add skills/ralph-doctor/scripts/checks/hooks.py
   git commit -m "feat(ralph-doctor): implement hooks check (AskUserQuestion / stdin scan)"
