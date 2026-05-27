@@ -1,0 +1,43 @@
+# Source-control + build state
+.git
+.gitignore
+.gitattributes
+
+# Python build / cache artifacts
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.tox
+build
+dist
+
+# uv / virtualenvs
+.venv
+uv-cache
+
+# Node / Claude Code dev artefacts
+node_modules
+
+# Tests, samples, docs
+tests
+samples
+docs
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+
+# Editor / OS junk
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# CI / k8s files
+.github
+manifests

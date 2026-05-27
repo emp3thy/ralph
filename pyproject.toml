@@ -18,6 +18,7 @@ dev = [
     "types-requests>=2.33.0.20260518",
     "freezegun>=1.5",
     "dockerfile-parse>=2.0",
+    "types-dockerfile-parse>=2.0.0.20260508",
 ]
 
 [tool.ruff]

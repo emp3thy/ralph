@@ -1217,9 +1217,9 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
 
 **Steps**
 
-- [ ] 1. Write `Dockerfile` with the exact content listed in the "Dockerfile (full content the implementer writes)" section above. No edits.
+- [x] 1. Write `Dockerfile` with the exact content listed in the "Dockerfile (full content the implementer writes)" section above. No edits.
 
-- [ ] 2. Write `.dockerignore`:
+- [x] 2. Write `.dockerignore`:
   ```gitignore
   # Source-control + build state
   .git
@@ -1266,7 +1266,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
   manifests
   ```
 
-- [ ] 3. Create `tests/packaging/test_dockerfile.py`:
+- [x] 3. Create `tests/packaging/test_dockerfile.py`:
   ```python
   """Static tests for the Dockerfile.
 
@@ -1370,7 +1370,7 @@ The plan is split into tasks. Run them in order. Each task ends with an explicit
       assert "ralph.git-host" in blob, "expected ralph.git-host LABEL for host traceability"
   ```
 
-- [ ] 4. Run the Dockerfile tests:
+- [x] 4. Run the Dockerfile tests:
   ```
   uv run pytest tests/packaging/test_dockerfile.py -v
   ```
