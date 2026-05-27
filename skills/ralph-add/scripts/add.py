@@ -152,6 +152,14 @@ def _validate_target_repo_value(value: str) -> str | None:
     Inlined to avoid a cross-package import. Returns an error string or
     ``None`` if the value validates.
     """
+    # Reject embedded newlines / CRs first — ``urllib.parse.urlparse``
+    # happily accepts ``https://github.com/foo/bar\ninjected: value``
+    # (netloc="github.com", path segments OK), and the value is later
+    # interpolated raw into HISTORY-style YAML via ``_render_frontmatter``.
+    # Without this guard the URL would inject extra YAML keys, matching
+    # the existing protection already applied to ``pbi_id``.
+    if "\n" in value or "\r" in value:
+        return f"target_repo URL must not contain newline or carriage return: {value!r}"
     if not value.startswith("https://"):
         return f"target_repo must be an HTTPS URL, got {value!r}"
     parsed = urllib.parse.urlparse(value)

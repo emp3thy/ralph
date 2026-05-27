@@ -72,6 +72,23 @@ def test_validate_rejects_non_string_target_repo() -> None:
     assert any("string" in e and "target_repo" in e for e in errors), errors
 
 
+def test_validate_rejects_target_repo_with_embedded_newline() -> None:
+    """Regression: BugBot PR #40 flagged that ``urlparse`` accepts
+    URLs with embedded ``\\n`` and ``_render_frontmatter`` interpolates
+    the raw value into YAML, allowing an attacker-controlled
+    ``--target-repo`` to inject extra YAML keys."""
+    for bad in (
+        "https://github.com/owner/repo\ninjected: value",
+        "https://github.com/owner/repo\r\ninjected: value",
+        "https://github.com/owner/repo\rinjected: value",
+    ):
+        pbi = _valid_pbi_dict(target_repo=bad)
+        errors = _validate_frontmatter(pbi)
+        assert any(
+            "target_repo" in e and ("newline" in e or "carriage" in e) for e in errors
+        ), f"missing newline/carriage rejection for {bad!r}: {errors}"
+
+
 def test_all_live_pbis_have_target_repo() -> None:
     """Regression: every PBI / BUG / FEEDBACK file in .ralph/ AND samples/
     must validate (including the new target_repo field) post-migration.

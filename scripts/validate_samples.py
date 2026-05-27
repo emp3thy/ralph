@@ -97,6 +97,8 @@ def _validate_target_repo(value: object) -> str | None:
     """
     if not isinstance(value, str):
         return f"target_repo must be a string, got {type(value).__name__}"
+    if "\n" in value or "\r" in value:
+        return f"target_repo URL must not contain newline or carriage return: {value!r}"
     if not value.startswith("https://"):
         return f"target_repo must be an HTTPS URL, got {value!r}"
     parsed = urllib.parse.urlparse(value)
