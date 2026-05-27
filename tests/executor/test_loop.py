@@ -18,6 +18,7 @@ from ralph_executor.loop import (
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.safety.events import EventType, open_log
+from ralph_executor.types import PBI
 from ralph_executor.worktree import (
     list_worktrees,
     queue_worktree_path,
@@ -1045,3 +1046,98 @@ def test_max_attempts_blocked_move_targets_queue_worktree(
     assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists(), (
         "primary checkout must never receive blocked PBI dirs in worktree mode"
     )
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7A: _ClaimError + _read_target_repo_from_pbi
+# ----------------------------------------------------------------------
+
+
+def _build_pbi(pbi_dir: Path, pbi_id: str) -> PBI:
+    return PBI(
+        id=pbi_id,
+        type="feature",
+        status="current",
+        severity="normal",
+        attempts=0,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+        path=pbi_dir,
+    )
+
+
+def test_read_target_repo_from_pbi_reads_frontmatter(tmp_path: Path) -> None:
+    """Helper reads target_repo field from PBI.md frontmatter."""
+    from ralph_executor.loop import _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-1"
+    pbi_dir.mkdir()
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        "id: WI-1\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "target_repo: https://github.com/emp3thy/ralph\n"
+        "---\n"
+        "# Title\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-1")
+    assert _read_target_repo_from_pbi(pbi) == "https://github.com/emp3thy/ralph"
+
+
+def test_read_target_repo_from_pbi_raises_when_missing(tmp_path: Path) -> None:
+    """Missing target_repo field raises _ClaimError."""
+    from ralph_executor.loop import _ClaimError, _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-2"
+    pbi_dir.mkdir()
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        "id: WI-2\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "---\n"
+        "# Title (no target_repo)\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-2")
+    with pytest.raises(_ClaimError, match="missing target_repo"):
+        _read_target_repo_from_pbi(pbi)
+
+
+def test_read_target_repo_from_pbi_raises_when_no_entry_file(tmp_path: Path) -> None:
+    """Missing entry file (no PBI.md/BUG.md/FEEDBACK.md) raises _ClaimError."""
+    from ralph_executor.loop import _ClaimError, _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-3"
+    pbi_dir.mkdir()
+    pbi = _build_pbi(pbi_dir, "WI-3")
+    with pytest.raises(_ClaimError, match="no entry file"):
+        _read_target_repo_from_pbi(pbi)
+
+
+def test_read_target_repo_from_pbi_uses_bug_md_for_bug_type(tmp_path: Path) -> None:
+    """Bug PBIs (no PBI.md, but BUG.md present) get target_repo from BUG.md."""
+    from ralph_executor.loop import _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-4"
+    pbi_dir.mkdir()
+    (pbi_dir / "BUG.md").write_text(
+        "---\n"
+        "id: WI-4\n"
+        "type: bug\n"
+        "status: current\n"
+        "severity: high\n"
+        "attempts: 0\n"
+        "target_repo: https://github.com/acme/svc\n"
+        "---\n"
+        "# Bug\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-4")
+    assert _read_target_repo_from_pbi(pbi) == "https://github.com/acme/svc"

@@ -35,6 +35,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+import yaml
+
 from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
@@ -348,6 +350,57 @@ def _pull_main(cfg: ExecutorConfig) -> None:
 
 def _feature_branch_name(pbi: PBI) -> str:
     return f"ralph/{pbi.id}"
+
+
+class _ClaimError(RuntimeError):
+    """Raised when claim fails for a reason warranting blocked/ + HISTORY entry.
+
+    Caught by ``iterate_once``, which moves the PBI to ``blocked/<id>/`` and
+    appends the error message to HISTORY.md. Used by the multi-target claim
+    path (target_repo parse, host check, ensure_clone) where failures are
+    not retryable inside the loop itself.
+    """
+
+
+_ENTRY_FILENAMES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
+
+
+def _read_target_repo_from_pbi(pbi: PBI) -> str:
+    """Read the ``target_repo`` field from the PBI's entry-file frontmatter.
+
+    Probes ``PBI.md``, ``BUG.md``, ``FEEDBACK.md`` in order — matches
+    pbi_reader's entry-file discovery. Raises ``_ClaimError`` when the
+    entry file is missing, the YAML frontmatter cannot be parsed, or the
+    ``target_repo`` field is absent / empty.
+    """
+    entry: Path | None = None
+    for name in _ENTRY_FILENAMES:
+        candidate = pbi.path / name
+        if candidate.is_file():
+            entry = candidate
+            break
+    if entry is None:
+        raise _ClaimError(
+            f"PBI {pbi.id} has no entry file (looked for {', '.join(_ENTRY_FILENAMES)})"
+        )
+
+    text = entry.read_text(encoding="utf-8")
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
+        raise _ClaimError(f"PBI {pbi.id} entry file {entry.name} has no frontmatter fence")
+    lines = text.splitlines()
+    close_idx = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if close_idx is None:
+        raise _ClaimError(f"PBI {pbi.id} entry file {entry.name} has no closing fence")
+    try:
+        frontmatter = yaml.safe_load("\n".join(lines[1:close_idx]))
+    except yaml.YAMLError as exc:
+        raise _ClaimError(f"PBI {pbi.id} YAML parse error: {exc}") from exc
+    if not isinstance(frontmatter, dict):
+        raise _ClaimError(f"PBI {pbi.id} frontmatter is not a mapping")
+    target_repo = frontmatter.get("target_repo")
+    if not target_repo:
+        raise _ClaimError(f"PBI {pbi.id} missing target_repo field")
+    return str(target_repo)
 
 
 def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
