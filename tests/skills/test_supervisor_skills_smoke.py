@@ -78,8 +78,23 @@ def _configure_identity(repo: Path) -> None:
 
 
 @pytest.fixture
-def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
-    """Bare queue remote with an empty seeded ``main`` + tmp workspace dir."""
+def queue_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[Path, str]]:
+    """Bare queue remote with an empty seeded ``main`` + tmp workspace dir.
+
+    Also sets GIT_AUTHOR_* / GIT_COMMITTER_* env vars so commits made
+    inside the queue clone created by the skill (under ``<workspace>/queue``)
+    succeed on a CI runner that has no global git identity. The clone
+    is created by the script under test, not the fixture, so we cannot
+    ``git config`` it in advance — the env vars are the only seam that
+    covers both paths.
+    """
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "supervisor-smoke")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "supervisor-smoke@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "supervisor-smoke")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "supervisor-smoke@example.com")
+
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
