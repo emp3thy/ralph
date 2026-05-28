@@ -225,12 +225,29 @@ def test_load_config_use_worktrees_env_true(
     assert cfg.use_worktrees is True
 
 
-def test_load_config_use_worktrees_env_false(
+def test_load_config_use_worktrees_env_false_rejected(
     monkeypatch: pytest.MonkeyPatch, env_minimal: Path
 ) -> None:
+    """Legacy single-checkout mode is gone — use_worktrees=False must raise."""
     monkeypatch.setenv("RALPH_USE_WORKTREES", "false")
-    cfg = load_config()
-    assert cfg.use_worktrees is False
+    with pytest.raises(ConfigError, match="use_worktrees=False is no longer supported"):
+        load_config()
+
+
+def test_load_config_use_worktrees_toml_false_rejected(
+    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+) -> None:
+    """TOML ``use_worktrees = false`` is rejected the same as the env var."""
+    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    monkeypatch.delenv("RALPH_USE_WORKTREES", raising=False)
+    cfg_dir = git_repo / ".ralph"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.toml").write_text(
+        'queue_repo = "https://github.com/example/queue"\nuse_worktrees = false\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="use_worktrees=False is no longer supported"):
+        load_config()
 
 
 def test_load_config_use_worktrees_env_invalid(

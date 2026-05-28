@@ -546,7 +546,7 @@ After the split:
 **Files:**
 - Modify: `ralph_executor/loop.py` (lines 524–660), `ralph_executor/config.py` (load_config validation)
 
-- [ ] **Step 1: Add a `use_worktrees=False` rejection to `load_config`**
+- [x] **Step 1: Add a `use_worktrees=False` rejection to `load_config`**
 
 In `config.py` `load_config`, after resolving `use_worktrees`, raise:
 
@@ -559,15 +559,15 @@ if not use_worktrees:
     )
 ```
 
-- [ ] **Step 2: Delete the legacy mode from `_claim_pbi`**
+- [x] **Step 2: Delete the legacy mode from `_claim_pbi`**
 
 Lines 570–593 (the `if cfg.use_worktrees:` branch + `else:` body): keep the multi-target prelude (parse_target_repo, host gate, `_ClaimError` raises) and the call to `_claim_pbi_worktree`. Delete the `else:` legacy branch entirely.
 
-- [ ] **Step 3: Edit `_claim_pbi_worktree` (line 596+)**
+- [x] **Step 3: Edit `_claim_pbi_worktree` (line 596+)**
 
 Delete the `ensure_worktree(...)` call that creates the queue worktree (line 615). The queue is already a clone on disk — `_pull_queue` materialised it earlier in the iteration. Keep everything related to the per-PBI work worktree inside the target clone.
 
-- [ ] **Step 4: Run claim-related tests**
+- [x] **Step 4: Run claim-related tests**
 
 ```bash
 uv run pytest tests/executor/ -k "claim or pbi" -v
@@ -575,7 +575,7 @@ uv run pytest tests/executor/ -k "claim or pbi" -v
 
 Failures expected only for fixtures still passing `use_worktrees=False` or constructing `ExecutorConfig(queue_branch=…)`. Task 9 handles fixtures.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/loop.py ralph_executor/config.py

@@ -640,6 +640,20 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_USE_WORKTREES,
         source_label=source_label,
     )
+    # Stage-A single-checkout mode no longer reachable: the queue is now
+    # its own clone at ``<workspace_root>/queue/`` (see ``queue_clone``),
+    # so there is no ralph-queue branch to swap to on the primary
+    # checkout. Reject the legacy knob outright so an operator who pinned
+    # ``use_worktrees = false`` in TOML notices the migration instead of
+    # silently running a half-broken claim path.
+    if not use_worktrees:
+        raise ConfigError(
+            f"{source_label}: use_worktrees=False is no longer supported. "
+            "The queue is a separate clone on the operator's workspace; the "
+            "single-checkout branch-dance model is gone. Remove "
+            "'use_worktrees = false' from your config.toml "
+            "(or unset RALPH_USE_WORKTREES)."
+        )
     auto_merge_clean_prs = _resolve_bool(
         name="auto_merge_clean_prs",
         env_name="RALPH_AUTO_MERGE_CLEAN_PRS",
