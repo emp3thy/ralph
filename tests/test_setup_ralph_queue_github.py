@@ -283,10 +283,52 @@ def test_concurrent_create_422_still_applies_protection(
     assert len(put_calls) == 1
 
 
-def test_creates_repo_when_absent(
+def test_creates_repo_when_absent_for_real(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """When the repo 404s, the script POSTs /user/repos to create it."""
+    """When the repo 404s and --dry-run is NOT set, the script POSTs /user/repos."""
+    from scripts import setup_ralph_queue_github as setup
+
+    calls: list[tuple[str, str]] = []
+    # After the create POST, downstream GETs (main tip, queue tip) need to
+    # succeed so main runs to completion. Track repo-existence per call.
+    repo_seen = {"created": False}
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            if path == "/repos/test/queue":
+                if repo_seen["created"]:
+                    return {"id": 1, "full_name": "test/queue"}
+                raise setup.GhError(404, "not found", path)
+            if path == "/repos/test/queue/git/ref/heads/main":
+                return {"ref": "refs/heads/main", "object": {"sha": MAIN_SHA}}
+            if path == "/repos/test/queue/git/ref/heads/ralph-queue":
+                raise setup.GhError(404, "not found", path)
+            return {}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("POST", path))
+            if path in ("/user/repos", "/orgs/myorg/repos"):
+                repo_seen["created"] = True
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("PUT", path))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue"])
+    assert rc == 0
+    assert ("POST", "/user/repos") in calls
+
+
+def test_dry_run_does_not_create_absent_repo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dry-run prints 'would create' but does NOT POST."""
     from scripts import setup_ralph_queue_github as setup
 
     calls: list[tuple[str, str]] = []
@@ -311,4 +353,48 @@ def test_creates_repo_when_absent(
 
     rc = setup.main(["--repo", "queue", "--dry-run"])
     assert rc == 0
-    assert ("POST", "/user/repos") in calls
+    assert ("POST", "/user/repos") not in calls
+    assert not any(method == "POST" for method, _ in calls)
+    err = capsys.readouterr().err
+    assert "DRY-RUN would create" in err
+
+
+def test_org_flag_uses_orgs_endpoint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When --org is set, repo creation goes to /orgs/{org}/repos, not /user/repos."""
+    from scripts import setup_ralph_queue_github as setup
+
+    calls: list[tuple[str, str]] = []
+    repo_seen = {"created": False}
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            if path == "/repos/test/queue":
+                if repo_seen["created"]:
+                    return {"id": 1, "full_name": "test/queue"}
+                raise setup.GhError(404, "not found", path)
+            if path == "/repos/test/queue/git/ref/heads/main":
+                return {"ref": "refs/heads/main", "object": {"sha": MAIN_SHA}}
+            if path == "/repos/test/queue/git/ref/heads/ralph-queue":
+                raise setup.GhError(404, "not found", path)
+            return {}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("POST", path))
+            if path in ("/user/repos", "/orgs/myorg/repos"):
+                repo_seen["created"] = True
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("PUT", path))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--org", "myorg"])
+    assert rc == 0
+    assert ("POST", "/orgs/myorg/repos") in calls
+    assert ("POST", "/user/repos") not in calls

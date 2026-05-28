@@ -69,11 +69,6 @@ class _MissingEnv(Exception):
         self.name = name
 
 
-def _lookup_repo(client: GhClient, owner: str, repo: str) -> None:
-    """Confirm the repo exists and the token can read it; raises GhError otherwise."""
-    client.get(f"/repos/{owner}/{repo}")
-
-
 def _ensure_repo_exists(
     client: GhClient,
     owner: str,
@@ -82,14 +77,12 @@ def _ensure_repo_exists(
     org: str | None,
     dry_run: bool,
 ) -> bool:
-    """Return True if the repo already existed; False if it was just created.
+    """Return True if the repo already existed; False if it was just created
+    (or would be created under --dry-run).
 
-    Repo creation is the gating bootstrap step — there is nothing pre-existing
-    to "dry-run against" when the repo is absent, so we issue the create POST
-    regardless of ``dry_run`` and let the caller short-circuit the remaining
-    mutating steps (branch create, protection PUT) when ``dry_run`` is set.
-    The ``dry_run`` flag only changes the log line so operators can see the
-    bootstrap happened during a dry-run sweep.
+    ``--dry-run`` is read-only: when the repo is absent we log what a real run
+    would do and return ``False`` so ``main`` can emit the dry-run summary
+    without firing the create POST.
     """
     try:
         client.get(f"/repos/{owner}/{repo}")
@@ -97,8 +90,13 @@ def _ensure_repo_exists(
     except GhError as exc:
         if exc.status_code != 404:
             raise
-    label = "DRY-RUN creating" if dry_run else "creating"
-    print(f"{label} {owner}/{repo} (private)...", file=sys.stderr)
+    if dry_run:
+        print(
+            f"DRY-RUN would create {owner}/{repo} (private)",
+            file=sys.stderr,
+        )
+        return False  # do NOT POST in dry-run mode
+    print(f"creating {owner}/{repo}...", file=sys.stderr)
     payload = {"name": repo, "private": True, "auto_init": True}
     if org is not None:
         client.post(f"/orgs/{org}/repos", json_body=payload)
