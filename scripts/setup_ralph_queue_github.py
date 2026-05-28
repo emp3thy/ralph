@@ -26,6 +26,7 @@ GitHub REST documentation:
 from __future__ import annotations
 
 import argparse
+import base64 as _b64
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ from scripts.gh_client import GhClient, GhError
 
 QUEUE_BRANCH = "ralph-queue"
 MAIN_BRANCH = "main"
+QUEUE_STATE_FOLDERS = ("inbox", "current", "pending-pr", "blocked", "archive", "done")
 
 
 @dataclass
@@ -171,6 +173,82 @@ def _apply_protection(client: GhClient, owner: str, repo: str, branch: str) -> N
     )
 
 
+def _content_exists(client: GhClient, owner: str, repo: str, path: str, ref: str) -> bool:
+    """Return True if ``path`` exists on ``ref`` in the repo, False on 404."""
+    try:
+        client.get(f"/repos/{owner}/{repo}/contents/{path}?ref={ref}")
+        return True
+    except GhError as exc:
+        if exc.status_code == 404:
+            return False
+        raise
+
+
+def _put_content(
+    client: GhClient,
+    owner: str,
+    repo: str,
+    path: str,
+    *,
+    branch: str,
+    content_bytes: bytes,
+    message: str,
+    dry_run: bool,
+) -> bool:
+    """Idempotent file PUT. Returns True if a new commit was created."""
+    if _content_exists(client, owner, repo, path, branch):
+        return False
+    if dry_run:
+        print(f"DRY-RUN would PUT {path} on {branch}", file=sys.stderr)
+        return False
+    payload = {
+        "message": message,
+        "content": _b64.b64encode(content_bytes).decode("ascii"),
+        "branch": branch,
+    }
+    client.put(f"/repos/{owner}/{repo}/contents/{path}", json_body=payload)
+    return True
+
+
+def _seed_main_readme(
+    client: GhClient, owner: str, repo: str, *, dry_run: bool
+) -> bool:
+    readme = (
+        f"# {repo}\n\n"
+        "Queue repo for ralph-executor. Queue state lives on the `ralph-queue` branch.\n"
+    )
+    return _put_content(
+        client,
+        owner,
+        repo,
+        "README.md",
+        branch="main",
+        content_bytes=readme.encode("utf-8"),
+        message="docs: seed README",
+        dry_run=dry_run,
+    )
+
+
+def _seed_ralph_skeleton(
+    client: GhClient, owner: str, repo: str, queue_branch: str, *, dry_run: bool
+) -> int:
+    """Returns the number of .gitkeep files created."""
+    created = 0
+    for folder in QUEUE_STATE_FOLDERS:
+        if _put_content(
+            client,
+            owner,
+            repo,
+            f".ralph/{folder}/.gitkeep",
+            branch=queue_branch,
+            content_bytes=b"",
+            message=f"chore(queue): seed {folder}/",
+            dry_run=dry_run,
+        ):
+            created += 1
+    return created
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -203,6 +281,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--org",
         default=None,
         help="Create the repo under this organisation (default: under the authenticated user).",
+    )
+    parser.add_argument(
+        "--no-protection",
+        action="store_true",
+        help="Skip applying branch-protection rules (for sandboxes / test repos).",
     )
     return parser.parse_args(argv)
 
@@ -280,8 +363,20 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         raise
 
+        # Seed main README (idempotent — skipped if README.md present)
+        _seed_main_readme(client, owner, args.repo, dry_run=args.dry_run)
+        # Seed .ralph/ skeleton on queue_branch (idempotent per file)
+        _seed_ralph_skeleton(
+            client, owner, args.repo, args.branch, dry_run=args.dry_run
+        )
+
         protection_applied = False
-        if args.dry_run:
+        if args.no_protection:
+            print(
+                f"--no-protection set; skipping protection PUT on {args.branch}",
+                file=sys.stderr,
+            )
+        elif args.dry_run:
             print(
                 f"DRY-RUN would PUT protection on refs/heads/{args.branch}",
                 file=sys.stderr,

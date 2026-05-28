@@ -102,6 +102,42 @@ def _register_protection_put() -> None:
     )
 
 
+def _register_seed_endpoints() -> None:
+    """Register the content GETs (absent) + PUTs for the seed step.
+
+    Task 13 adds README.md on main and `.ralph/<folder>/.gitkeep` skeleton
+    files on ralph-queue. Each PUT is preceded by a GET to check existence
+    (idempotency); we register the GETs as 404 and the PUTs as 201.
+    """
+    # README.md on main
+    responses.add(
+        responses.GET,
+        f"{REPO_URL}/contents/README.md",
+        json={"message": "Not Found"},
+        status=404,
+    )
+    responses.add(
+        responses.PUT,
+        f"{REPO_URL}/contents/README.md",
+        json={"commit": {"sha": "r" * 40}},
+        status=201,
+    )
+    # Skeleton .gitkeep files on ralph-queue
+    for folder in ("inbox", "current", "pending-pr", "blocked", "archive", "done"):
+        responses.add(
+            responses.GET,
+            f"{REPO_URL}/contents/.ralph/{folder}/.gitkeep",
+            json={"message": "Not Found"},
+            status=404,
+        )
+        responses.add(
+            responses.PUT,
+            f"{REPO_URL}/contents/.ralph/{folder}/.gitkeep",
+            json={"commit": {"sha": "k" * 40}},
+            status=201,
+        )
+
+
 @responses.activate
 def test_happy_path_returns_zero_and_prints_json(
     env: None, capsys: pytest.CaptureFixture[str]
@@ -110,6 +146,7 @@ def test_happy_path_returns_zero_and_prints_json(
     _register_main_tip()
     _register_queue_branch_absent()
     _register_queue_branch_create()
+    _register_seed_endpoints()
     _register_protection_put()
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
@@ -134,6 +171,7 @@ def test_idempotent_when_branch_already_exists(
     _register_repo_lookup()
     _register_main_tip()
     _register_queue_branch_present()
+    _register_seed_endpoints()
     _register_protection_put()
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
@@ -190,6 +228,20 @@ def test_dry_run_makes_no_mutations(env: None, capsys: pytest.CaptureFixture[str
     _register_repo_lookup()
     _register_main_tip()
     _register_queue_branch_absent()
+    # Seed step still issues existence GETs in dry-run (skips PUTs).
+    responses.add(
+        responses.GET,
+        f"{REPO_URL}/contents/README.md",
+        json={"message": "Not Found"},
+        status=404,
+    )
+    for folder in ("inbox", "current", "pending-pr", "blocked", "archive", "done"):
+        responses.add(
+            responses.GET,
+            f"{REPO_URL}/contents/.ralph/{folder}/.gitkeep",
+            json={"message": "Not Found"},
+            status=404,
+        )
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO, "--dry-run"])
     assert exit_code == 0
@@ -208,13 +260,18 @@ def test_protection_payload_shape(env: None, capsys: pytest.CaptureFixture[str])
     _register_main_tip()
     _register_queue_branch_absent()
     _register_queue_branch_create()
+    _register_seed_endpoints()
     _register_protection_put()
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
     assert exit_code == 0
 
-    # Find the PUT call.
-    put_calls = [c for c in responses.calls if c.request.method == "PUT"]
+    # Find the protection PUT (the seed step also issues PUTs to /contents/...).
+    put_calls = [
+        c
+        for c in responses.calls
+        if c.request.method == "PUT" and c.request.url.endswith("/protection")
+    ]
     assert len(put_calls) == 1
     raw_body = put_calls[0].request.body
     assert raw_body is not None
@@ -268,6 +325,7 @@ def test_concurrent_create_422_still_applies_protection(
         json={"message": "Reference already exists"},
         status=422,
     )
+    _register_seed_endpoints()
     _register_protection_put()
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
@@ -278,8 +336,13 @@ def test_concurrent_create_422_still_applies_protection(
     assert payload["branch_existed"] is True
     assert payload["protection_applied"] is True
     # Confirm the protection PUT actually fired (would be skipped if the 422
-    # had escaped to the outer GhError handler).
-    put_calls = [c for c in responses.calls if c.request.method == "PUT"]
+    # had escaped to the outer GhError handler). The seed step also issues
+    # PUTs to /contents/..., so filter to the protection URL specifically.
+    put_calls = [
+        c
+        for c in responses.calls
+        if c.request.method == "PUT" and c.request.url.endswith("/protection")
+    ]
     assert len(put_calls) == 1
 
 
@@ -398,3 +461,37 @@ def test_org_flag_uses_orgs_endpoint(
     assert rc == 0
     assert ("POST", "/orgs/myorg/repos") in calls
     assert ("POST", "/user/repos") not in calls
+
+
+def test_seeds_readme_and_skeleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed step: README on main, .ralph/<state>/.gitkeep on ralph-queue."""
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            # Pretend main + ralph-queue refs exist (so creation skipped)
+            # but README + .ralph/ skeleton content do NOT exist.
+            if "/contents/README.md" in path or "/contents/.ralph" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc123"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append((path, json_body or {}))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    # README PUT on main
+    assert any(path.endswith("/contents/README.md") for path, _ in puts)
+    # Skeleton PUTs on ralph-queue, one per state folder
+    for folder in ("inbox", "current", "pending-pr", "blocked", "archive", "done"):
+        assert any(path.endswith(f"/contents/.ralph/{folder}/.gitkeep") for path, _ in puts)
