@@ -823,7 +823,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         #     repository for every iteration after the first).
         from dataclasses import replace as _replace
 
-        from ralph_executor.url_utils import TargetRepoInfo, parse_target_repo
+        from ralph_executor.url_utils import parse_target_repo
 
         try:
             target_url = _read_target_repo_from_pbi(current)
@@ -835,7 +835,9 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # ``pbi.target_info is not None``) silently no-ops for every
         # iteration after the first, and any ``gh`` / ``pr-github`` call
         # the spawned Claude makes uses the wrong (or absent) owner.
-        info: TargetRepoInfo | None = None
+        # TargetRepoInfo is imported into this module's TYPE_CHECKING
+        # block; ``None`` is annotation enough at runtime.
+        info = None
         if target_url:
             try:
                 info = parse_target_repo(target_url)
