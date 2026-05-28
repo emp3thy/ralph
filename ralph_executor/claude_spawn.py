@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.subprocess_utils import popen_text, run_text
 from ralph_executor.types import PBI
 
 log = logging.getLogger(__name__)
@@ -128,7 +129,7 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
     pr_created. The real PR state is reconciled by sweep (Plan 8).
     """
     try:
-        result = subprocess.run(
+        result = run_text(
             [
                 _GH_BINARY,
                 "pr",
@@ -145,7 +146,6 @@ def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
             cwd=str(repo_path),
             check=False,
             capture_output=True,
-            text=True,
             timeout=30,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -215,7 +215,7 @@ def _query_pr_checks(
     ``pr_created`` on a transient gh outage.
     """
     try:
-        result = subprocess.run(
+        result = run_text(
             [
                 _GH_BINARY,
                 "pr",
@@ -228,7 +228,6 @@ def _query_pr_checks(
             cwd=str(repo_path),
             check=False,
             capture_output=True,
-            text=True,
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
@@ -566,15 +565,12 @@ def spawn_claude_p(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    proc = subprocess.Popen(
+    proc = popen_text(
         argv,
         cwd=str(effective_cwd),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         bufsize=1,
         **popen_kwargs,
     )

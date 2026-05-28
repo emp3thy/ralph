@@ -49,6 +49,8 @@ def _current_branch(repo: Path) -> str:
         ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout.strip()
 
@@ -177,6 +179,8 @@ def test_scaffold_creates_branch_dirs_and_commits(
         ["git", "-C", str(fresh_repo), "log", "--format=%s", "-n", "1"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout.strip()
     assert "scaffold" in log
@@ -249,6 +253,8 @@ def test_scaffold_restores_original_branch_on_commit_failure(
         ["git", "-C", str(fresh_repo), "status", "--porcelain"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout
     assert porcelain == "", f"working tree should be clean, got: {porcelain!r}"
@@ -299,6 +305,8 @@ def test_scaffold_refuses_detached_head(
         ["git", "-C", str(fresh_repo), "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout.strip()
     subprocess.run(
@@ -353,6 +361,8 @@ def test_scaffold_handles_oserror_from_file_creation(
         ["git", "-C", str(fresh_repo), "status", "--porcelain"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     ).stdout
     assert porcelain == "", f"working tree should be clean, got: {porcelain!r}"

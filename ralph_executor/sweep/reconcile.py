@@ -25,13 +25,13 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ralph_executor.subprocess_utils import run_text
 from ralph_executor.sweep.runner import SweepContext, _per_pbi_subprocess_overrides
 from ralph_executor.sweep.target import read_target_info
 from ralph_executor.sweep.types import (
@@ -81,7 +81,7 @@ def _invoke_lookup(
     ``None``, the subprocess inherits the parent process env.
     """
     script = ctx.ado_pr_scripts_path / "lookup_by_branch.py"
-    proc = subprocess.run(
+    proc = run_text(
         [
             sys.executable,
             str(script),
@@ -92,7 +92,6 @@ def _invoke_lookup(
             "--include-branch-check",
         ],
         capture_output=True,
-        text=True,
         check=False,
         env=env,
     )

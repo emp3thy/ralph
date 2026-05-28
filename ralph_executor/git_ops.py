@@ -11,6 +11,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ralph_executor.subprocess_utils import run_text
+
 log = logging.getLogger(__name__)
 
 
@@ -32,12 +34,11 @@ def _run_git(
 ) -> subprocess.CompletedProcess[str]:
     argv = ["git", *args]
     log.debug("git: cwd=%s argv=%s", repo, argv)
-    result = subprocess.run(
+    result = run_text(
         argv,
         cwd=str(repo),
         check=False,
         capture_output=capture,
-        text=True,
     )
     if check and result.returncode != 0:
         raise GitCommandError(argv, result.returncode, result.stderr)
@@ -69,10 +70,9 @@ def clone(url: str, dest: Path, *, timeout: float = 120.0) -> None:
     """
     argv = ["git", "clone", url, str(dest)]
     log.debug("git: argv=%s", argv)
-    result = subprocess.run(
+    result = run_text(
         argv,
         capture_output=True,
-        text=True,
         check=False,
         timeout=timeout,
     )
