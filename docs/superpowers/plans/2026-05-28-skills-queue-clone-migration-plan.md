@@ -898,7 +898,7 @@ git commit -m "docs(readme): queue-repo install + working-the-queue section"
 **Files:**
 - Create: `docs/superpowers/ops/2026-05-28-pod-deployment.md`
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 ```markdown
 # Pod deployment runbook (2026-05-28)
@@ -1002,7 +1002,7 @@ finishes its iteration, exits idle, scheduler spins up the new image).
   and `acknowledged_at`), restart the pod.
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/superpowers/ops/2026-05-28-pod-deployment.md
