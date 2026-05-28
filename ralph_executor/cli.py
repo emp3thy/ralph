@@ -137,6 +137,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "Override the queue_repo TOML value for this run (HTTPS URL of the queue repository)."
         ),
     )
+    parser.add_argument(
+        "--queue-branch",
+        metavar="BRANCH",
+        help=(
+            "Override the queue_branch TOML value for this run "
+            "(branch name on the queue repo; default: ralph-queue)."
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -336,6 +344,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
     queue_repo: str = cfg.queue_repo
+    queue_branch: str = cfg.queue_branch
     watch_mode: bool = cfg.watch_mode
     changed = False
     # argparse already enforces mutual exclusion between --repo and --workspace.
@@ -361,6 +370,16 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
             raise ConfigError(f"--queue-repo: {exc}") from exc
         queue_repo = args.queue_repo
         changed = True
+    if getattr(args, "queue_branch", None):
+        stripped = args.queue_branch.strip()
+        if not stripped:
+            raise ConfigError("--queue-branch must be a non-empty branch name")
+        if stripped == "HEAD" or stripped.startswith("refs/heads/"):
+            raise ConfigError(
+                f"--queue-branch must be a plain branch name (got {args.queue_branch!r})"
+            )
+        queue_branch = stripped
+        changed = True
     # --watch overrides any TOML / env value; absence of the flag does NOT
     # disable a TOML watch_mode=true (operators who pinned daemon mode in
     # config keep it).
@@ -374,6 +393,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         repo_path=repo_path,
         log_level=log_level,
         queue_repo=queue_repo,
+        queue_branch=queue_branch,
         watch_mode=watch_mode,
     )
 
@@ -599,9 +619,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(cfg.log_level)
 
     log.info(
-        "ralph-executor starting (repo=%s queue_repo=%s main=%s)",
+        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s main=%s)",
         cfg.repo_path,
         cfg.queue_repo,
+        cfg.queue_branch,
         cfg.main_branch,
     )
 

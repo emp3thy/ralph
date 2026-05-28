@@ -569,6 +569,28 @@ def test_main_queue_repo_flag_overrides_cfg(
     assert seen[0].queue_repo == "https://github.com/example/override"
 
 
+def test_cli_queue_branch_override_lands_on_cfg(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch on the CLI overrides cfg.queue_branch via _apply_overrides."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="override-branch",
+        watch=False,
+    )
+    new_cfg = _apply_overrides(cfg, args)
+    assert new_cfg.queue_branch == "override-branch"
+
+
 def test_main_rejects_watch_with_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
