@@ -90,7 +90,7 @@ def test_executor_config_has_queue_repo_field() -> None:
 
     names = {f.name for f in fields(ExecutorConfig)}
     assert "queue_repo" in names
-    assert "queue_branch" not in names
+    assert "queue_branch" in names
 
 
 def test_load_config_rejects_missing_queue_repo(
@@ -283,3 +283,22 @@ def test_executor_config_is_frozen(env_minimal: Path) -> None:
     cfg = load_config()
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.queue_repo = "other"  # type: ignore[misc]
+
+
+def test_default_queue_branch_is_ralph_queue(tmp_path, monkeypatch):
+    """Default queue_branch is 'ralph-queue' when no TOML / env override."""
+    from ralph_executor.config import load_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".ralph").mkdir()
+    (repo / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
+    monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
+
+    cfg = load_config()
+    assert cfg.queue_branch == "ralph-queue"

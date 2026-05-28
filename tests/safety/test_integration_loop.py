@@ -114,6 +114,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
     cfg = ExecutorConfig(
         repo_path=clone,
         queue_repo=f"file://{bare.as_posix()}",
+        queue_branch="ralph-queue",
         main_branch="main",
         max_attempts=3,
         log_level=20,

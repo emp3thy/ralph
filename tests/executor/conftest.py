@@ -217,6 +217,7 @@ def cfg_for_repo(
     return ExecutorConfig(
         repo_path=fake_repo,
         queue_repo=f"file://{bare.as_posix()}",
+        queue_branch="ralph-queue",
         main_branch="main",
         max_attempts=3,
         log_level=20,  # logging.INFO
