@@ -3,7 +3,7 @@ id: BUG-SUBPROCESS-WINDOWS-ENCODING-AUDIT
 type: bug
 status: current
 severity: high
-attempts: 0
+attempts: 1
 created_at: 2026-05-28T10:30:00+00:00
 updated_at: 2026-05-28T11:46:35+00:00
 depends_on: []
