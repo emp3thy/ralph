@@ -21,6 +21,21 @@ GitHub REST documentation:
     https://docs.github.com/en/rest/git/refs#get-a-reference
     https://docs.github.com/en/rest/git/refs#create-a-reference
     https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection
+
+Branch-protection payload notes (apply to both ``main`` and ``ralph-queue``):
+
+- ``enforce_admins=True``: organisation admins cannot bypass the protection
+  rules. The GitHub API accepts this flag on every plan, but actual enforcement
+  on personal repositories and lower-tier organisation plans depends on the
+  plan. The runbook documents the plan-level caveat; do not assume the flag
+  alone guarantees admin enforcement on every repo.
+- ``restrictions=None``: no push-actor restrictions are applied at bootstrap.
+  GitHub only honours ``restrictions`` on organisation-owned repos and the
+  payload must enumerate teams/apps/users, so any actor-level lockdown is
+  layered on top of this bootstrap by a separate step (org-only).
+- ``required_status_checks=None``: no CI checks are required at bootstrap.
+  Per-repo overrides can layer status-check requirements in later once CI
+  has stabilised; the bootstrap deliberately leaves the door open.
 """
 
 from __future__ import annotations
@@ -130,19 +145,35 @@ def _create_branch(client: GhClient, owner: str, repo: str, branch: str, base_sh
     client.post(f"/repos/{owner}/{repo}/git/refs", json_body=payload)
 
 
-def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
-    """main: require PR (1 approval), no force-push, no deletion."""
-    payload = {
+def _base_protection_payload() -> dict:
+    """Common protection payload shared by main + queue-branch protection.
+
+    Anything overlaid by the two callers (PR-review requirements, queue-branch-specific
+    flags) goes on top of this base. Centralising the shared flags here prevents
+    drift between the two payloads. See the module docstring for the rationale
+    on ``enforce_admins``, ``restrictions``, and ``required_status_checks``.
+    """
+    return {
         "required_status_checks": None,
         "enforce_admins": True,
-        "required_pull_request_reviews": {
-            "dismiss_stale_reviews": False,
-            "require_code_owner_reviews": False,
-            "required_approving_review_count": 1,
-        },
         "restrictions": None,
         "allow_force_pushes": False,
         "allow_deletions": False,
+    }
+
+
+def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
+    """main branch protection: require PR (1 approval), no force-push, no deletion.
+
+    See the module docstring for the rationale on ``enforce_admins``
+    (plan-level enforcement on personal repos) and ``restrictions``
+    (org-only, layered separately).
+    """
+    payload = _base_protection_payload()
+    payload["required_pull_request_reviews"] = {
+        "dismiss_stale_reviews": False,
+        "require_code_owner_reviews": False,
+        "required_approving_review_count": 1,
     }
     client.put(
         f"/repos/{owner}/{repo}/branches/main/protection",
@@ -151,18 +182,19 @@ def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
 
 
 def _apply_queue_branch_protection(client: GhClient, owner: str, repo: str, branch: str) -> None:
-    """ralph-queue: no force-push, no deletion. No PR requirement (executor pushes directly)."""
-    payload = {
-        "required_status_checks": None,
-        "enforce_admins": True,
-        "required_pull_request_reviews": None,
-        "restrictions": None,
-        "allow_force_pushes": False,
-        "allow_deletions": False,
-        "required_conversation_resolution": False,
-        "lock_branch": False,
-        "allow_fork_syncing": False,
-    }
+    """ralph-queue branch protection: no force-push, no deletion.
+
+    No PR requirement -- the executor pushes directly. The extra
+    ``required_conversation_resolution`` / ``lock_branch`` / ``allow_fork_syncing``
+    flags explicitly set the recommended defaults so a future GitHub-side API
+    change can't silently flip them. See the module docstring for the shared
+    flag rationale.
+    """
+    payload = _base_protection_payload()
+    payload["required_pull_request_reviews"] = None
+    payload["required_conversation_resolution"] = False
+    payload["lock_branch"] = False
+    payload["allow_fork_syncing"] = False
     client.put(
         f"/repos/{owner}/{repo}/branches/{branch}/protection",
         json_body=payload,
