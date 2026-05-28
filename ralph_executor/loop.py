@@ -454,19 +454,42 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
             )
             return
         try:
-            from ralph_executor.target_clone import ensure_clone
             from ralph_executor.url_utils import parse_target_repo
 
             info = parse_target_repo(pbi.target_repo)
-            clone = ensure_clone(info, workspace_root=cfg.workspace_root)
-        except Exception:
+        except ValueError:
             log.warning(
-                "failed to resolve clone root for PBI %s; orphan work worktree may remain",
+                "failed to parse target_repo for PBI %s; orphan work worktree may remain",
                 pbi.id,
                 exc_info=True,
             )
             return
-        owning_repo = clone.clone_root
+        # Compute owning_repo deterministically (workspace_root + owner +
+        # name) rather than via a fresh ``ensure_clone`` — a transient
+        # fetch failure shouldn't leave the worktree behind, and the path
+        # itself is fully determined by the URL components. Tests
+        # monkeypatch ``ensure_clone`` to return a divergent clone_root
+        # (fake_repo), so honour that override when present by calling
+        # ensure_clone and using its return value if it succeeds.
+        owning_repo = cfg.workspace_root / "clones" / info.owner / info.name
+        try:
+            from ralph_executor.target_clone import ensure_clone
+
+            clone = ensure_clone(info, workspace_root=cfg.workspace_root)
+            owning_repo = clone.clone_root
+        except Exception:
+            log.warning(
+                "ensure_clone failed for PBI %s; using deterministic clone path",
+                pbi.id,
+                exc_info=True,
+            )
+        if not (owning_repo / ".git").exists():
+            log.warning(
+                "owning repo %s has no .git; cannot remove worktree for PBI %s",
+                owning_repo,
+                pbi.id,
+            )
+            return
         work_wt = work_worktree_path(owning_repo, pbi.id)
     try:
         remove_worktree(owning_repo, work_wt)
@@ -848,18 +871,25 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                 info = None
         work_wt: Path | None = None
         if cfg.use_worktrees and info is not None:
+            # ``clone_root`` is fully determined by workspace_root + owner +
+            # name; compute deterministically so a transient fetch failure
+            # (network blip, auth expired, etc.) does NOT silently force
+            # spawn_claude_p to fall back to ``cfg.repo_path`` — that would
+            # write Claude's target-repo edits into ralph's own repository.
+            clone_root = cfg.workspace_root / "clones" / info.owner / info.name
             try:
                 from ralph_executor.target_clone import ensure_clone
 
-                clone = ensure_clone(info, workspace_root=cfg.workspace_root)
-                work_wt = work_worktree_path(clone.clone_root, current.id)
+                ensure_clone(info, workspace_root=cfg.workspace_root)
             except Exception:
                 log.warning(
-                    "iterate_once: could not resolve work worktree for resumed PBI %s; "
-                    "spawn_claude_p will fall back to cfg.repo_path",
+                    "iterate_once: ensure_clone failed for resumed PBI %s; "
+                    "using deterministic clone path (may be stale)",
                     current.id,
                     exc_info=True,
                 )
+            if clone_root.is_dir():
+                work_wt = work_worktree_path(clone_root, current.id)
         current = _replace(
             current,
             target_repo=target_url,
