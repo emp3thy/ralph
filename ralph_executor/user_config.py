@@ -135,6 +135,25 @@ def read_queue_repo() -> str | None:
     return raw.strip()
 
 
+def read_queue_branch() -> str | None:
+    """Return the ``queue_branch`` value from the user config, or None.
+
+    Mirrors ``read_queue_repo`` for the matching knob. The executor's
+    ``load_config`` reads project TOML first; this helper is the
+    operator-config fallback consulted by operator skills via
+    ``scripts.queue_writer.resolve_queue_branch``.
+    """
+    data = _load_user_config()
+    raw = data.get("queue_branch")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(
+            f"{user_config_path()}: queue_branch must be a non-empty string, got {type(raw).__name__}"
+        )
+    return raw.strip()
+
+
 def _toml_escape_basic_string(value: str) -> str:
     """Escape a string for use as a TOML basic-string value.
 
@@ -234,3 +253,11 @@ def write_queue_repo(url: str) -> Path:
     level knobs) are preserved.
     """
     return _write_user_config({"queue_repo": url})
+
+
+def write_queue_branch(branch: str) -> Path:
+    """Persist ``queue_branch`` to ``~/.ralph/config.toml``.
+
+    Merges with existing keys so ``queue_repo`` / ``ralph_home`` survive.
+    """
+    return _write_user_config({"queue_branch": branch})

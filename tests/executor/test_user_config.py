@@ -152,3 +152,52 @@ def test_read_expands_user_in_value(fake_home: Path) -> None:
     """Paths persisted as ``~/...`` (the literal tilde) should expand on read."""
     write_ralph_home(Path("~/dev/ralph"))
     assert read_ralph_home() == Path("~/dev/ralph").expanduser()
+
+
+def test_read_queue_branch_returns_value(tmp_path, monkeypatch):
+    """read_queue_branch reads queue_branch from ~/.ralph/config.toml."""
+    from ralph_executor import user_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text(
+        'queue_branch = "my-branch"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows
+
+    assert user_config.read_queue_branch() == "my-branch"
+
+
+def test_read_queue_branch_returns_none_when_absent(tmp_path, monkeypatch):
+    """read_queue_branch returns None when the file lacks the key."""
+    from ralph_executor import user_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    assert user_config.read_queue_branch() is None
+
+
+def test_write_queue_branch_persists(tmp_path, monkeypatch):
+    """write_queue_branch writes the value and merges with existing keys."""
+    from ralph_executor import user_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    user_config.write_queue_branch("ralph-queue")
+    assert user_config.read_queue_branch() == "ralph-queue"
+    # queue_repo survives the merge
+    assert user_config.read_queue_repo() == "https://github.com/test/queue"
