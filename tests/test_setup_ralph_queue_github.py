@@ -593,3 +593,39 @@ def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     rc = setup.main(["--repo", "queue", "--no-protection"])
     assert rc == 0
     assert any(path.endswith("/contents/.ralph/config.toml") for path, _ in puts)
+
+
+def test_full_run_idempotent_on_second_invocation(monkeypatch):
+    """Re-running the script on a fully-provisioned repo is a no-op (except protection re-applies)."""
+    from scripts import setup_ralph_queue_github as setup
+
+    posts: list[str] = []
+    puts: list[str] = []
+
+    class FakeClient:
+        def get(self, path):
+            # Everything exists already (repo, refs, README, .ralph/ skeleton, config.toml)
+            return {"object": {"sha": "abc"}}
+        def post(self, path, json_body=None):
+            posts.append(path)
+            return {}
+        def put(self, path, json_body=None):
+            puts.append(path)
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    # No POSTs (no branch creation, no repo creation)
+    assert posts == []
+    # No content PUTs (README + skeleton + config.toml already exist)
+    content_puts = [p for p in puts if "/contents/" in p]
+    assert content_puts == [], (
+        f"Expected zero content PUTs on re-run, got: {content_puts}"
+    )
+    # Protection PUTs are skipped because --no-protection
+    protection_puts = [p for p in puts if "/protection" in p]
+    assert protection_puts == []
