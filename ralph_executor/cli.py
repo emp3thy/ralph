@@ -2,12 +2,17 @@
 
 Usage::
 
-    ralph-executor [--once] [--iterations N]
+    ralph-executor [--watch] [--once] [--iterations N]
                    [--repo PATH | --workspace NAME] [--log-level LEVEL]
     ralph-executor health --ready
     ralph-executor health --live
     ralph-executor doctor [--json]
 
+* ``--watch``          -- daemon mode: run forever, sleep on idle. Without
+                          this flag the loop drains to idle and exits 0
+                          (the intended default for unattended pod /
+                          container deployments). Mutually exclusive with
+                          ``--once`` / ``--iterations``.
 * ``--once``           -- run a single iteration and exit. Alias for
                           ``--iterations 1``. Kept for backward compatibility.
 * ``--iterations N``   -- run exactly N iterations and exit.
@@ -82,8 +87,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ralph-executor",
         description=(
-            "Run the Ralph per-repo autonomous coding loop. By default "
-            "iterates until interrupted; use --once for a single iteration."
+            "Run the Ralph per-repo autonomous coding loop. By default the "
+            "loop drains to idle and exits 0 (intended for unattended pod / "
+            "container runs); pass --watch for the legacy daemon behaviour."
+        ),
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "Daemon mode: run forever, sleep on idle. Without this flag the "
+            "loop exits after idle_exit_threshold consecutive idle iterations."
+            " Mutually exclusive with --once / --iterations."
         ),
     )
     parser.add_argument(
@@ -321,6 +336,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
     queue_repo: str = cfg.queue_repo
+    watch_mode: bool = cfg.watch_mode
     changed = False
     # argparse already enforces mutual exclusion between --repo and --workspace.
     if args.repo:
@@ -335,9 +351,21 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     if getattr(args, "queue_repo", None):
         queue_repo = args.queue_repo
         changed = True
+    # --watch overrides any TOML / env value; absence of the flag does NOT
+    # disable a TOML watch_mode=true (operators who pinned daemon mode in
+    # config keep it).
+    if getattr(args, "watch", False):
+        watch_mode = True
+        changed = True
     if not changed:
         return cfg
-    return dataclasses.replace(cfg, repo_path=repo_path, log_level=log_level, queue_repo=queue_repo)
+    return dataclasses.replace(
+        cfg,
+        repo_path=repo_path,
+        log_level=log_level,
+        queue_repo=queue_repo,
+        watch_mode=watch_mode,
+    )
 
 
 def _resolve_iteration_count(args: argparse.Namespace) -> int | None:
@@ -542,6 +570,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
     # --- default command: run the executor loop ---
+    # --watch is mutually exclusive with the explicit-iteration-count flags;
+    # the two surface contradictory intents (drain-forever vs run-N-then-exit).
+    # Argparse doesn't enforce the mutex (the flags live outside any mutex
+    # group so the existing subcommands stay unchanged); check here so the
+    # error fires before any config load.
+    if getattr(args, "watch", False) and (args.once or args.iterations is not None):
+        print(
+            "error: --watch is mutually exclusive with --once / --iterations",
+            file=sys.stderr,
+        )
+        return 2
     try:
         cfg = load_config()
         cfg = _apply_overrides(cfg, args)

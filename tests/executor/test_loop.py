@@ -1195,6 +1195,94 @@ def test_pull_queue_calls_ensure_queue_clone(
     assert calls == [(tmp_path, "https://github.com/example/q")]
 
 
+def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default (``watch_mode=False``): two idle iterations in a row drain the
+    loop. ``run_loop`` exits cleanly after the second idle without
+    re-entering ``iterate_once`` a third time."""
+    from ralph_executor.loop import IterationResult
+
+    calls: list[int] = []
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        calls.append(len(calls))
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    results = list(run_loop(cfg_for_repo))
+    assert len(results) == 2
+    assert all(r.outcome == "idle" for r in results)
+    assert len(calls) == 2, "third iteration should NOT have been entered"
+
+
+def test_run_loop_watch_mode_does_not_drain_on_idle(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``watch_mode=True``: idle iterations never exit the loop. Bound the
+    test via ``max_iterations`` so it terminates."""
+    from ralph_executor.loop import IterationResult
+
+    cfg_watch = dataclasses.replace(cfg_for_repo, watch_mode=True)
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    results = list(run_loop(cfg_watch, max_iterations=3))
+    assert len(results) == 3
+    assert all(r.outcome == "idle" for r in results)
+
+
+def test_run_loop_non_idle_outcome_resets_consecutive_idle_counter(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-idle outcome (claimed, ran_partial, …) between idle ticks
+    resets the consecutive-idle counter so the loop only drains after a
+    fresh streak of idles fills the threshold."""
+    from ralph_executor.loop import IterationResult
+
+    scripted: list[IterationResult] = [
+        IterationResult(outcome="idle", pbi_id=None),
+        IterationResult(outcome="claimed", pbi_id="WI-XYZ"),
+        IterationResult(outcome="idle", pbi_id=None),
+        IterationResult(outcome="idle", pbi_id=None),
+        # Anything after this would indicate the drain didn't trip on the
+        # second consecutive idle — set a sentinel so the test fails loudly
+        # if run_loop overshoots.
+        IterationResult(outcome="ran_partial", pbi_id="WI-OVERSHOOT"),
+    ]
+    iterator = iter(scripted)
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        return next(iterator)
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    results = list(run_loop(cfg_for_repo))
+    assert [r.outcome for r in results] == ["idle", "claimed", "idle", "idle"]
+
+
+def test_run_loop_drains_against_empty_filesystem_queue(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration: with no PBIs in ``.ralph/inbox/`` / ``.ralph/current/``
+    and the default ``idle_exit_threshold=2``, ``run_loop`` yields exactly
+    two ``idle`` results then returns. Exercises the real ``iterate_once``
+    against the on-disk queue rather than a monkeypatched stub."""
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+    results = list(run_loop(cfg_for_repo))
+    assert len(results) == 2
+    assert all(r.outcome == "idle" for r in results)
+
+
 def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,

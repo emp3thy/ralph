@@ -94,7 +94,25 @@ uv run ralph-executor --workspace repo
 ```
 
 This resolves to `$RALPH_HOME/repo`, switches to the `ralph-queue`
-branch, and starts iterating. It runs until you Ctrl-C it.
+branch, and starts iterating. By default ralph **drains the queue and
+exits 0** once it sees `idle_exit_threshold` (default `2`) consecutive
+idle iterations — i.e. no PBI to claim and nothing in `current/`. The
+final log line is `INFO ralph_executor.cli: queue drained -- exiting
+after N consecutive idle iterations`, which a pod / container
+supervisor can grep for to confirm orderly shutdown.
+
+This default is built for **unattended pod / container deployments**
+where the queue contents are baked in at launch and a process that
+doesn't terminate when it's done its work is just burning compute.
+
+For an interactive workstation session — operator keeps pushing PBIs
+into `inbox/` mid-run — pass `--watch` to get the legacy daemon
+behaviour (run forever, sleep `iteration_sleep_seconds` between idles,
+exit only on Ctrl-C):
+
+```bash
+uv run ralph-executor --watch --workspace repo
+```
 
 Other forms:
 
@@ -105,8 +123,25 @@ uv run ralph-executor --repo /path/to/checkout
 # Whatever's in the current directory
 cd /path/to/checkout && uv run ralph-executor
 
-# Single iteration (for debugging)
+# Single iteration (for debugging) — exits after 1 iter regardless of outcome
 uv run ralph-executor --once --workspace repo
+
+# Daemon mode (workstation use)
+uv run ralph-executor --watch --workspace repo
+```
+
+Pin the daemon default per project in `<repo>/.ralph/config.toml`:
+
+```toml
+watch_mode = true            # equivalent to passing --watch every time
+idle_exit_threshold = 5      # tolerate more transient idles before drain
+```
+
+…or per shell:
+
+```bash
+RALPH_WATCH_MODE=1 uv run ralph-executor --workspace repo
+RALPH_IDLE_EXIT_THRESHOLD=5 uv run ralph-executor --workspace repo
 ```
 
 ## Running multiple ralphs

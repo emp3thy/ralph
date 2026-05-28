@@ -97,6 +97,16 @@ CONFIG_TOML_STUB = """\
 # positive. Env overrides: RALPH_SAME_FILE_MIN_PRS, RALPH_SAME_FILE_WINDOW_HOURS.
 # same_file_min_prs = 10
 # same_file_window_hours = 24
+#
+# Drain-on-idle. Default behaviour (watch_mode = false) exits cleanly after
+# `idle_exit_threshold` consecutive idle iterations — the right shape for
+# unattended pod / container runs where the queue is baked in at launch and
+# no operator is around to push more work. Flip to `watch_mode = true` for
+# workstation daemon use (run forever, sleep on idle) — same effect as
+# passing --watch on the CLI. Env overrides: RALPH_WATCH_MODE,
+# RALPH_IDLE_EXIT_THRESHOLD. idle_exit_threshold must be positive.
+# watch_mode = false
+# idle_exit_threshold = 2
 """
 
 
