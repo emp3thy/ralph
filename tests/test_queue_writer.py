@@ -175,6 +175,24 @@ def test_resolve_queue_repo_wraps_config_error(monkeypatch: pytest.MonkeyPatch) 
     assert isinstance(excinfo.value.__cause__, ConfigError)
 
 
+def test_resolve_queue_branch_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ConfigError from read_queue_branch (malformed config.toml) must be
+    re-raised as QueueWriterError so skills only see one type."""
+    from ralph_executor.config import ConfigError
+
+    def fake_read() -> str | None:
+        raise ConfigError(
+            "/fake/.ralph/config.toml: queue_branch must be a non-empty string, got int"
+        )
+
+    monkeypatch.setattr("ralph_executor.user_config.read_queue_branch", fake_read)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        qw.resolve_queue_branch(None)
+    assert "queue_branch" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
 def test_checkout_queue_branch_is_removed() -> None:
     """No compat shim: the old branch-checkout helper must not exist."""
     assert not hasattr(qw, "checkout_queue_branch")
