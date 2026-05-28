@@ -4,7 +4,7 @@
 
 **Goal:** Make ralph executor's per-PBI subagent record observations to better-memory in the correct project scope (PBI's `target_repo`), with inline triggers tuned for the one-shot iteration lifecycle.
 
-**Architecture:** Adds an environment-variable override (`BETTER_MEMORY_PROJECT`) to better-memory's project resolver; ralph's `claude_spawn` sets it from `pbi.target_info.name` so subprocess observations land in the target repo's project. `prompt/PROMPT.md` gets a new "Recording learnings" section with inline triggers and iteration-start retrieval calls. A one-shot curation pass promotes ralph-runtime workflow reflections into general-scope curated knowledge.
+**Architecture:** Adds an environment-variable override (`BETTER_MEMORY_PROJECT`) to better-memory's project resolver; ralph's `claude_spawn` sets it from `pbi.target_info.name` so subprocess observations land in the target repo's project. `prompt/PROMPT.md` gets a new "Recording learnings" section with inline triggers and iteration-start retrieval calls. A one-shot curation pass promotes ralph-runtime workflow reflections into `~/.better-memory/knowledge-base/standards/ralph-runtime.md` (standards directory is the cross-project bucket; entries surface in `knowledge.search` regardless of project).
 
 **Tech Stack:** Python 3.12 (better-memory + ralph), pytest, ruff. Two repos touched: `C:\Users\gethi\source\better-memory` and `C:\Users\gethi\source\ralph`.
 
@@ -469,7 +469,7 @@ This iteration is one-shot: you have no memory across iterations except what you
 Before reading any PBI files, run both of these:
 
 1. `mcp__better-memory__memory_retrieve` with a broad `query` describing the PBI's surface (e.g. the PBI title + the component or theme). Returns target-repo observations and reflections bucketed by `do` / `dont` / `neutral`.
-2. `mcp__better-memory__knowledge_search` with `scope="general"` and a `query` describing the workflow context (e.g. `"ralph iteration"`, `"git worktree"`, `"PR review thread"`). Returns curated cross-project workflow rules.
+2. `mcp__better-memory__knowledge_search` with a `query` describing the workflow context (e.g. `"ralph iteration"`, `"git worktree"`, `"PR review thread"`). Standards (cross-project workflow rules under `knowledge-base/standards/`) always surface regardless of project. Pass `project` if you also want project-specific knowledge surfaced.
 
 Read both before deciding how to approach the PBI. Memory may be stale — if a recalled fact conflicts with what you see now, trust current state and let the synthesis layer correct the memory later.
 
@@ -533,7 +533,7 @@ gh pr create --title "feat(executor): per-PBI memory recording for subagent iter
 ## Summary
 
 - `claude_spawn` sets `BETTER_MEMORY_PROJECT=<repo-name>` in the subagent's subprocess env when `pbi.target_info` is present, so observations land in the PBI's target_repo project scope rather than the worktree's cwd-derived project.
-- `prompt/PROMPT.md` gains a "Recording learnings (better-memory)" section with iteration-start retrieval calls (`memory_retrieve` + `knowledge_search scope=general`) and CLAUDE.md-style inline observe triggers tuned to the ralph one-shot lifecycle.
+- `prompt/PROMPT.md` gains a "Recording learnings (better-memory)" section with iteration-start retrieval calls (`memory_retrieve` plus `knowledge_search`; the standards directory always surfaces in knowledge results regardless of project) and CLAUDE.md-style inline observe triggers tuned to the ralph one-shot lifecycle.
 
 Depends on the better-memory PR adding the `BETTER_MEMORY_PROJECT` env-var resolver branch — until that lands the env var is harmlessly ignored.
 
@@ -553,9 +553,9 @@ EOF
 
 ## Task 7: One-shot curation pass — promote ralph-runtime reflections
 
-**Repo:** `C:\Users\gethi\source\better-memory` (knowledge-base)
+**Target:** local user-data directory `~/.better-memory/knowledge-base/standards/` (not a repo) — no PR. The MCP server auto-reindexes on startup (mtime-driven), so writing the file + restarting better-memory's MCP server picks the new entries up.
 
-**Confidence:** 88% — list of candidate reflections is concrete (drawn from the current ralph project), but the line between "ralph-runtime workflow rule" and "ralph-the-project lesson" needs a judgement call per reflection. Lift: candidate list and disposition rule are spelled out below; if a reflection's classification is ambiguous, leave it in `ralph` project scope (less aggressive promotion).
+**Confidence:** 94% — APIs verified (`ReflectionService.retire(reflection_id=...)` at `better_memory/services/reflection.py:1362`; `KnowledgeService.reindex()` runs at MCP startup; knowledge-base path = `~/.better-memory/knowledge-base/standards/`). Remaining 6% is per-reflection promote/keep judgement (candidate-list table below makes this concrete; ambiguous → keep in project scope).
 
 **Candidate reflections to promote** (drawn from current `ralph` project; verify each is still in better-memory before retiring):
 
@@ -572,87 +572,116 @@ EOF
 | `0da0e9ffae4c4ef7b0208d2952d69203` | Ralph executor: feature-branch checkout of PBI HISTORY.md from ralph-queue | NO — ralph codebase specific; stays in `ralph` project |
 | `98056ebc80464d34a0c2e95b18882e41` | Keep website and README in sync with every code change | NO — phrased for better-memory; stays in `better-memory` project (move scope if needed) |
 
-- [ ] **Step 1: Create curation branch in better-memory**
+- [ ] **Step 1: Confirm each candidate reflection's current text**
+
+For each `YES`-row reflection id above, fetch the verbatim title / use_cases / hints from the live DB so the curated standards entry preserves accurate text. Open a Python shell against the better-memory venv:
 
 ```bash
 cd /c/Users/gethi/source/better-memory
-git checkout -b knowledge-promote-ralph-runtime
+uv run python
 ```
 
-- [ ] **Step 2: Confirm each candidate reflection still exists**
+Then in the REPL (paste once per id, or loop):
 
-For each `YES`-row reflection id above:
-
-```bash
-uv run python -c "from better_memory.storage.sqlite import open_db; from better_memory.config import home_dir; db = open_db(home_dir() / 'memory.db'); print(db.execute('select id, title, status from reflections where id = ?', ('<ID>',)).fetchone())"
+```python
+import sqlite3, json
+from pathlib import Path
+db = sqlite3.connect(Path.home() / ".better-memory" / "memory.db")
+db.row_factory = sqlite3.Row
+for r in db.execute("SELECT id, title, status, use_cases, hints, polarity, tech FROM reflections WHERE id = ?", ("0dda832cbec346c29e5e81e3cb2113f9",)):
+    print(dict(r))
 ```
 
-If `status` is `superseded` or `retired`, drop that row from the promotion list.
+If `status` is `superseded` or `retired`, drop that row from the promotion list. Save the live `title`, `use_cases`, and `hints` for use in Step 2.
 
-- [ ] **Step 3: Create the curated knowledge file**
+- [ ] **Step 2: Create the curated standards file**
 
-Create `knowledge-base/standards/ralph-runtime.md` with one section per promoted reflection. Each section preserves the reflection's title, use_cases, and key hints. Example layout (use the verified reflection texts, not these placeholders):
+Write `~/.better-memory/knowledge-base/standards/ralph-runtime.md`. One section per promoted reflection. Use the verbatim title and hints fetched in Step 1 — don't paraphrase or reorder. Layout:
 
 ```markdown
 # Ralph runtime workflow rules
 
-General-scope rules for any Claude session operating inside (or as) a ralph iteration — including subagent iterations spawned by `ralph_executor.claude_spawn`.
+Cross-project rules for any Claude session operating inside (or as) a ralph
+iteration — including subagent iterations spawned by `ralph_executor.claude_spawn`.
+
+Originally captured as project-scoped reflections in the `ralph` project;
+promoted to `scope=standard` so they surface in `knowledge.search` regardless
+of which project the subagent is currently scoped to.
 
 ## Windows: don't `git worktree remove` from a shell whose CWD is or was inside the worktree
 
-[hint block lifted from reflection `0dda832cbec346c29e5e81e3cb2113f9`]
+**When this applies:** <use_cases verbatim from reflection 0dda832cbec346c29e5e81e3cb2113f9>
+
+- <hint 1 verbatim>
+- <hint 2 verbatim>
+- ...
 
 ## Create the feature branch at task start, before making changes
 
-[hint block lifted from reflection `fc2ee30d154d46e3af52b43d0e012767`]
+**When this applies:** <use_cases verbatim from reflection fc2ee30d154d46e3af52b43d0e012767>
 
-## After replying to a PR review thread, mark it resolved
+- <hint 1 verbatim>
+- ...
 
-[hint block lifted from reflection `1f8af6e130d44b739c6c88b1fcf3e169`]
-
-[... continue for each YES-row reflection ...]
+[... continue for each YES-row reflection, in the order listed in the candidate-list table ...]
 ```
 
-- [ ] **Step 4: Retire the promoted reflections**
+- [ ] **Step 3: Retire the promoted reflections**
 
-For each promoted reflection id, mark it `retired` in the better-memory DB. Use the `memory_semantic_delete` MCP tool path or a direct SQL update via `sqlite3` shell. Prefer the MCP path to keep audit trail consistent:
-
-```python
-# scripted via better_memory.services
-from better_memory.services.reflection import retire_reflection
-retire_reflection("0dda832cbec346c29e5e81e3cb2113f9", reason="promoted to scope=general knowledge")
-# repeat for each YES-row id
-```
-
-If `retire_reflection` doesn't exist, do direct DB update under `memory.db`:
-
-```sql
-UPDATE reflections SET status = 'retired' WHERE id = '<id>';
-```
-
-- [ ] **Step 5: Verify knowledge file indexes**
+For each promoted reflection id, mark it retired via the service-layer helper. In the better-memory venv:
 
 ```bash
 cd /c/Users/gethi/source/better-memory
-uv run python -m better_memory.knowledge.index --rebuild
-uv run python -c "from better_memory.services.knowledge import search; print([h.title for h in search(query='git worktree remove windows', scope='general', limit=5)])"
+uv run python
 ```
 
-Expected: the promoted "Windows: don't git worktree remove" entry appears in results.
+Then:
 
-- [ ] **Step 6: Commit**
+```python
+import sqlite3
+from pathlib import Path
+from better_memory.services.reflection import ReflectionService
 
-```bash
-git add knowledge-base/standards/ralph-runtime.md
-git commit -m "knowledge(standards): promote ralph-runtime workflow rules to general scope"
+conn = sqlite3.connect(Path.home() / ".better-memory" / "memory.db")
+conn.row_factory = sqlite3.Row
+svc = ReflectionService(conn=conn)
+
+for rid in [
+    "0dda832cbec346c29e5e81e3cb2113f9",
+    "fc2ee30d154d46e3af52b43d0e012767",
+    "1f8af6e130d44b739c6c88b1fcf3e169",
+    "f21feb94276d4ddaa93e5f2edd29e7d7",
+    "e4d4f4da8bf244d2b6450a7187ff1004",
+    "2202addd219a40be87276164dd1897e8",
+    "fa2ddd177e944a4c999d4bff431b2525",
+    "f0089012126a47d6b21a1aadaaba7b6c",
+]:
+    svc.retire(reflection_id=rid)
+    print(f"retired {rid}")
+conn.commit()
 ```
 
-- [ ] **Step 7: Push + open PR**
+(If `ReflectionService` requires extra constructor args, fall back to direct SQL: `UPDATE reflections SET status = 'retired', updated_at = datetime('now') WHERE id = ?`.)
 
-```bash
-git push -u origin knowledge-promote-ralph-runtime
-gh pr create --title "knowledge(standards): promote ralph-runtime workflow rules" --body "Curation pass: nine ralph-project reflections that name generic workflow discipline (Windows worktree hazard, PR review thread resolve step, feature-branch-at-task-start, etc) promoted to scope=general curated knowledge and retired from the ralph project. See plan docs/superpowers/plans/2026-05-28-ralph-executor-memory-recording.md Task 7."
+- [ ] **Step 4: Restart the MCP server to reindex**
+
+The knowledge-base reindex runs automatically at MCP server startup (mtime-driven, fast). Disconnect / reconnect the better-memory MCP in the IDE host (or restart the editor) so the new standards file is picked up.
+
+- [ ] **Step 5: Verify the standards entry surfaces in search**
+
+In a fresh Claude session (or via the MCP tool from this session), call:
+
 ```
+mcp__better-memory__knowledge_search query="git worktree remove windows"
+```
+
+Expected: a result pointing at `standards/ralph-runtime.md` with rank near the top.
+
+Fallback if search returns no results: open the better-memory UI (the running URL at the start of this session) and confirm the file appears under the Knowledge tab.
+
+- [ ] **Step 6: (Optional) PR a copy of `ralph-runtime.md` upstream**
+
+If the cross-project ralph-runtime rules are valuable to anyone else running ralph against better-memory, consider opening a PR against `better-memory` to seed `knowledge-base/standards/ralph-runtime.md` as a starter — but this is optional and outside the critical path. The local copy in `~/.better-memory/` already satisfies the recording-and-retrieval goal.
 
 ---
 

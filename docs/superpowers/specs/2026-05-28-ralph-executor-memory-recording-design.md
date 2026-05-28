@@ -13,7 +13,7 @@ Two compounding causes:
 
 - Executor subagent observations land in the **target repo's** project scope (PBI's `target_repo`).
 - Subagent actually records non-obvious facts as the iteration progresses, not at exit only (iterations time out mid-work; CLAUDE.md style inline triggers protect against that).
-- Subagent retrieves both the target-repo's memory AND any cross-project workflow rules curated as general-scope knowledge.
+- Subagent retrieves both the target-repo's memory AND any cross-project workflow rules curated as standards-scope knowledge (the `knowledge-base/standards/` bucket, which always surfaces in `knowledge.search`).
 
 ## Design
 
@@ -43,23 +43,25 @@ Add a "Recording learnings (better-memory)" section to `prompt/PROMPT.md`. Inlin
 
 Each trigger should call `mcp__better-memory__memory_observe` directly. The env var (component 1) guarantees the observation lands in the right project.
 
-### 3. Retrieval: target-repo memory + general-scope knowledge (C1)
+### 3. Retrieval: target-repo memory + standards knowledge (C1)
 
 At iteration start, the subagent runs two retrievals:
 
 - `mcp__better-memory__memory_retrieve` — scoped to the target repo via the env var. Returns recent project-specific observations and reflections.
-- `mcp__better-memory__knowledge_search` with `scope=general` — returns curated cross-project workflow rules.
+- `mcp__better-memory__knowledge_search` — returns curated knowledge entries. The MCP tool exposes only `query` and (optional) `project`; there is no `scope` parameter. Entries living under `knowledge-base/standards/` always surface regardless of `project` — that directory is the "general / cross-project" bucket in practice.
 
 The PROMPT.md addition explicitly directs both calls at iteration start.
 
-### 4. Curation pass: ralph-workflow reflections → general-scope knowledge (one-shot)
+### 4. Curation pass: ralph-workflow reflections → standards knowledge (one-shot)
 
 Audit existing reflections in the `ralph` project. Classify each as:
 
 - **ralph as project under development** — about the ralph codebase itself (e.g. "executor: feature-branch checkout of PBI HISTORY.md from ralph-queue"). Stays in `ralph` project scope.
-- **ralph as runtime workflow rule** — generic discipline that applies whenever Claude operates inside a ralph iteration (e.g. "Windows: don't `git worktree remove` from a shell whose CWD is or was inside the worktree", "create the feature branch at task start"). Promote to curated markdown under better-memory `knowledge-base/standards/` with `scope=general`. Drop the reflection from the project once promoted.
+- **ralph as runtime workflow rule** — generic discipline that applies whenever Claude operates inside a ralph iteration (e.g. "Windows: don't `git worktree remove` from a shell whose CWD is or was inside the worktree", "create the feature branch at task start"). Promote to curated markdown at `~/.better-memory/knowledge-base/standards/ralph-runtime.md` — the standards directory is the cross-project bucket; entries surface in `knowledge.search` regardless of project. Retire the reflection from the project once promoted via `ReflectionService.retire(reflection_id=...)`.
 
 Promotion produces hand-curated, durable rules — higher quality than raw reflection signal mixed across scopes.
+
+The knowledge-base lives at `~/.better-memory/knowledge-base/` (user data), not inside the better-memory repo. Curation is a local one-shot, not a PR — the MCP server auto-reindexes on startup (mtime-driven).
 
 ## Components affected
 
@@ -70,7 +72,7 @@ Promotion produces hand-curated, durable rules — higher quality than raw refle
 | `ralph_executor/claude_spawn.py` `_build_argv` callers | Set `BETTER_MEMORY_PROJECT=<repo-name>` in subprocess env |
 | `prompt/PROMPT.md` | New "Recording learnings (better-memory)" section with inline triggers + iteration-start retrieval calls |
 | better-memory `knowledge-base/standards/` | New markdown entries for ralph-runtime workflow rules (curation pass) |
-| better-memory `ralph` project reflections | Drop the reflections promoted into general-scope knowledge |
+| better-memory `ralph` project reflections | Retire the reflections promoted into standards-scope knowledge via `ReflectionService.retire` |
 
 ## Risks
 
@@ -86,4 +88,4 @@ Promotion produces hand-curated, durable rules — higher quality than raw refle
 
 1. **better-memory GitHub issue + PR.** Add `BETTER_MEMORY_PROJECT` env-var override to the project resolver. Document in `website/configuration.md`.
 2. **ralph PR.** Wire `BETTER_MEMORY_PROJECT` in `claude_spawn` subprocess env. Add "Recording learnings" section to `prompt/PROMPT.md` (inline triggers + iteration-start retrieval).
-3. **Curation pass.** Audit existing `ralph` reflections, promote ralph-runtime workflow rules into general-scope knowledge entries, retire the promoted reflections.
+3. **Curation pass (local user-data, no PR).** Audit existing `ralph` reflections, promote ralph-runtime workflow rules into `~/.better-memory/knowledge-base/standards/ralph-runtime.md`, retire the promoted reflections via `ReflectionService.retire`.
