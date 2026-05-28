@@ -591,6 +591,75 @@ def test_cli_queue_branch_override_lands_on_cfg(
     assert new_cfg.queue_branch == "override-branch"
 
 
+def test_cli_queue_branch_rejects_empty(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch '   ' (whitespace-only) raises ConfigError."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="   ",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="non-empty"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_queue_branch_rejects_head(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch HEAD raises ConfigError (not a plain branch name)."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="HEAD",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="plain branch name"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_queue_branch_rejects_refs_prefix(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch refs/heads/foo raises ConfigError (not a plain branch name)."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="refs/heads/foo",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="plain branch name"):
+        _apply_overrides(cfg, args)
+
+
 def test_main_rejects_watch_with_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
