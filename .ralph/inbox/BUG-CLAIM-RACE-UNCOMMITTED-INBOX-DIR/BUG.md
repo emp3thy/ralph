@@ -1,12 +1,13 @@
 ---
 id: BUG-CLAIM-RACE-UNCOMMITTED-INBOX-DIR
 type: bug
-status: blocked
+status: inbox
 severity: high
 attempts: 0
 created_at: 2026-05-28T08:30:00+00:00
-updated_at: 2026-05-28T11:46:29+00:00
+updated_at: 2026-05-28T14:30:00+00:00
 depends_on: []
+target_repo: https://github.com/emp3thy/ralph
 ---
 
 # Claim crashes when inbox PBI dir exists on disk but is not yet committed
