@@ -22,12 +22,24 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
+QUEUE_REPO_URL = "https://github.com/example/queue"
+
+
+def _write_queue_repo_toml(repo: Path) -> None:
+    cfg_dir = repo / ".ralph"
+    cfg_dir.mkdir(exist_ok=True)
+    (cfg_dir / "config.toml").write_text(
+        f'queue_repo = "{QUEUE_REPO_URL}"\n',
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture
 def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    _write_queue_repo_toml(git_repo)
     for var in (
-        "RALPH_QUEUE_BRANCH",
         "RALPH_MAIN_BRANCH",
         "RALPH_MAX_ATTEMPTS",
         "RALPH_LOG_LEVEL",
@@ -44,7 +56,7 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
 def test_load_config_uses_defaults(env_minimal: Path) -> None:
     cfg = load_config()
     assert cfg.repo_path == env_minimal
-    assert cfg.queue_branch == "ralph-queue"
+    assert cfg.queue_repo == QUEUE_REPO_URL
     assert cfg.main_branch == "main"
     assert cfg.max_attempts == 20
     assert cfg.log_level == logging.INFO
@@ -56,7 +68,6 @@ def test_load_config_uses_defaults(env_minimal: Path) -> None:
 
 
 def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_minimal: Path) -> None:
-    monkeypatch.setenv("RALPH_QUEUE_BRANCH", "custom-queue")
     monkeypatch.setenv("RALPH_MAIN_BRANCH", "trunk")
     monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "5")
     monkeypatch.setenv("RALPH_LOG_LEVEL", "DEBUG")
@@ -64,13 +75,56 @@ def test_load_config_overrides_via_env(monkeypatch: pytest.MonkeyPatch, env_mini
     monkeypatch.setenv("RALPH_CLAUDE_BINARY", "/usr/local/bin/claude")
     monkeypatch.setenv("RALPH_CLAUDE_PERMISSION_MODE", "acceptEdits")
     cfg = load_config()
-    assert cfg.queue_branch == "custom-queue"
     assert cfg.main_branch == "trunk"
     assert cfg.max_attempts == 5
     assert cfg.log_level == logging.DEBUG
     assert cfg.iteration_sleep_seconds == 0.5
     assert cfg.claude_binary == "/usr/local/bin/claude"
     assert cfg.claude_permission_mode == "acceptEdits"
+
+
+def test_executor_config_has_queue_repo_field() -> None:
+    from dataclasses import fields
+
+    from ralph_executor.config import ExecutorConfig
+
+    names = {f.name for f in fields(ExecutorConfig)}
+    assert "queue_repo" in names
+    assert "queue_branch" not in names
+
+
+def test_load_config_rejects_missing_queue_repo(
+    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+) -> None:
+    """queue_repo is required. Missing TOML key → ConfigError."""
+    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    # Write a TOML that lacks queue_repo.
+    (git_repo / ".ralph").mkdir(exist_ok=True)
+    (git_repo / ".ralph" / "config.toml").write_text("main_branch = 'main'\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="queue_repo"):
+        load_config()
+
+
+def test_load_config_rejects_bad_queue_repo_url(
+    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+) -> None:
+    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    (git_repo / ".ralph").mkdir(exist_ok=True)
+    (git_repo / ".ralph" / "config.toml").write_text(
+        'queue_repo = "ftp://example.com/queue"\n', encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="queue_repo"):
+        load_config()
+
+
+def test_load_config_accepts_queue_repo(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> None:
+    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    _write_queue_repo_toml(git_repo)
+    cfg = load_config()
+    assert cfg.queue_repo == QUEUE_REPO_URL
 
 
 def test_load_config_invalid_permission_mode(
@@ -106,6 +160,7 @@ def test_load_config_uses_cwd_when_repo_path_unset(
     repo = tmp_path / "in-here"
     repo.mkdir()
     (repo / ".git").mkdir()
+    _write_queue_repo_toml(repo)
     monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.chdir(repo)
@@ -122,6 +177,7 @@ def test_load_config_missing_anthropic_key_is_optional(
     """
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _write_queue_repo_toml(git_repo)
     cfg = load_config()
     assert cfg.anthropic_api_key == ""
 
@@ -209,4 +265,4 @@ def test_load_config_auto_merge_clean_prs_env_invalid(
 def test_executor_config_is_frozen(env_minimal: Path) -> None:
     cfg = load_config()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.queue_branch = "other"  # type: ignore[misc]
+        cfg.queue_repo = "other"  # type: ignore[misc]

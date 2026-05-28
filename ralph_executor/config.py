@@ -35,9 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from ralph_executor.url_utils import parse_target_repo
+
 # tomllib.load returns dict[str, Any] for any parseable TOML document.
 
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
 DEFAULT_MAIN_BRANCH = "main"
 # Counts only FAILED iterations (stuck / error) — partial is multi-step
 # progress and doesn't decrement the budget. 20 gives a long plan plenty
@@ -111,7 +112,11 @@ _FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
 # logged as a warning and ignored — keeps forward compatibility cheap.
 _TOML_KNOWN_KEYS = frozenset(
     {
-        "queue_branch",
+        # Queue repo HTTPS URL. Required — operators set this once via TOML
+        # (no env var, no default; the loop crashes without it). The
+        # executor clones it into ``<workspace_root>/queue/`` and reads /
+        # writes ``.ralph/`` from that clone.
+        "queue_repo",
         "main_branch",
         "max_attempts",
         "log_level",
@@ -179,7 +184,11 @@ class ExecutorConfig:
     """
 
     repo_path: Path
-    queue_branch: str
+    # HTTPS URL of the queue repo (e.g. ``https://github.com/emp3thy/ralph-queue``).
+    # Required via TOML (or the ``--queue-repo`` CLI flag). The loop clones
+    # this into ``<workspace_root>/queue/`` once and pulls on subsequent
+    # iterations; every queue mutation pushes back to its ``main`` branch.
+    queue_repo: str
     main_branch: str
     max_attempts: int
     log_level: int
@@ -474,13 +483,23 @@ def load_config() -> ExecutorConfig:
     toml_overrides = _load_toml_overrides(repo_path)
     source_label = str(repo_path / ".ralph" / "config.toml")
 
-    queue_branch = _resolve_str(
-        name="queue_branch",
-        env_name="RALPH_QUEUE_BRANCH",
-        toml_value=toml_overrides.get("queue_branch"),
-        default=DEFAULT_QUEUE_BRANCH,
-        source_label=source_label,
-    )
+    queue_repo_value = toml_overrides.get("queue_repo")
+    if queue_repo_value is None:
+        raise ConfigError(
+            f"{source_label}: queue_repo not configured. "
+            "Add 'queue_repo = \"<url>\"' to your config.toml or pass --queue-repo."
+        )
+    if not isinstance(queue_repo_value, str):
+        raise ConfigError(
+            f"{source_label}: queue_repo must be a string, got {type(queue_repo_value).__name__}"
+        )
+    try:
+        parse_target_repo(queue_repo_value)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{source_label}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
+        ) from exc
+    queue_repo = queue_repo_value
     main_branch = _resolve_str(
         name="main_branch",
         env_name="RALPH_MAIN_BRANCH",
@@ -661,7 +680,7 @@ def load_config() -> ExecutorConfig:
 
     return ExecutorConfig(
         repo_path=repo_path,
-        queue_branch=queue_branch,
+        queue_repo=queue_repo,
         main_branch=main_branch,
         max_attempts=max_attempts,
         log_level=log_level,

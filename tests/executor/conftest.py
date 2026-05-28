@@ -191,7 +191,7 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
     """Build an ExecutorConfig pointing at the fake repo + fake claude."""
     return ExecutorConfig(
         repo_path=fake_repo,
-        queue_branch="ralph-queue",
+        queue_repo="https://github.com/example/queue",
         main_branch="main",
         max_attempts=3,
         log_level=20,  # logging.INFO
