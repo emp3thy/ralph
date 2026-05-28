@@ -349,6 +349,16 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         log_level = int(logging.getLevelName(args.log_level))
         changed = True
     if getattr(args, "queue_repo", None):
+        # Mirror load_config's parse_target_repo validation so the CLI
+        # override surfaces a clean ConfigError on a malformed URL
+        # rather than crashing inside ensure_queue_clone with an
+        # unhandled QueueCloneError later in iterate_once.
+        from ralph_executor.url_utils import parse_target_repo
+
+        try:
+            parse_target_repo(args.queue_repo)
+        except ValueError as exc:
+            raise ConfigError(f"--queue-repo: {exc}") from exc
         queue_repo = args.queue_repo
         changed = True
     # --watch overrides any TOML / env value; absence of the flag does NOT
