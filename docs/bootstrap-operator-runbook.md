@@ -322,14 +322,25 @@ Now Ralph picks it up next iteration.
 
 ### 4.3 Run Ralph continuously
 
-For a normal Stage B work session, run Ralph in a terminal you watch:
+For a normal Stage B work session — you're feeding PBIs into `inbox/`
+as you go and want Ralph to keep watching — pass `--watch`:
 
 ```bash
 cd ~/source/ralph
-uv run ralph-executor   # no --once = loop forever
+uv run ralph-executor --watch
 ```
 
-It loops, polling `inbox/` for new PBIs every iteration. When inbox is empty and current is empty, it sleeps briefly between checks.
+`--watch` puts ralph in daemon mode: it polls `inbox/` every
+iteration and, when inbox + current are both empty, sleeps briefly
+between checks.
+
+**Without `--watch` ralph drains and exits.** The plain
+`uv run ralph-executor` form is built for unattended pod / container
+runs — once the queue is empty for `idle_exit_threshold` (default `2`)
+consecutive iterations, the loop exits 0 with a
+`queue drained -- exiting …` line that supervisors can grep for. Use
+that form for one-shot drains; use `--watch` when you actually want to
+keep the process alive.
 
 **To pause:** Ctrl+C. Anything in `current/` stays put; Ralph resumes on next start.
 
