@@ -1,42 +1,51 @@
 ---
 name: ralph-promote
-description: Bump a PBI's severity. Locates the PBI in any state folder under .ralph/ (inbox, current, pending-pr, blocked, done, archive), updates the severity field in its frontmatter (and refreshes updated_at), commits to ralph-queue, and pushes. Use when "normal" became "urgent" without changing the work item itself. Severity must be one of critical, high, normal, low.
+description: Move a PBI between state folders in the queue clone. Locates the PBI under `.ralph/<from>/<id>/`, `git mv`s it to `.ralph/<to>/<id>/`, rewrites the entry file's `status` and `updated_at` frontmatter, commits, and pushes `main` to the queue remote. This is the operator's manual override for the executor's automatic state transitions — e.g. nudging an `inbox/` PBI into `current/` so the next iteration claims it.
 ---
 
 # ralph-promote
 
 ## What this skill does
 
-`ralph-promote` is the human knob for severity. It does not change the
-PBI's body, type, or state folder — it only edits the `severity` field
-on the PBI's entry file frontmatter (`PBI.md` for features and PR
-feedback, `BUG.md` for bugs) and refreshes `updated_at`. It also
-appends a single line to `HISTORY.md` so the change is auditable. The
-result is committed and pushed to `ralph-queue`.
+`ralph-promote` moves a PBI directory between state folders in the
+queue clone (`<workspace_root>/queue/` on `main`). It updates the
+entry file's `status` and `updated_at` frontmatter to match the new
+state, appends a single line to `HISTORY.md`, commits the move, and
+pushes `main` to `origin`.
+
+The skill does NOT modify the PBI's body, type, severity, or any other
+field. It is purely a state-folder move.
 
 ## When to use it
 
-- A normal-priority bug has been open long enough to need escalation.
-- A feature originally tagged `low` has become a blocker for another
-  team's work.
-- A critical bug was mis-classified as high during submission.
+- Manually queue an `inbox/` PBI into `current/` ahead of normal
+  ordering.
+- Demote a `current/` PBI back to `inbox/` so the executor releases
+  it without cancelling.
+- Re-open a `blocked/` PBI by moving it back to `inbox/` after the
+  blocker is resolved (`ralph-triage --to inbox` is the more common
+  knob for this, and resets `attempts:` — use `ralph-promote` only
+  when you want the attempt count preserved).
+- Send a `done/` or `pending-pr/` PBI to `archive/` when the work no
+  longer belongs in the active board.
 
 ## Inputs
 
 | Flag | Required | Description |
 |---|---|---|
-| `--pbi-id <id>` | yes | PBI identifier matching the directory name under any `.ralph/<state>/` folder. |
-| `--severity <level>` | yes | New severity. One of `critical`, `high`, `normal`, `low`. |
-| `--repo <path>` | yes | Absolute path to an existing checkout of the target service repo. |
-| `--branch <name>` | no | Queue branch name. Default: `ralph-queue` (overridable via `RALPH_QUEUE_BRANCH`). |
-| `--no-push` | no | Commit locally but do not push. |
-| `--dry-run` | no | Compute and log without writing, committing, or pushing. |
+| `--pbi-id <id>` | yes | PBI identifier matching the directory name under `.ralph/<from>/`. |
+| `--from <state>` | yes | Source state folder. One of `current`, `inbox`, `pending-pr`, `blocked`, `done`, `archive`. |
+| `--to <state>` | yes | Destination state folder. Must differ from `--from`. |
+| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
+| `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
+| `--no-push` | no | Commit the move locally but do not push. |
+| `--dry-run` | no | Compute and log without writing, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
 
-## Environment variables
-
-| Variable | Purpose |
-|---|---|
-| `RALPH_QUEUE_BRANCH` | Default queue branch name; overridden by `--branch`. Optional; defaults to `ralph-queue`. |
+The skill resolves `workspace_root` and `queue_repo` from
+`~/.ralph/config.toml` (created via `ralph-executor init`).
+`--workspace` and `--queue-repo` override the TOML values. There is no
+env-var fallback on the skill surface — operator paths stay on the
+TOML / CLI rails.
 
 ## Output
 
@@ -45,32 +54,38 @@ Prints a JSON summary to stdout on success. Example:
 ```json
 {
   "pbi_id": "WI-1234",
-  "previous_severity": "normal",
-  "new_severity": "high",
-  "state_folder": "inbox",
-  "entry_file": ".ralph/inbox/WI-1234/PBI.md",
-  "repo_path": "/home/dev/service-auth",
-  "branch": "ralph-queue",
+  "from_state": "inbox",
+  "to_state": "current",
+  "entry_file": ".ralph/current/WI-1234/PBI.md",
+  "queue_clone": "/home/dev/ralph-workspaces/queue",
   "commit_sha": "abcdef0123456789",
   "pushed": true,
-  "dry_run": false
+  "dry_run": false,
+  "already_promoted": false
 }
 ```
+
+Progress messages go to stderr.
 
 ## How it is invoked
 
 ```bash
 uv run python skills/ralph-promote/scripts/promote.py \
     --pbi-id WI-1234 \
-    --severity high \
-    --repo /path/to/service-auth
+    --from inbox \
+    --to current
 ```
 
 ## What this skill does NOT do
 
-- It does not move the PBI between state folders. A PBI stays where it
-  was; only the severity changes.
-- It does not change other frontmatter fields (`status`, `attempts`,
-  `type`, `id`, `created_at`). Those are owned by the executor or are
-  set once at submission.
-- It does not require ADO credentials — this is purely a git mutation.
+- It does not change `severity`, `type`, `attempts`, or any other
+  frontmatter field. Only `status` (matching the destination folder)
+  and `updated_at` are rewritten.
+- It does not edit the PBI body. The entry file's content past the
+  frontmatter is preserved verbatim.
+- It does not touch the target service repo. All mutation is against
+  the queue clone.
+- It does not coordinate with the executor's claim machinery — if you
+  promote a PBI into `current/` while another is already there, you
+  will create the two-PBIs-in-current state that the executor refuses
+  on its next iteration. Use this skill deliberately.

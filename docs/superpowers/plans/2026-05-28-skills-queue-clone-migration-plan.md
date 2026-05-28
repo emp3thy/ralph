@@ -276,20 +276,20 @@ git commit -m "feat(ralph-cancel): operate on queue clone; --pbi-id only"
 - Modify: `skills/ralph-promote/scripts/promote.py`, `skills/ralph-promote/SKILL.md`
 - Test: `tests/skills/test_ralph_promote.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_promote.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote) seeded with a PBI in the source state folder.
 - An empty workspace dir.
 - Test: after running `ralph-promote --pbi-id <id> --from inbox --to current`, the fake bare remote has a commit moving the PBI dir from `.ralph/inbox/<id>/` to `.ralph/current/<id>/` on `main`.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/skills/test_ralph_promote.py -v
 ```
 
-- [ ] **Step 3: Edit `skills/ralph-promote/scripts/promote.py`**
+- [x] **Step 3: Edit `skills/ralph-promote/scripts/promote.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers.
 - Keep `--pbi-id` and the `--from` / `--to` state arguments.
@@ -297,15 +297,15 @@ uv run pytest tests/skills/test_ralph_promote.py -v
 - Call `acquire_queue_clone(workspace_root, queue_repo)`.
 - `git mv` the PBI dir between state folders inside the clone, rewrite frontmatter `status:` and `updated_at:`, commit with the existing message style, push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-promote/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--from`, `--to`).
+- [x] **Step 4: Update `skills/ralph-promote/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--from`, `--to`).
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_promote.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-promote/ tests/skills/test_ralph_promote.py

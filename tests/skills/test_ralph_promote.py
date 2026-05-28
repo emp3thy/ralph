@@ -1,12 +1,14 @@
 """Tests for the ``ralph-promote`` skill's entry script.
 
-``ralph-promote`` bumps a PBI's ``severity`` frontmatter field. The PBI
-may live in any state folder under ``.ralph/`` -- promote is purely a
-metadata update, not a state change. The skill commits and pushes to
-``ralph-queue``.
+``ralph-promote`` moves a PBI directory between state folders in the
+queue clone (e.g. ``inbox/`` → ``current/``), updates the entry file's
+``status`` + ``updated_at`` frontmatter, commits, and pushes ``main``
+to the queue remote. It is the operator's manual override for the
+executor's automatic state transitions.
 
-Tests use a local bare repo + working clone in ``tmp_path`` and never
-touch the network.
+Tests build a bare git repo as the queue remote, seed PBIs onto its
+``main`` branch, and verify each behaviour without any network or real
+Git host.
 """
 
 from __future__ import annotations
@@ -50,66 +52,105 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "ralph-promote@example.com")
+    _git(repo, "config", "user.name", "ralph-promote")
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Iterator[Path]:
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-    subprocess.run(["git", "init", str(work)], check=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    yield work
+def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
+    """Build a bare queue remote + an empty workspace dir.
+
+    The bare remote is seeded with an empty ``main`` so
+    ``ensure_queue_clone`` can clone it cleanly. Returns
+    ``(workspace_root, queue_repo_url)`` for the test to pass into
+    ``ralph-promote`` via ``--workspace`` / ``--queue-repo``.
+    """
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    _configure_identity(seed)
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+    yield workspace, str(bare)
 
 
 def _seed_pbi(
-    repo: Path,
+    bare_url: str,
+    tmp_path: Path,
     state_folder: str,
     pbi_id: str,
+    *,
+    entry_file: str = "PBI.md",
     pbi_type: str = "feature",
-    severity: str = "normal",
-) -> Path:
-    _git(repo, "checkout", "ralph-queue")
-    pbi_dir = repo / ".ralph" / state_folder / pbi_id
+) -> None:
+    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back."""
+    work = tmp_path / f"seed-{pbi_id}-{state_folder}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / state_folder / pbi_id
     pbi_dir.mkdir(parents=True)
-    entry_name = {
-        "feature": "PBI.md",
-        "bug": "BUG.md",
-        "pr-feedback": "FEEDBACK.md",
-    }[pbi_type]
-    (pbi_dir / entry_name).write_text(
+    (pbi_dir / entry_file).write_text(
         "---\n"
         f"id: {pbi_id}\n"
         f"type: {pbi_type}\n"
         f"status: {state_folder}\n"
-        f"severity: {severity}\n"
-        "attempts: 2\n"
-        'created_at: "2026-05-20T08:00:00+00:00"\n'
-        'updated_at: "2026-05-22T09:30:00+00:00"\n'
+        "severity: normal\n"
+        "attempts: 0\n"
+        'created_at: "2026-05-24T10:00:00+00:00"\n'
+        'updated_at: "2026-05-24T10:00:00+00:00"\n'
         "---\n"
         "\n"
-        "# body text\n"
-        "\n"
-        "paragraph two\n",
+        "# body\n",
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _git(repo, "add", f".ralph/{state_folder}/{pbi_id}")
-    _git(repo, "commit", "-m", f"chore(test): seed {pbi_id}")
-    _git(repo, "push", "origin", "ralph-queue")
-    _git(repo, "checkout", "main")
-    return pbi_dir
+    _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
+    _git(work, "push", "origin", "main")
 
 
-def _read_frontmatter(entry_file: Path) -> dict[str, object]:
-    text = entry_file.read_text(encoding="utf-8")
+def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
+    verify = tmp_path / f"verify-{Path(bare_url).name}"
+    subprocess.run(
+        ["git", "clone", bare_url, str(verify)],
+        check=True,
+        capture_output=True,
+    )
+    return verify
+
+
+def _argv(
+    *,
+    pbi_id: str,
+    workspace: Path,
+    queue_repo: str,
+    from_state: str,
+    to_state: str,
+    extra: list[str] | None = None,
+) -> list[str]:
+    argv = [
+        "--pbi-id",
+        pbi_id,
+        "--from",
+        from_state,
+        "--to",
+        to_state,
+        "--workspace",
+        str(workspace),
+        "--queue-repo",
+        queue_repo,
+    ]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+def _read_frontmatter(entry: Path) -> dict[str, object]:
+    text = entry.read_text(encoding="utf-8")
     lines = text.splitlines()
     assert lines[0] == "---"
     end = next(i for i, line in enumerate(lines[1:], start=1) if line == "---")
@@ -118,482 +159,379 @@ def _read_frontmatter(entry_file: Path) -> dict[str, object]:
     return result
 
 
-def test_promote_feature_pbi_in_inbox(
-    git_repo: Path,
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
+
+
+def test_promote_moves_pbi_between_states(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-100", pbi_type="feature", severity="normal")
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-100")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-100",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(
+            pbi_id="WI-100",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_id"] == "WI-100"
-    assert payload["previous_severity"] == "normal"
-    assert payload["new_severity"] == "high"
-    assert payload["state_folder"] == "inbox"
+    assert payload["from_state"] == "inbox"
+    assert payload["to_state"] == "current"
     assert payload["pushed"] is True
     assert payload["commit_sha"]
+    assert payload["already_promoted"] is False
 
-    _git(git_repo, "checkout", "ralph-queue")
-    entry = git_repo / ".ralph" / "inbox" / "WI-100" / "PBI.md"
-    fm = _read_frontmatter(entry)
-    assert fm["severity"] == "high"
-    assert fm["id"] == "WI-100"
-    assert fm["type"] == "feature"
-    assert fm["attempts"] == 2
-    assert fm["created_at"] == "2026-05-20T08:00:00+00:00"
-    assert fm["updated_at"] != "2026-05-22T09:30:00+00:00"
+    verify = _verify_clone(tmp_path, queue_repo)
+    assert not (verify / ".ralph" / "inbox" / "WI-100").exists()
+    moved = verify / ".ralph" / "current" / "WI-100" / "PBI.md"
+    assert moved.is_file()
+    fm = _read_frontmatter(moved)
+    assert fm["status"] == "current"
+    assert "updated_at" in fm
 
-    latest = _git(git_repo, "log", "-1", "--pretty=%s").strip()
-    assert latest == "chore(queue): promote WI-100 (normal -> high)"
+    subject = _git(verify, "log", "-1", "--pretty=%s").strip()
+    assert subject == "chore(queue): promote WI-100 (inbox -> current)"
 
 
 def test_promote_bug_pbi_uses_bug_md(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "blocked", "BUG-X", pbi_type="bug", severity="high")
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "blocked", "BUG-1", entry_file="BUG.md", pbi_type="bug")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "BUG-X",
-            "--severity",
-            "critical",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(
+            pbi_id="BUG-1",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="blocked",
+            to_state="inbox",
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
 
-    _git(git_repo, "checkout", "ralph-queue")
-    entry = git_repo / ".ralph" / "blocked" / "BUG-X" / "BUG.md"
-    fm = _read_frontmatter(entry)
-    assert fm["severity"] == "critical"
+    verify = _verify_clone(tmp_path, queue_repo)
+    moved = verify / ".ralph" / "inbox" / "BUG-1" / "BUG.md"
+    assert moved.is_file()
+    fm = _read_frontmatter(moved)
+    assert fm["status"] == "inbox"
     assert fm["type"] == "bug"
 
 
-def test_promote_rejects_unknown_severity(
-    git_repo: Path,
+def test_promote_errors_on_missing_pbi_at_from_state(
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-200", severity="normal")
+    workspace, queue_repo = queue_env
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
-    with pytest.raises(SystemExit) as exc:
-        promote_module.main(
-            [
-                "--pbi-id",
-                "WI-200",
-                "--severity",
-                "urgent",
-                "--repo",
-                str(git_repo),
-            ]
-        )
-    assert exc.value.code == 2
-
-
-def test_promote_errors_on_missing_pbi(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-NOPE",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(
+            pbi_id="WI-NOPE",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
     )
     assert exit_code == 2
     stderr = capsys.readouterr().err.lower()
     assert "not found" in stderr or "no such" in stderr or "missing" in stderr
 
 
-def test_promote_preserves_body_content(
-    git_repo: Path,
+def test_promote_refuses_same_from_and_to(
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-300", severity="low")
+    workspace, queue_repo = queue_env
 
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-300",
-            "--severity",
-            "normal",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(
+            pbi_id="WI-1",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="inbox",
+        )
     )
-    assert exit_code == 0
-
-    _git(git_repo, "checkout", "ralph-queue")
-    text = (git_repo / ".ralph" / "inbox" / "WI-300" / "PBI.md").read_text(encoding="utf-8")
-    assert "# body text" in text
-    assert "paragraph two" in text
-    assert text.count("---") == 2
+    assert exit_code == 2
+    stderr = capsys.readouterr().err.lower()
+    assert "differ" in stderr or "same" in stderr
 
 
-def test_promote_no_push_leaves_remote_unchanged(
-    git_repo: Path,
+def test_promote_refuses_unknown_state(
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-400", severity="normal")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+
+    with pytest.raises(SystemExit) as exc:
+        promote_module.main(
+            _argv(
+                pbi_id="WI-1",
+                workspace=workspace,
+                queue_repo=queue_repo,
+                from_state="inbox",
+                to_state="bogus",
+            )
+        )
+    assert exc.value.code == 2
+
+
+def test_promote_no_push_keeps_remote_unchanged(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-200")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    before = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
 
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-400",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _argv(
+            pbi_id="WI-200",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+            extra=["--no-push"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
     assert before == after
 
 
 def test_promote_dry_run_writes_nothing(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-500", severity="normal")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-300")
+    before = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-500",
-            "--severity",
-            "critical",
-            "--repo",
-            str(git_repo),
-            "--dry-run",
-        ]
+        _argv(
+            pbi_id="WI-300",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+            extra=["--dry-run"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["pushed"] is False
     assert payload["commit_sha"] == ""
 
-    _git(git_repo, "checkout", "ralph-queue")
-    fm = _read_frontmatter(git_repo / ".ralph" / "inbox" / "WI-500" / "PBI.md")
-    assert fm["severity"] == "normal"
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    # Dry-run must NOT clone the queue or push.
+    assert not (workspace / "queue").exists()
+    after = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     assert before == after
 
 
-def test_promote_records_history_entry(
-    git_repo: Path,
+def test_promote_idempotent_when_already_at_destination(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-600", severity="normal")
+    """If HEAD already shows the PBI at the destination state, the
+    operation is a no-op — already_promoted=True, no new commit."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-400")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-400",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["already_promoted"] is True
+    assert payload["commit_sha"] == ""
+    assert payload["pushed"] is False
+
+
+def test_promote_appends_history_entry(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-500")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-500",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    history = (verify / ".ralph" / "current" / "WI-500" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "ralph-promote" in history
+    assert "inbox -> current" in history
+
+
+def test_promote_errors_when_queue_repo_unset(
+    tmp_path: Path,
+    promote_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without --queue-repo and without TOML queue_repo, exit 2 with a clear error."""
+    workspace = tmp_path / "ws"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    exit_code = promote_module.main(
+        [
+            "--pbi-id",
+            "WI-1",
+            "--from",
+            "inbox",
+            "--to",
+            "current",
+            "--workspace",
+            str(workspace),
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "queue_repo" in err.lower()
+
+
+def test_promote_queue_repo_resolved_from_toml(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When --queue-repo is omitted, the TOML value is used."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-600")
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    (fake_home / ".ralph").mkdir()
+    # file:// URL with forward slashes survives TOML basic-string escaping on Windows.
+    queue_url = "file:///" + Path(queue_repo).as_posix().lstrip("/")
+    (fake_home / ".ralph" / "config.toml").write_text(
+        f'queue_repo = "{queue_url}"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = promote_module.main(
         [
             "--pbi-id",
             "WI-600",
-            "--severity",
-            "critical",
-            "--repo",
-            str(git_repo),
-        ]
-    )
-    assert exit_code == 0
-
-    _git(git_repo, "checkout", "ralph-queue")
-    history = (git_repo / ".ralph" / "inbox" / "WI-600" / "HISTORY.md").read_text(encoding="utf-8")
-    assert "ralph-promote" in history
-    assert "normal -> critical" in history
-
-
-def test_promote_runs_full_path_when_severity_on_disk_but_not_committed(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 flagged that the idempotency check
-    compared the working-tree severity, so a previously-failed promote
-    whose ``write_frontmatter`` succeeded but whose ``git commit`` failed
-    left the new severity on disk while HEAD still had the old one. The
-    next invocation read ``previous_severity == args.severity`` and
-    exited 0 with ``previous_severity == new_severity`` — never landing
-    the change on the queue branch. Fix reads HEAD's frontmatter via
-    ``read_path_from_head``; this test seeds the bad state and asserts
-    the next invocation commits + pushes."""
-    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-650", pbi_type="feature", severity="normal")
-
-    _git(git_repo, "checkout", "ralph-queue")
-    # Simulate previously-failed promote: on-disk frontmatter AND
-    # HISTORY.md have been updated as the prior attempt got that far,
-    # but the commit step never ran. Leave the working tree on
-    # ralph-queue with the dirty files in place — the script's
-    # checkout_queue_branch is a no-op when already there and then
-    # re-runs the commit + push path.
-    entry = pbi_dir / "PBI.md"
-    text = entry.read_text(encoding="utf-8")
-    text = text.replace("severity: normal", "severity: high")
-    entry.write_text(text, encoding="utf-8")
-    # Pre-existing HISTORY entry from the failed attempt — round-3 fix
-    # must not append a duplicate.
-    history_path = pbi_dir / "HISTORY.md"
-    history_path.write_text(
-        "## 2026-05-27T10:00:00+00:00 ralph-promote: promote\nseverity: normal -> high\n",
-        encoding="utf-8",
-    )
-    head_before = _git(git_repo, "rev-parse", "ralph-queue")
-
-    exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-650",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
+            "--from",
+            "inbox",
+            "--to",
+            "current",
+            "--workspace",
+            str(workspace),
             "--no-push",
         ]
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
-    assert payload["new_severity"] == "high"
-    assert payload["commit_sha"] != "", (
-        "must re-run the full commit path when HEAD's severity is "
-        "unchanged, even if the working tree already has the new value"
-    )
-    head_after = _git(git_repo, "rev-parse", "ralph-queue")
-    assert head_after != head_before, "a new commit must land on ralph-queue"
-    # BugBot round-2 (PR #35): previous_severity for audit must come
-    # from HEAD, not from the dirty working tree. The retry case would
-    # otherwise log "high -> high" in HISTORY + the commit subject.
-    assert payload["previous_severity"] == "normal", (
-        "previous_severity must reflect HEAD's committed value, not the "
-        "working tree value (which was already 'high' from the failed run)"
-    )
-    history = (git_repo / ".ralph" / "inbox" / "WI-650" / "HISTORY.md").read_text(encoding="utf-8")
-    assert "normal -> high" in history
-    assert "high -> high" not in history
-    # BugBot round-3 (PR #35): must NOT duplicate the HISTORY entry on
-    # retry. The seed wrote one entry; the script must skip the second
-    # append since the working tree already had the new severity.
-    assert history.count("severity: normal -> high") == 1, (
-        f"HISTORY must not gain a duplicate entry on retry; got:\n{history}"
-    )
-    subject = _git(git_repo, "log", "-1", "--pretty=%s", "ralph-queue").strip()
-    assert "(normal -> high)" in subject, f"commit subject wrong: {subject}"
-
-
-def test_promote_appends_history_when_prior_crash_was_between_write_and_append(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-4. Previous attempt crashed
-    BETWEEN ``write_frontmatter`` (severity written to disk) and
-    ``append_history`` (HISTORY entry never written). Retry then:
-      working_severity == args.severity  → skipped the write (correct)
-      AND skipped append_history (WRONG — HISTORY has no entry)
-    The severity change committed but the audit trail was missing.
-    Fix gates append_history on HISTORY.md content, not working tree."""
-    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-660", pbi_type="feature", severity="normal")
-
-    _git(git_repo, "checkout", "ralph-queue")
-    # Seed write_frontmatter but NOT append_history — simulates the
-    # crash window between those two calls.
-    entry = pbi_dir / "PBI.md"
-    text = entry.read_text(encoding="utf-8")
-    text = text.replace("severity: normal", "severity: high")
-    entry.write_text(text, encoding="utf-8")
-    # HISTORY.md is left EMPTY (no entry from prior attempt).
-    history_path = pbi_dir / "HISTORY.md"
-    assert history_path.read_text(encoding="utf-8").strip() == ""
-
-    exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-660",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
-    )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
+    assert payload["pbi_id"] == "WI-600"
     assert payload["commit_sha"] != ""
-    history = (git_repo / ".ralph" / "inbox" / "WI-660" / "HISTORY.md").read_text(encoding="utf-8")
-    assert "normal -> high" in history, (
-        f"HISTORY must record the audit even when the prior crash was "
-        f"between write_frontmatter and append_history; got:\n{history}"
-    )
-    # And still no duplicate when re-running again.
+
+
+def test_promote_refuses_when_destination_dir_exists(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If the destination state already has a directory for this PBI
+    (in the working tree but not yet in HEAD, e.g. a stale half-done
+    move), refuse — the operator must clean up by hand. This also
+    guards against silent data loss if git mv would error."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-700")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    # Pre-create the destination dir locally to simulate the conflict.
+    stale = workspace / "queue" / ".ralph" / "current" / "WI-700"
+    stale.mkdir(parents=True)
+    (stale / "PBI.md").write_text("stale", encoding="utf-8")
+
     exit_code = promote_module.main(
-        [
-            "--pbi-id",
-            "WI-660",
-            "--severity",
-            "high",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
-    )
-    assert exit_code == 0
-    history2 = (git_repo / ".ralph" / "inbox" / "WI-660" / "HISTORY.md").read_text(encoding="utf-8")
-    assert history2.count("severity: normal -> high") == 1, (
-        f"second run must not duplicate the entry; got:\n{history2}"
-    )
-
-
-def test_promote_records_audit_for_repeated_cycle(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-5. Scoping HISTORY dedup to the
-    entire file suppressed legitimate audit entries when the same
-    severity transition recurred (promote normal→high, demote
-    high→normal, promote normal→high again). The dedup must only fire
-    in the partial-failure retry window."""
-    _seed_pbi(git_repo, "inbox", "WI-670", pbi_type="feature", severity="normal")
-
-    rc = promote_module.main(
-        ["--pbi-id", "WI-670", "--severity", "high", "--repo", str(git_repo), "--no-push"]
-    )
-    assert rc == 0
-    capsys.readouterr()
-
-    rc = promote_module.main(
-        ["--pbi-id", "WI-670", "--severity", "normal", "--repo", str(git_repo), "--no-push"]
-    )
-    assert rc == 0
-    capsys.readouterr()
-
-    rc = promote_module.main(
-        ["--pbi-id", "WI-670", "--severity", "high", "--repo", str(git_repo), "--no-push"]
-    )
-    assert rc == 0
-
-    history = (git_repo / ".ralph" / "inbox" / "WI-670" / "HISTORY.md").read_text(encoding="utf-8")
-    assert history.count("severity: normal -> high") == 2, (
-        f"round 3 must record a fresh audit entry; got:\n{history}"
-    )
-    assert history.count("severity: high -> normal") == 1
-
-
-def test_promote_appends_audit_on_partial_retry_after_earlier_identical_cycle(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-6. After successful cycles 1+2
-    (normal→high committed, then high→normal committed), cycle 3 does
-    normal→high again but its commit fails (only frontmatter written).
-    Cycle 3 retry must append the new audit entry — the round-5 dedup
-    erroneously matched the cycle-1 entry and suppressed cycle 3's. Fix
-    compares working-tree vs HEAD counts of the detail string so an
-    older committed entry no longer hides the new uncommitted one."""
-    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-680", pbi_type="feature", severity="normal")
-
-    # Cycles 1 + 2: full normal→high→normal, both committed.
-    for sev in ("high", "normal"):
-        rc = promote_module.main(
-            ["--pbi-id", "WI-680", "--severity", sev, "--repo", str(git_repo), "--no-push"]
+        _argv(
+            pbi_id="WI-700",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+            extra=["--no-push"],
         )
-        assert rc == 0
-        capsys.readouterr()
-
-    # Cycle 3 partial: write_frontmatter ran (severity=high on disk),
-    # commit never landed. We simulate by directly editing the PBI on
-    # ralph-queue.
-    _git(git_repo, "checkout", "ralph-queue")
-    entry = pbi_dir / "PBI.md"
-    text = entry.read_text(encoding="utf-8")
-    text = text.replace("severity: normal", "severity: high")
-    entry.write_text(text, encoding="utf-8")
-    head_before = _git(git_repo, "rev-parse", "ralph-queue")
-
-    # Cycle 3 retry: must produce a NEW "normal -> high" audit entry.
-    rc = promote_module.main(
-        ["--pbi-id", "WI-680", "--severity", "high", "--repo", str(git_repo), "--no-push"]
     )
-    assert rc == 0
-    head_after = _git(git_repo, "rev-parse", "ralph-queue")
-    assert head_after != head_before, "retry must commit"
-
-    history = (git_repo / ".ralph" / "inbox" / "WI-680" / "HISTORY.md").read_text(encoding="utf-8")
-    # 2 normal→high (cycle 1 + cycle 3 retry), 1 high→normal (cycle 2).
-    assert history.count("severity: normal -> high") == 2, (
-        f"cycle 3 retry must append a fresh audit even though an older "
-        f"cycle-1 entry exists with the same detail; got:\n{history}"
-    )
-    assert history.count("severity: high -> normal") == 1
-
-
-def test_promote_exits_clean_when_pbi_not_in_head_and_severity_already_set(
-    git_repo: Path,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-7. A PBI present on disk but not
-    in HEAD (e.g. ralph-add wrote the dir but its commit failed) made
-    head_severity == "". The old guard fired only when
-    head_severity == args.severity, so the script proceeded and wrote
-    a misleading ``severity: high -> high`` HISTORY entry. Fix also
-    treats absent-from-HEAD as nothing-to-do when working tree already
-    has the target severity."""
-    pbi_dir = _seed_pbi(git_repo, "inbox", "WI-690", pbi_type="feature", severity="high")
-    _git(git_repo, "checkout", "ralph-queue")
-    _git(git_repo, "rm", "-rf", ".ralph/inbox/WI-690")
-    _git(git_repo, "commit", "-m", "chore(test): remove seed commit")
-    pbi_dir.mkdir(parents=True, exist_ok=True)
-    (pbi_dir / "PBI.md").write_text(
-        "---\nid: WI-690\ntype: feature\nstatus: inbox\nseverity: high\nattempts: 0\n"
-        'created_at: "2026-05-20T08:00:00+00:00"\n'
-        'updated_at: "2026-05-20T08:00:00+00:00"\n---\n',
-        encoding="utf-8",
-    )
-    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    head_before = _git(git_repo, "rev-parse", "ralph-queue")
-
-    exit_code = promote_module.main(
-        ["--pbi-id", "WI-690", "--severity", "high", "--repo", str(git_repo), "--no-push"]
-    )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["commit_sha"] == "", "nothing-to-do path must produce empty commit_sha"
-    history = (pbi_dir / "HISTORY.md").read_text(encoding="utf-8")
-    assert "high -> high" not in history, (
-        f"must NOT write misleading 'high -> high' entry; got:\n{history}"
-    )
-    head_after = _git(git_repo, "rev-parse", "ralph-queue")
-    assert head_after == head_before
+    assert exit_code == 2
+    stderr = capsys.readouterr().err.lower()
+    assert "already exists" in stderr or "exists" in stderr

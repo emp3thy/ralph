@@ -1,15 +1,17 @@
 """``ralph-promote`` skill entry point.
 
-Bumps the ``severity`` frontmatter field of an existing PBI and pushes
-the result to ``ralph-queue``. The PBI may live in any ``.ralph/``
-state folder; this skill is purely a metadata update.
+Moves a PBI directory between state folders (e.g. ``inbox/`` →
+``current/``) in the queue clone, updates the entry file's ``status``
+and ``updated_at`` frontmatter, commits, and pushes ``main`` to
+``origin``. This is the operator's manual override for the executor's
+automatic state transitions.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -20,21 +22,19 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.queue_writer import (  # noqa: E402
+    QUEUE_STATE_FOLDERS,
     QueueWriterError,
+    acquire_queue_clone,
     append_history,
-    checkout_queue_branch,
     commit_paths,
-    ensure_git_repo,
-    find_pbi_directory,
-    parse_frontmatter_text,
+    is_path_in_head,
     push,
     read_frontmatter,
-    read_path_from_head,
+    resolve_queue_repo,
+    resolve_workspace_root,
     write_frontmatter,
 )
 
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
-ALLOWED_SEVERITIES = ("critical", "high", "normal", "low")
 ENTRY_FILE_BY_TYPE = {
     "feature": "PBI.md",
     "bug": "BUG.md",
@@ -45,51 +45,57 @@ ENTRY_FILE_BY_TYPE = {
 @dataclass
 class PromoteResult:
     pbi_id: str
-    previous_severity: str
-    new_severity: str
-    state_folder: str
+    from_state: str
+    to_state: str
     entry_file: str
-    repo_path: str
-    branch: str
+    queue_clone: str
     commit_sha: str
     pushed: bool
     dry_run: bool
+    already_promoted: bool
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ralph-promote",
         description=(
-            "Bump a PBI's severity. Locates the PBI under any .ralph/ "
-            "state folder, updates the severity frontmatter field, and "
-            "pushes the change to ralph-queue."
+            "Move a PBI between state folders in the queue clone "
+            "(<workspace_root>/queue on main). Updates the PBI's "
+            "status frontmatter, commits, and pushes."
         ),
     )
     parser.add_argument(
         "--pbi-id",
         required=True,
-        help="PBI identifier matching the directory name under .ralph/.",
+        help="PBI identifier matching the directory name under .ralph/<state>/.",
     )
     parser.add_argument(
-        "--severity",
+        "--from",
+        dest="from_state",
         required=True,
-        choices=ALLOWED_SEVERITIES,
-        help="New severity. Must be one of critical, high, normal, low.",
+        choices=QUEUE_STATE_FOLDERS,
+        help="Source state folder.",
     )
     parser.add_argument(
-        "--repo",
+        "--to",
+        dest="to_state",
         required=True,
-        help="Absolute path to the target service repo checkout.",
+        choices=QUEUE_STATE_FOLDERS,
+        help="Destination state folder.",
     )
     parser.add_argument(
-        "--branch",
-        default=os.environ.get("RALPH_QUEUE_BRANCH", DEFAULT_QUEUE_BRANCH),
-        help=f"Queue branch name (default: {DEFAULT_QUEUE_BRANCH}).",
+        "--workspace",
+        type=Path,
+        help="Override workspace_root from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
     )
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="Commit locally but do not push.",
+        help="Commit the move locally but do not push.",
     )
     parser.add_argument(
         "--dry-run",
@@ -111,169 +117,144 @@ def _resolve_entry_file(pbi_dir: Path) -> Path:
     raise QueueWriterError(f"no entry file (PBI.md, BUG.md, or FEEDBACK.md) found in {pbi_dir}")
 
 
-def _state_folder_for(pbi_dir: Path, repo: Path) -> str:
+def _git(repo: Path, *args: str) -> None:
     try:
-        rel = pbi_dir.relative_to(repo / ".ralph")
-    except ValueError as exc:
-        raise QueueWriterError(f"PBI directory {pbi_dir} is not inside {repo / '.ralph'}") from exc
-    return rel.parts[0]
+        subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise QueueWriterError(f"git {' '.join(args)} failed ({exc.returncode}): {stderr}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
     try:
-        repo = Path(args.repo).resolve()
-        ensure_git_repo(repo)
+        if args.from_state == args.to_state:
+            raise QueueWriterError(f"--from and --to must differ; both are {args.from_state!r}")
 
-        print(f"switching to {args.branch}...", file=sys.stderr)
-        checkout_queue_branch(repo, args.branch)
-
-        pbi_dir = find_pbi_directory(repo, args.pbi_id)
-        if pbi_dir is None:
-            raise QueueWriterError(f"PBI {args.pbi_id!r} not found in any .ralph/ state folder")
-        state_folder = _state_folder_for(pbi_dir, repo)
-        entry_file = _resolve_entry_file(pbi_dir)
-
-        frontmatter, body = read_frontmatter(entry_file)
-        working_severity = str(frontmatter.get("severity", ""))
-
-        # Idempotency check reads HEAD's frontmatter, not the working
-        # tree's. A previous invocation that wrote the new severity to
-        # disk but failed the commit (pre-commit hook, missing user
-        # config, etc.) leaves the new value on disk while HEAD still
-        # has the old one — re-running must commit + push the change,
-        # not silently exit 0 leaving the queue branch unchanged.
-        rel_entry = str(entry_file.relative_to(repo)).replace("\\", "/")
-        head_text = read_path_from_head(repo, rel_entry)
-        head_severity = ""
-        if head_text is not None:
-            head_front, _ = parse_frontmatter_text(head_text, source=f"HEAD:{rel_entry}")
-            head_severity = str(head_front.get("severity", ""))
-        # ``previous_severity`` is what HISTORY.md + the commit message
-        # report. In the partial-failure retry case the working tree
-        # already shows the new value, so we'd write a misleading
-        # "high -> high" entry. Prefer HEAD's committed severity when
-        # it exists; fall back to the working tree only when HEAD does
-        # not yet contain the file (fresh PBI just added).
-        previous_severity = head_severity if head_text is not None else working_severity
-        # "nothing to do" cases:
-        #   (a) HEAD has the file AND both HEAD and working tree show
-        #       the target severity (the normal already-promoted shape).
-        #   (b) HEAD does NOT have the file (fresh PBI from a failed
-        #       ralph-add commit) AND working tree shows the target
-        #       severity. Without this branch we'd compute a misleading
-        #       "severity: high -> high" history entry from
-        #       previous_severity == working_severity == args.severity.
-        nothing_to_do = working_severity == args.severity and (
-            head_severity == args.severity or head_text is None
-        )
-        if nothing_to_do:
-            print(
-                f"PBI {args.pbi_id} already has severity={args.severity!r}; nothing to do.",
-                file=sys.stderr,
-            )
-            result = PromoteResult(
-                pbi_id=args.pbi_id,
-                previous_severity=previous_severity,
-                new_severity=args.severity,
-                state_folder=state_folder,
-                entry_file=str(entry_file.relative_to(repo)).replace("\\", "/"),
-                repo_path=str(repo),
-                branch=args.branch,
-                commit_sha="",
-                pushed=False,
-                dry_run=args.dry_run,
-            )
-            print(json.dumps(asdict(result), indent=2, sort_keys=True))
-            return 0
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
 
         if args.dry_run:
+            # Dry-run must NOT touch network or filesystem. Report the
+            # would-be move against the would-be clone location.
+            clone = workspace_root / "queue"
+            rel_from = f".ralph/{args.from_state}/{args.pbi_id}"
+            rel_to = f".ralph/{args.to_state}/{args.pbi_id}"
             print(
-                f"dry-run: would update severity from "
-                f"{previous_severity!r} to {args.severity!r} on "
-                f"{entry_file.relative_to(repo).as_posix()}.",
+                f"dry-run: would move {rel_from} -> {rel_to} and commit "
+                f"'chore(queue): promote {args.pbi_id} "
+                f"({args.from_state} -> {args.to_state})'.",
                 file=sys.stderr,
             )
             result = PromoteResult(
                 pbi_id=args.pbi_id,
-                previous_severity=previous_severity,
-                new_severity=args.severity,
-                state_folder=state_folder,
-                entry_file=str(entry_file.relative_to(repo)).replace("\\", "/"),
-                repo_path=str(repo),
-                branch=args.branch,
+                from_state=args.from_state,
+                to_state=args.to_state,
+                entry_file="",
+                queue_clone=str(clone),
                 commit_sha="",
                 pushed=False,
                 dry_run=True,
+                already_promoted=False,
             )
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        # Gate write + append independently.
-        # ``working_severity != args.severity`` → frontmatter still needs
-        # writing.
-        # Suppress the append ONLY when working_severity == args.severity
-        # AND head_severity != args.severity — the precise partial-
-        # failure-retry signature where the prior attempt wrote the
-        # working tree but never committed. Inside that window the
-        # prior attempt may also have appended the HISTORY entry; skip
-        # only if it's already there.
-        # Outside the retry window — i.e. the working tree disagrees
-        # with the target, so this is a fresh promote — always append,
-        # even if HISTORY happens to contain an identical detail string
-        # from an older now-reversed cycle (normal→high→normal→high).
-        if working_severity != args.severity:
-            frontmatter["severity"] = args.severity
-            frontmatter["updated_at"] = _now_iso()
-            write_frontmatter(entry_file, frontmatter, body)
+        clone = acquire_queue_clone(workspace_root, queue_repo)
 
-        history_file = pbi_dir / "HISTORY.md"
-        history_detail = f"severity: {previous_severity} -> {args.severity}"
-        # Per-invocation dedup that survives repeated-cycle history.
-        # Compare working tree HISTORY against HEAD's HISTORY: if the
-        # working tree already has MORE occurrences of ``history_detail``
-        # than HEAD, the previous (failed) attempt already appended it
-        # — skip to avoid a duplicate. Otherwise (no uncommitted append
-        # yet, including the case where HEAD's count == working count
-        # because earlier successful cycles match) always append. This
-        # works for both partial-failure shapes (crash between write+
-        # append vs between append+commit) AND for fresh repeat-cycles
-        # where the detail string happens to match an older entry.
-        rel_history = str(history_file.relative_to(repo)).replace("\\", "/")
-        head_history = read_path_from_head(repo, rel_history) or ""
-        working_history = history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
-        skip_append = working_history.count(history_detail) > head_history.count(history_detail)
-        if not skip_append:
-            append_history(
-                pbi_dir,
-                actor="ralph-promote",
-                action="promote",
-                detail=history_detail,
+        from_dir = clone / ".ralph" / args.from_state / args.pbi_id
+        to_dir = clone / ".ralph" / args.to_state / args.pbi_id
+
+        # Idempotency check reads the COMMITTED HEAD tree, not disk. If
+        # any of the standard entry files is already at the destination
+        # in HEAD, the move already landed — re-running must not stack
+        # a duplicate commit.
+        for entry_name in ENTRY_FILE_BY_TYPE.values():
+            rel_to_entry = f".ralph/{args.to_state}/{args.pbi_id}/{entry_name}"
+            if is_path_in_head(clone, rel_to_entry):
+                print(
+                    f"PBI {args.pbi_id} already at .ralph/{args.to_state}/; nothing to do.",
+                    file=sys.stderr,
+                )
+                result = PromoteResult(
+                    pbi_id=args.pbi_id,
+                    from_state=args.from_state,
+                    to_state=args.to_state,
+                    entry_file=rel_to_entry,
+                    queue_clone=str(clone),
+                    commit_sha="",
+                    pushed=False,
+                    dry_run=False,
+                    already_promoted=True,
+                )
+                print(json.dumps(asdict(result), indent=2, sort_keys=True))
+                return 0
+
+        if not from_dir.is_dir():
+            raise QueueWriterError(f"PBI {args.pbi_id!r} not found at .ralph/{args.from_state}/")
+
+        if to_dir.exists():
+            raise QueueWriterError(
+                f".ralph/{args.to_state}/{args.pbi_id}/ already exists in the "
+                f"queue clone working tree; refusing to overwrite"
             )
+
+        # Resolve entry file BEFORE the move so we know which one to
+        # rewrite post-rename.
+        entry_before = _resolve_entry_file(from_dir)
+        entry_name = entry_before.name
+
+        # git mv stages renames for every file inside the PBI dir.
+        to_dir.parent.mkdir(parents=True, exist_ok=True)
+        rel_from = f".ralph/{args.from_state}/{args.pbi_id}"
+        rel_to = f".ralph/{args.to_state}/{args.pbi_id}"
+        _git(clone, "mv", rel_from, rel_to)
+
+        entry_after = to_dir / entry_name
+        frontmatter, body = read_frontmatter(entry_after)
+        frontmatter["status"] = args.to_state
+        frontmatter["updated_at"] = _now_iso()
+        write_frontmatter(entry_after, frontmatter, body)
+
+        append_history(
+            to_dir,
+            actor="ralph-promote",
+            action="promote",
+            detail=f"{args.from_state} -> {args.to_state}",
+        )
+
+        history_file = to_dir / "HISTORY.md"
         commit_sha = commit_paths(
-            repo,
-            [entry_file, history_file],
-            f"chore(queue): promote {args.pbi_id} ({previous_severity} -> {args.severity})",
+            clone,
+            [entry_after, history_file],
+            f"chore(queue): promote {args.pbi_id} ({args.from_state} -> {args.to_state})",
         )
 
         pushed = False
         if not args.no_push:
-            print(f"pushing {args.branch}...", file=sys.stderr)
-            push(repo, args.branch)
+            print("pushing main to origin...", file=sys.stderr)
+            push(clone, "main")
             pushed = True
 
         result = PromoteResult(
             pbi_id=args.pbi_id,
-            previous_severity=previous_severity,
-            new_severity=args.severity,
-            state_folder=state_folder,
-            entry_file=str(entry_file.relative_to(repo)).replace("\\", "/"),
-            repo_path=str(repo),
-            branch=args.branch,
+            from_state=args.from_state,
+            to_state=args.to_state,
+            entry_file=entry_after.relative_to(clone).as_posix(),
+            queue_clone=str(clone),
             commit_sha=commit_sha,
             pushed=pushed,
             dry_run=False,
+            already_promoted=False,
         )
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0
