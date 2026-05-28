@@ -36,13 +36,19 @@ def run_text(
     Any of ``text`` / ``encoding`` / ``errors`` may be overridden by the
     caller; everything else passes through unchanged.
     """
-    kwargs.setdefault("text", True)
+    # ``universal_newlines=False`` (legacy) means binary mode; do NOT
+    # then ``setdefault('text', True)`` — Python raises
+    # ``ValueError: Cannot specify both text and universal_newlines``
+    # when both are passed. Only default ``text=True`` when the caller
+    # has not explicitly opted into binary mode via either flag.
+    if kwargs.get("universal_newlines") is not False:
+        kwargs.setdefault("text", True)
     # Only inject UTF-8 defaults when text mode is actually on. A caller
-    # that explicitly passes ``text=False`` wants binary streams;
-    # injecting ``encoding=`` / ``errors=`` on top would either silently
-    # flip the child back to text mode (Python ≤ 3.11) or raise
-    # ``ValueError`` (Python ≥ 3.12). Same guard applies to
-    # ``universal_newlines=False``.
+    # that explicitly passes ``text=False`` or
+    # ``universal_newlines=False`` wants binary streams; injecting
+    # ``encoding=`` / ``errors=`` on top would silently flip the child
+    # back to text mode (Python ≤ 3.11) or raise ``ValueError``
+    # (Python ≥ 3.12).
     if kwargs.get("text", True) and kwargs.get("universal_newlines", True):
         kwargs.setdefault("encoding", "utf-8")
         kwargs.setdefault("errors", "replace")
@@ -60,13 +66,19 @@ def popen_text(
 
     Same default-injection contract as :func:`run_text`.
     """
-    kwargs.setdefault("text", True)
+    # ``universal_newlines=False`` (legacy) means binary mode; do NOT
+    # then ``setdefault('text', True)`` — Python raises
+    # ``ValueError: Cannot specify both text and universal_newlines``
+    # when both are passed. Only default ``text=True`` when the caller
+    # has not explicitly opted into binary mode via either flag.
+    if kwargs.get("universal_newlines") is not False:
+        kwargs.setdefault("text", True)
     # Only inject UTF-8 defaults when text mode is actually on. A caller
-    # that explicitly passes ``text=False`` wants binary streams;
-    # injecting ``encoding=`` / ``errors=`` on top would either silently
-    # flip the child back to text mode (Python ≤ 3.11) or raise
-    # ``ValueError`` (Python ≥ 3.12). Same guard applies to
-    # ``universal_newlines=False``.
+    # that explicitly passes ``text=False`` or
+    # ``universal_newlines=False`` wants binary streams; injecting
+    # ``encoding=`` / ``errors=`` on top would silently flip the child
+    # back to text mode (Python ≤ 3.11) or raise ``ValueError``
+    # (Python ≥ 3.12).
     if kwargs.get("text", True) and kwargs.get("universal_newlines", True):
         kwargs.setdefault("encoding", "utf-8")
         kwargs.setdefault("errors", "replace")
