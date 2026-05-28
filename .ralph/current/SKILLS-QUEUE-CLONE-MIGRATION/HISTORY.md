@@ -20,3 +20,14 @@
 - Lint/type: `uv run ruff check`, `uv run ruff format`, `uv run mypy` clean on touched files.
 - Notes: `skills/ralph-{cancel,promote,triage}/scripts/*.py` and `skills/ralph-status/scripts/status.py` still reference the deleted `checkout_queue_branch` import — broken until Tasks 3–6 land. Whole-suite `pytest -q` still expected to fail at import time on those four skills.
 
+## Iteration 3 — 2026-05-28T15:30:00+00:00
+
+- Step Task 3: rewrote `skills/ralph-cancel/scripts/cancel.py` to operate on the queue clone. Dropped `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and the `RALPH_QUEUE_BRANCH` env-var fallback. Added optional `--workspace`/`--queue-repo` overrides; resolves both from `~/.ralph/config.toml` via `resolve_workspace_root` / `resolve_queue_repo`. Calls `acquire_queue_clone` to materialise the clone; sentinel writes target `<clone>/.ralph/current/<id>/CANCEL`; commit message style unchanged (`chore(queue): cancel <id>`); push goes to `origin/main`.
+- `CancelResult` schema change: removed `repo_path` + `branch` fields; added `queue_clone`.
+- Dry-run now skips the clone entirely (matches `ralph-add` semantics) and reports the would-be sentinel path against the would-be clone location without network/disk side effects.
+- Rewrote `tests/skills/test_ralph_cancel.py` from scratch around the `queue_env` fixture (bare-remote queue with seeded `main` + tmp workspace). Replaced 8 existing tests; new tests cover happy-path, outside-current refuse, missing PBI, `--no-push`, `--dry-run`, idempotency-when-committed, regression for staged-but-uncommitted sentinel, queue_repo-unset error path, and TOML resolution.
+- Updated `skills/ralph-cancel/SKILL.md` for the new argv shape and queue-clone model.
+- Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 3 checkboxes (Steps 1–6 → [x]).
+- Tests: green — `uv run pytest tests/skills/test_ralph_cancel.py` → 9 passed.
+- Lint/type: `uv run ruff check`, `uv run ruff format --check`, `uv run mypy` clean on touched files.
+- Notes: `skills/ralph-{promote,triage}/scripts/*.py` and `skills/ralph-status/scripts/status.py` still reference the deleted `checkout_queue_branch` import — broken until Tasks 4–6 land. Whole-suite `pytest -q` still expected to fail at import time on those three skills.
