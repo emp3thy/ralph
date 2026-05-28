@@ -72,19 +72,27 @@ def test_acquire_queue_clone_returns_path(tmp_path: Path, monkeypatch: pytest.Mo
     """acquire_queue_clone forwards to ensure_queue_clone and returns its Path."""
     seen: dict[str, object] = {}
 
-    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
         seen["workspace"] = workspace_root
         seen["queue_repo"] = queue_repo
+        seen["queue_branch"] = queue_branch
         seen["timeout"] = timeout
         return workspace_root / "queue"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
 
-    path = acquire_queue_clone(tmp_path, "https://github.com/example/q")
+    path = acquire_queue_clone(tmp_path, "https://github.com/example/q", "main")
     assert path == tmp_path / "queue"
     assert seen == {
         "workspace": tmp_path,
         "queue_repo": "https://github.com/example/q",
+        "queue_branch": "main",
         "timeout": 120.0,
     }
 
@@ -95,12 +103,18 @@ def test_acquire_queue_clone_forwards_timeout(
     """Custom timeout kwarg threads through to ensure_queue_clone."""
     captured: dict[str, object] = {}
 
-    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
         captured["timeout"] = timeout
         return workspace_root / "queue"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
-    acquire_queue_clone(tmp_path, "https://github.com/example/q", timeout=30.0)
+    acquire_queue_clone(tmp_path, "https://github.com/example/q", "main", timeout=30.0)
     assert captured["timeout"] == 30.0
 
 
@@ -112,13 +126,19 @@ def test_acquire_queue_clone_wraps_queue_clone_error(
     from this module."""
     from ralph_executor.queue_clone import QueueCloneError
 
-    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
         raise QueueCloneError("git fetch failed (exit 128): could not auth")
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
 
     with pytest.raises(QueueWriterError) as excinfo:
-        acquire_queue_clone(tmp_path, "https://github.com/example/q")
+        acquire_queue_clone(tmp_path, "https://github.com/example/q", "main")
     assert "git fetch failed" in str(excinfo.value)
     assert isinstance(excinfo.value.__cause__, QueueCloneError)
 
@@ -288,6 +308,52 @@ def test_read_frontmatter_handles_crlf_line_endings(tmp_path: Path) -> None:
     assert fm["id"] == "WI-CRLF"
     assert fm["severity"] == "normal"
     assert "# Body" in body
+
+
+def test_resolve_queue_branch_cli_value():
+    from scripts.queue_writer import resolve_queue_branch
+    assert resolve_queue_branch("custom-branch") == "custom-branch"
+
+
+def test_resolve_queue_branch_user_toml(tmp_path, monkeypatch):
+    from scripts.queue_writer import resolve_queue_branch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text(
+        'queue_branch = "from-toml"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    assert resolve_queue_branch(None) == "from-toml"
+
+
+def test_resolve_queue_branch_default(tmp_path, monkeypatch):
+    from scripts.queue_writer import resolve_queue_branch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    assert resolve_queue_branch(None) == "ralph-queue"
+
+
+def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
+    from scripts.queue_writer import acquire_queue_clone
+
+    captured = {}
+    def fake_ensure(workspace_root, queue_repo, queue_branch, *, timeout=120.0):
+        captured["queue_branch"] = queue_branch
+        return workspace_root / "queue"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+    acquire_queue_clone(tmp_path, "https://github.com/test/queue", "ralph-queue")
+    assert captured["queue_branch"] == "ralph-queue"
 
 
 def test_append_history_creates_or_extends_history_md(tmp_path: Path) -> None:
