@@ -408,7 +408,7 @@ def _read_target_repo_from_pbi(pbi: PBI) -> str:
     return str(target_repo)
 
 
-def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
+def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
     """Remove the per-PBI work worktree on a terminal iteration outcome.
 
     Called when the PBI leaves ``current/`` (pr_created → pending-pr,
@@ -417,18 +417,59 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
     point the PR at; only the working directory at
     ``<clone-root>/.ralph-work/<PBI-id>/`` is torn down.
 
-    No-op in legacy single-checkout mode. Tolerant of removal failures —
-    an orphan worktree is recoverable (operator can ``git worktree
-    prune``), but raising here would obscure the real terminal outcome
-    the iteration is reporting.
+    Locates the owning git repo via ``ensure_clone`` against the PBI's
+    ``target_repo`` URL — this is idempotent (no clone if already present,
+    just a fetch) and returns the same ``clone_root`` the claim used.
+    Calling ``ensure_clone`` again avoids relying on ``pbi.work_worktree``
+    (which is runtime-only and absent after a queue re-read between
+    iterations); falling back to ``cfg.repo_path`` would look in the
+    wrong directory entirely and leak orphan worktrees per PBI.
+
+    No-op in legacy single-checkout mode or when target_repo / ensure_clone
+    are unavailable (defensive). Tolerant of removal failures — an orphan
+    worktree is recoverable (operator can ``git worktree prune``), but
+    raising here would obscure the real terminal outcome the iteration is
+    reporting.
     """
     if not cfg.use_worktrees:
         return
-    # TASK 7 TODO: swap cfg.repo_path for the target clone_root once
-    # _claim_pbi threads TargetClone through to teardown.
-    work_wt = work_worktree_path(cfg.repo_path, pbi_id)
+    if pbi.work_worktree is not None:
+        work_wt = pbi.work_worktree
+        # Work worktrees live at <clone-root>/.ralph-work/<pbi-id>/, so
+        # the owning git repo is the worktree's grandparent.
+        owning_repo = work_wt.parent.parent
+    else:
+        # Re-derive clone_root from the PBI's target_repo field
+        # (populated by ``iterate_once`` immediately after the queue
+        # read so it survives the move_*_to_* operations that invalidate
+        # ``pbi.path``). Idempotent in production (fetch-only when clone
+        # already exists); honours the tests' monkeypatched
+        # ``ensure_clone`` so fixture clone_roots match what the claim
+        # used.
+        if not pbi.target_repo:
+            log.warning(
+                "PBI %s missing target_repo on terminal outcome; cannot "
+                "resolve work worktree path — orphan may remain",
+                pbi.id,
+            )
+            return
+        try:
+            from ralph_executor.target_clone import ensure_clone
+            from ralph_executor.url_utils import parse_target_repo
+
+            info = parse_target_repo(pbi.target_repo)
+            clone = ensure_clone(info, workspace_root=cfg.workspace_root)
+        except Exception:
+            log.warning(
+                "failed to resolve clone root for PBI %s; orphan work worktree may remain",
+                pbi.id,
+                exc_info=True,
+            )
+            return
+        owning_repo = clone.clone_root
+        work_wt = work_worktree_path(owning_repo, pbi.id)
     try:
-        remove_worktree(cfg.repo_path, work_wt)
+        remove_worktree(owning_repo, work_wt)
     except Exception:
         log.warning(
             "failed to remove work worktree at %s; orphan left for manual prune",
@@ -679,8 +720,10 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                     raise FileExistsError(
                         f"cannot move {pbi.path} to {target}: target already exists"
                     ) from exc
+                # Clean up the work worktree BEFORE the move — see the
+                # equivalent comment in the pr_created path below.
+                _cleanup_work_worktree(cfg, pbi)
                 shutil.move(str(pbi.path), str(target))
-                _cleanup_work_worktree(cfg, pbi.id)
                 dummy = ClaudeOutcome(
                     kind="error",
                     pr_url=None,
@@ -701,6 +744,10 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
 
         if outcome.kind == "pr_created":
             touched = git_ops.diff_names(cfg.repo_path, cfg.main_branch, _feature_branch_name(pbi))
+            # Clean up the work worktree BEFORE the queue move — the move
+            # invalidates ``pbi.path`` (used by ``_read_target_repo_from_pbi``
+            # when ``pbi.work_worktree`` was not threaded through).
+            _cleanup_work_worktree(cfg, pbi)
             move_current_to_pending_pr(
                 cfg,
                 pbi,
@@ -709,7 +756,6 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 touched_files=touched,
                 now=now,
             )
-            _cleanup_work_worktree(cfg, pbi.id)
             return outcome, IterationResult(
                 outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
             )
@@ -725,7 +771,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             if stuck_outcome is not None:
                 event_log.append(stuck_outcome.event)
                 log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
-                _cleanup_work_worktree(cfg, pbi.id)
+                _cleanup_work_worktree(cfg, pbi)
                 return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
             # Claude reported stuck but no STUCK.md present -- fall through
             # to partial (the PBI stays in current/ for the next iteration).
@@ -764,6 +810,19 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
 
     current = source.current_pbi()
     if current is not None:
+        # FilesystemQueueSource doesn't populate ``target_repo`` on the
+        # PBI dataclass (it consumes the on-disk schema directly without
+        # the multi-target fields). Populate it here so ``_run_ralph``'s
+        # terminal-outcome cleanup can re-derive the target clone_root
+        # without depending on ``pbi.path`` (which the move_*_to_*
+        # operations invalidate before cleanup runs).
+        from dataclasses import replace as _replace
+
+        try:
+            target_url = _read_target_repo_from_pbi(current)
+        except _ClaimError:
+            target_url = ""
+        current = _replace(current, target_repo=target_url)
         # Current occupied → run Ralph on it (attempt counter + spawn).
         # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
         # ``handle_stuck`` on terminal outcomes, both of which call

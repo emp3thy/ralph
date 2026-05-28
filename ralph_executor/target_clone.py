@@ -12,6 +12,7 @@ full history for sweep-side investigation.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,10 +60,14 @@ def ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
             git_ops.fetch(clone_root)
         except git_ops.GitCommandError as exc:
             raise TargetUnreachable(f"git fetch failed for {info.clone_url}: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TargetUnreachable(f"git fetch timed out for {info.clone_url}: {exc}") from exc
     else:
         try:
             git_ops.clone(info.clone_url, clone_root)
         except git_ops.GitCommandError as exc:
             raise TargetUnreachable(f"git clone failed for {info.clone_url}: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TargetUnreachable(f"git clone timed out for {info.clone_url}: {exc}") from exc
 
     return TargetClone(info=info, clone_root=clone_root)
