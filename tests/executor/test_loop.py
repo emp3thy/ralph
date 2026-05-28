@@ -444,12 +444,18 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each iteration calls ``ensure_queue_clone`` to refresh the local clone."""
-    calls: list[tuple[Path, str]] = []
+    calls: list[tuple[Path, str, str]] = []
     from ralph_executor.queue_clone import ensure_queue_clone as real_ensure
 
-    def _spy(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
-        calls.append((workspace_root, queue_repo))
-        return real_ensure(workspace_root, queue_repo, timeout=timeout)
+    def _spy(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
+        calls.append((workspace_root, queue_repo, queue_branch))
+        return real_ensure(workspace_root, queue_repo, queue_branch, timeout=timeout)
 
     monkeypatch.setattr("ralph_executor.loop.ensure_queue_clone", _spy)
     monkeypatch.setattr(
@@ -457,7 +463,9 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
-    assert calls == [(cfg_for_repo.workspace_root, cfg_for_repo.queue_repo)]
+    assert calls == [
+        (cfg_for_repo.workspace_root, cfg_for_repo.queue_repo, cfg_for_repo.queue_branch)
+    ]
 
 
 def test_run_loop_terminates_when_cycle_detector_trips(
@@ -1238,17 +1246,56 @@ def test_pull_queue_calls_ensure_queue_clone(
         workspace_root=tmp_path,
         queue_repo="https://github.com/example/q",
     )
-    calls: list[tuple[Path, str]] = []
+    calls: list[tuple[Path, str, str]] = []
 
-    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
-        calls.append((workspace_root, queue_repo))
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
+        calls.append((workspace_root, queue_repo, queue_branch))
         return workspace_root / "queue"
 
     monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
 
     loop._pull_queue(cfg)
 
-    assert calls == [(tmp_path, "https://github.com/example/q")]
+    assert calls == [(tmp_path, "https://github.com/example/q", cfg.queue_branch)]
+
+
+def test_pull_queue_passes_configured_branch(
+    cfg_for_repo: ExecutorConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_pull_queue`` forwards ``cfg.queue_branch`` to ``ensure_queue_clone``."""
+    from ralph_executor import loop
+
+    cfg = dataclasses.replace(
+        cfg_for_repo,
+        workspace_root=tmp_path,
+        queue_repo="https://github.com/example/q",
+        queue_branch="custom-branch",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["queue_branch"] = queue_branch
+        return workspace_root / "queue"
+
+    monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
+
+    loop._pull_queue(cfg)
+
+    assert captured["queue_branch"] == "custom-branch"
 
 
 def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(

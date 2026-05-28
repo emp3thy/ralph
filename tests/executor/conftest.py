@@ -217,7 +217,16 @@ def cfg_for_repo(
     return ExecutorConfig(
         repo_path=fake_repo,
         queue_repo=f"file://{bare.as_posix()}",
-        queue_branch="ralph-queue",
+        # NOTE: the ``fake_repo`` seed pushes a single ``main`` branch to
+        # the bare remote, and the queue movements helpers in
+        # ``ralph_executor.queue.movements`` still hard-code ``branch="main"``
+        # for ``push_with_rebase`` until Task 8 of the
+        # queue-branch-configurable plan threads ``cfg.queue_branch`` through
+        # ``_move``. Until both land together, the conftest fixture uses
+        # ``main`` so integration tests don't tear the fixture in half.
+        # Task 11 introduces a dedicated ``ralph-queue`` seed for the
+        # end-to-end test of the new branch routing.
+        queue_branch="main",
         main_branch="main",
         max_attempts=3,
         log_level=20,  # logging.INFO
