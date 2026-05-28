@@ -1,8 +1,10 @@
 """Shared fixtures for ``ralph_executor`` tests.
 
-Every test that touches the queue or the loop needs a local git repo
-with both ``main`` and ``ralph-queue`` plus a stand-in for the
-``claude`` binary. Building those in one place keeps each test focused.
+After the queue-repo-split (PBI EXECUTOR-QUEUE-REPO-SPLIT), the queue is
+a separate clone at ``<workspace_root>/queue/`` cloned from
+``cfg.queue_repo`` rather than a branch on the source repo. The
+``fake_repo`` fixture builds that queue clone with an empty ``.ralph/``
+skeleton on ``main`` and returns its path.
 """
 
 from __future__ import annotations
@@ -33,40 +35,53 @@ def _git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def fake_repo(tmp_path: Path) -> Iterator[Path]:
-    """Initialise a local bare + worktree pair with main and ralph-queue."""
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
+    """Materialise a queue clone at ``<tmp_path>/ws/queue`` with ``.ralph/``.
 
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    subprocess.run(["git", "init", str(work)], check=True, capture_output=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    # Mirror the production ``.gitignore`` which excludes ``.ralph/state/``
-    # so the cycle-detector event DB (created at runtime by ``open_log``)
-    # is never staged into a commit and never blocks a branch switch.
-    (work / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
-    _git(work, "add", ".gitignore")
-    _git(work, "commit", "-m", "chore: gitignore .ralph/state/")
-    _git(work, "push", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    # The queue branch starts with an empty ``.ralph/`` tree.
-    (work / ".ralph" / "inbox").mkdir(parents=True)
-    (work / ".ralph" / "current").mkdir()
-    (work / ".ralph" / "pending-pr").mkdir()
-    (work / ".ralph" / "done").mkdir()
-    (work / ".ralph" / "blocked").mkdir()
-    # Git ignores empty directories; drop ``.gitkeep`` files.
+    Builds a bare remote at ``<tmp_path>/queue.git`` seeded with the
+    ``.ralph/`` skeleton on ``main`` and a sibling clone at
+    ``<tmp_path>/ws/queue``. Returns the clone path. The bare remote
+    path is reachable as ``<tmp_path>/queue.git`` for tests that need
+    to query / push to ``origin``.
+    """
+    bare = tmp_path / "queue.git"
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    clone = workspace / "queue"
+
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(seed)],
+        check=True,
+        capture_output=True,
+    )
+    _git(seed, "config", "user.email", "test@example.com")
+    _git(seed, "config", "user.name", "Test User")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main commit")
+    # Mirror production .gitignore — .ralph/state/ stays local.
+    (seed / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
+    _git(seed, "add", ".gitignore")
+    _git(seed, "commit", "-m", "chore: gitignore .ralph/state/")
     for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
-        (work / ".ralph" / sub / ".gitkeep").write_text("", encoding="utf-8")
-    _git(work, "add", ".ralph")
-    _git(work, "commit", "-m", "chore(queue): bootstrap .ralph/ tree")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    yield work
+        (seed / ".ralph" / sub).mkdir(parents=True)
+        (seed / ".ralph" / sub / ".gitkeep").write_text("", encoding="utf-8")
+    _git(seed, "add", ".ralph")
+    _git(seed, "commit", "-m", "chore(queue): bootstrap .ralph/ tree")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+
+    subprocess.run(
+        ["git", "clone", str(bare), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test User")
+    yield clone
 
 
 def write_sample_pbi(
@@ -81,8 +96,8 @@ def write_sample_pbi(
 ) -> Path:
     """Write a minimal feature PBI directory into ``.ralph/<where>/<pbi_id>``.
 
-    Returns the absolute path to the new directory. Assumes the repo is
-    currently on ``ralph-queue`` (callers checkout before calling).
+    ``repo`` is the queue clone (the ``fake_repo`` fixture's return value).
+    Returns the absolute path to the new directory. Callers commit + push.
     """
     pbi_dir = repo / ".ralph" / where / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
@@ -123,13 +138,11 @@ def write_sample_pbi(
 
 @pytest.fixture
 def sample_pbi(fake_repo: Path) -> Path:
-    """Write a minimal feature PBI into ``.ralph/inbox/WI-1234`` and commit it."""
-    _git(fake_repo, "checkout", "ralph-queue")
+    """Write a minimal feature PBI into ``.ralph/inbox/WI-1234`` and push it."""
     pbi_dir = write_sample_pbi(fake_repo)
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
-    _git(fake_repo, "commit", "-m", "feat(ralph-queue): add WI-1234")
-    _git(fake_repo, "push", "origin", "ralph-queue")
-    _git(fake_repo, "checkout", "main")
+    _git(fake_repo, "commit", "-m", "feat(queue): add WI-1234")
+    _git(fake_repo, "push", "origin", "main")
     return pbi_dir
 
 
@@ -187,11 +200,21 @@ def write_claude_script(path: Path, body: str) -> None:
 
 
 @pytest.fixture
-def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
-    """Build an ExecutorConfig pointing at the fake repo + fake claude."""
+def cfg_for_repo(
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> ExecutorConfig:
+    """Build an ExecutorConfig pointing at the queue clone + fake claude.
+
+    ``workspace_root`` is ``<tmp_path>/ws`` so ``<workspace_root>/queue``
+    resolves to the ``fake_repo`` clone built by that fixture. The bare
+    remote at ``<tmp_path>/queue.git`` is the ``queue_repo`` URL.
+    """
+    bare = tmp_path / "queue.git"
     return ExecutorConfig(
         repo_path=fake_repo,
-        queue_repo="https://github.com/example/queue",
+        queue_repo=f"file://{bare.as_posix()}",
         main_branch="main",
         max_attempts=3,
         log_level=20,  # logging.INFO
@@ -206,14 +229,11 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
-        # Existing executor tests exercise the legacy single-checkout
-        # branch-dance path; worktree-mode coverage gets its own fixtures
-        # alongside the dedicated tests in Task 9.
-        use_worktrees=False,
+        use_worktrees=True,
         bot_author_email="",
         stale_days=3,
         bash_max_timeout_ms=900_000,
-        workspace_root=Path.home() / "ralph-workspaces",
+        workspace_root=tmp_path / "ws",
         claude_session_timeout_seconds=1200,
         same_file_min_prs=10,
         same_file_window_hours=24.0,
@@ -227,3 +247,46 @@ def _claude_path_for_subprocess(monkeypatch: pytest.MonkeyPatch, fake_claude_bin
         "PATH",
         f"{fake_claude_binary.parent}{os.pathsep}{os.environ.get('PATH', '')}",
     )
+
+
+@pytest.fixture(autouse=True)
+def _fake_ensure_target_clone(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Replace ``target_clone.ensure_clone`` with a stand-in pointing at ``fake_repo``.
+
+    Tests seed PBIs whose ``target_repo`` frontmatter points at non-resolving
+    GitHub URLs (e.g. ``https://github.com/test/repo``). The new multi-repo
+    claim path calls ``ensure_clone`` which tries to ``git clone`` the URL.
+    Reuse the ``fake_repo`` queue clone as the target clone so existing
+    test assertions about feature branches / commits live in one place.
+
+    Tests that need a distinct target can override this monkeypatch.
+    """
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        try:
+            fake_repo: Path = request.getfixturevalue("fake_repo")
+        except pytest.FixtureLookupError:
+            # Test does not exercise the queue clone (e.g. pure cycle-detector
+            # unit tests). Fall back to creating a minimal local repo.
+            clone_root = workspace_root / "clones" / info.owner / info.name
+            if not (clone_root / ".git").is_dir():
+                clone_root.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    ["git", "init", "--initial-branch=main", str(clone_root)],
+                    check=True,
+                    capture_output=True,
+                )
+                _git(clone_root, "config", "user.email", "test@example.com")
+                _git(clone_root, "config", "user.name", "Test User")
+                _git(clone_root, "commit", "--allow-empty", "-m", "chore: initial")
+                head_sha = _git(clone_root, "rev-parse", "HEAD").strip()
+                _git(clone_root, "update-ref", "refs/remotes/origin/main", head_sha)
+            return TargetClone(info=info, clone_root=clone_root)
+        return TargetClone(info=info, clone_root=fake_repo)
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)

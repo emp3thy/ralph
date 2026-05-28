@@ -1,9 +1,9 @@
 """Filesystem-backed queue source.
 
-Reads PBI directories from ``.ralph/<state>/`` on the ``ralph-queue``
-checkout. Parses the YAML frontmatter of the type-appropriate entry file
-and returns ``PBI`` dataclasses. Sorts the inbox by priority lane, then
-by ``created_at`` within the lane.
+Reads PBI directories from ``.ralph/<state>/`` inside the queue clone at
+``<workspace_root>/queue/``. Parses the YAML frontmatter of the
+type-appropriate entry file and returns ``PBI`` dataclasses. Sorts the
+inbox by priority lane, then by ``created_at`` within the lane.
 """
 
 from __future__ import annotations
@@ -173,14 +173,7 @@ class FilesystemQueueSource:
 
     @property
     def _root(self) -> Path:
-        # In worktree mode ``.ralph/`` lives in the queue worktree, not the
-        # primary checkout (which may be on any branch). Legacy single-
-        # checkout mode keeps reading from ``cfg.repo_path``.
-        if self._config.use_worktrees:
-            from ralph_executor.worktree import queue_worktree_path
-
-            return queue_worktree_path(self._config.repo_path) / ".ralph"
-        return self._config.repo_path / ".ralph"
+        return self._config.workspace_root / "queue" / ".ralph"
 
     def _list_pbis(self, state: str) -> list[PBI]:
         state_dir = self._root / state
