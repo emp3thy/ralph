@@ -573,6 +573,8 @@ def spawn_claude_p(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         **popen_kwargs,
     )
