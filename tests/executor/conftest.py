@@ -77,6 +77,7 @@ def write_sample_pbi(
     severity: str = "normal",
     created_at: str = "2026-05-24T09:15:00+00:00",
     where: str = "inbox",
+    target_repo: str = "https://github.com/test/repo",
 ) -> Path:
     """Write a minimal feature PBI directory into ``.ralph/<where>/<pbi_id>``.
 
@@ -106,6 +107,7 @@ def write_sample_pbi(
         attempts: 0
         created_at: {created_at}
         updated_at: {created_at}
+        target_repo: {target_repo}
         ---
 
         # {pbi_id} sample body

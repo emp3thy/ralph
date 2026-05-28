@@ -1141,3 +1141,51 @@ def test_read_target_repo_from_pbi_uses_bug_md_for_bug_type(tmp_path: Path) -> N
     )
     pbi = _build_pbi(pbi_dir, "WI-4")
     assert _read_target_repo_from_pbi(pbi) == "https://github.com/acme/svc"
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7B: parse + host check inside _claim_pbi
+# ----------------------------------------------------------------------
+
+
+def _write_pbi_with_target(pbi_dir: Path, pbi_id: str, target_repo: str) -> None:
+    """Write a minimal PBI.md with a custom ``target_repo`` value."""
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        f"id: {pbi_id}\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        f'target_repo: "{target_repo}"\n'
+        "---\n"
+        f"# {pbi_id}\n",
+        encoding="utf-8",
+    )
+
+
+def test_claim_raises_claim_error_for_non_github_host(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """A PBI with target_repo on a non-github host raises _ClaimError 'unsupported host'."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+
+    pbi_dir = tmp_path / "WI-ADO"
+    _write_pbi_with_target(pbi_dir, "WI-ADO", "https://dev.azure.com/myorg/myproj/_git/myrepo")
+    pbi = _build_pbi(pbi_dir, "WI-ADO")
+    with pytest.raises(_ClaimError, match="unsupported host"):
+        _claim_pbi(cfg_for_repo, pbi)
+
+
+def test_claim_raises_claim_error_for_invalid_url(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """A PBI with a malformed target_repo raises _ClaimError 'invalid target_repo URL'."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+
+    pbi_dir = tmp_path / "WI-BAD"
+    _write_pbi_with_target(pbi_dir, "WI-BAD", "not a url")
+    pbi = _build_pbi(pbi_dir, "WI-BAD")
+    with pytest.raises(_ClaimError, match="invalid target_repo URL"):
+        _claim_pbi(cfg_for_repo, pbi)

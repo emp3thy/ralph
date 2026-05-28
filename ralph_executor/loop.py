@@ -435,6 +435,14 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
+    Multi-target prelude (runs before legacy/worktree fork):
+      0. ``_read_target_repo_from_pbi`` — read ``target_repo`` from the
+         PBI entry-file frontmatter.
+      0b. ``parse_target_repo`` — split into host/owner/name; ValueError
+          surfaces as ``_ClaimError('invalid target_repo URL: …')``.
+      0c. Host gate — only ``github.com`` is supported on this PBI;
+          other hosts raise ``_ClaimError('unsupported host …')``.
+
     Worktree mode (``cfg.use_worktrees=True``):
       1. Ensure the long-lived queue worktree at
          ``<repo>/.ralph-work/queue/`` is on ``cfg.queue_branch``.
@@ -456,6 +464,16 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
+    from ralph_executor.url_utils import parse_target_repo
+
+    target_url = _read_target_repo_from_pbi(pbi)
+    try:
+        info = parse_target_repo(target_url)
+    except ValueError as exc:
+        raise _ClaimError(f"invalid target_repo URL: {exc}") from exc
+    if info.host != "github.com":
+        raise _ClaimError(f"unsupported host {info.host!r} (only github.com is supported)")
+
     if cfg.use_worktrees:
         return _claim_pbi_worktree(cfg, pbi)
 
