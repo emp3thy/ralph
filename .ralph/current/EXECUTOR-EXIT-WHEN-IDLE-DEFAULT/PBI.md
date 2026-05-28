@@ -1,11 +1,11 @@
 ---
 id: EXECUTOR-EXIT-WHEN-IDLE-DEFAULT
 type: feature
-status: inbox
+status: current
 severity: high
 attempts: 0
 created_at: 2026-05-28T00:30:00+00:00
-updated_at: 2026-05-28T00:30:00+00:00
+updated_at: 2026-05-28T08:34:53+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---
