@@ -15,13 +15,13 @@ loop driver (Task 6); ``fetch`` is host-agnostic.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ralph_executor.subprocess_utils import run_text
 from ralph_executor.sweep.types import (
     CiStatus,
     CommentSnapshot,
@@ -108,11 +108,10 @@ def _invoke_skill(
     if not script_path.is_file():
         raise AdoSkillError(f"skill script not found: {script_path}")
     cmd = [sys.executable, str(script_path), *args]
-    result = subprocess.run(  # noqa: S603
+    result = run_text(
         cmd,
         check=False,
         capture_output=True,
-        text=True,
         env=env,
     )
     output = _RunOutput(

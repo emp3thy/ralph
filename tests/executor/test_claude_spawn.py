@@ -28,7 +28,13 @@ from tests.executor.conftest import write_claude_script, write_sample_pbi
 
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout
 
 
@@ -338,7 +344,7 @@ def _fake_run_factory(
 
 def test_query_pr_checks_returns_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     payload = '[{"bucket":"pass","name":"build"},{"bucket":"pass","name":"lint"}]'
-    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(0, payload))
+    monkeypatch.setattr("ralph_executor.claude_spawn.run_text", _fake_run_factory(0, payload))
     state, names = _query_pr_checks(tmp_path, 42)
     assert state == "pass"
     assert names == []
@@ -354,7 +360,7 @@ def test_query_pr_checks_returns_fail_with_names(
         '{"bucket":"fail","name":"unit-tests"},'
         '{"bucket":"fail","name":"lint"}]'
     )
-    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(1, payload))
+    monkeypatch.setattr("ralph_executor.claude_spawn.run_text", _fake_run_factory(1, payload))
     state, names = _query_pr_checks(tmp_path, 42)
     assert state == "fail"
     assert names == ["unit-tests", "lint"]
@@ -366,7 +372,7 @@ def test_query_pr_checks_returns_pending_on_exit_8(
     """gh exits 8 with empty stdout when a required check is still
     pending — _query_pr_checks must classify as ``pending`` so the
     polling loop keeps waiting rather than erroring out."""
-    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _fake_run_factory(8, ""))
+    monkeypatch.setattr("ralph_executor.claude_spawn.run_text", _fake_run_factory(8, ""))
     state, names = _query_pr_checks(tmp_path, 42)
     assert state == "pending"
     assert names == []
@@ -381,7 +387,7 @@ def test_query_pr_checks_returns_error_on_gh_failure(
     def _explode(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError("gh not on PATH")
 
-    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.run", _explode)
+    monkeypatch.setattr("ralph_executor.claude_spawn.run_text", _explode)
     state, names = _query_pr_checks(tmp_path, 42)
     assert state == "error"
     assert names and "gh not on PATH" in names[0]
@@ -677,6 +683,8 @@ def test_tee_stream_delivers_lines_incrementally(tmp_path: Path) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
     assert proc.stdout is not None and proc.stderr is not None
@@ -706,6 +714,62 @@ def test_tee_stream_delivers_lines_incrementally(tmp_path: Path) -> None:
     # three within a few ms of each other at exit.
     span = buf.timestamps[-1] - buf.timestamps[0]
     assert span >= 0.3, f"lines arrived in {span:.3f}s; expected >= 0.3s with 200ms child gaps"
+
+
+def test_tee_stream_survives_invalid_utf8_byte(tmp_path: Path) -> None:
+    """Regression for BUG-SUBPROCESS-WINDOWS-ENCODING-AUDIT: a child that
+    emits a byte invalid in the host locale (0x90 on stock Windows
+    cp1252) must NOT crash the tee thread. The byte must land in the
+    buffer as the U+FFFD replacement character so the classifier sees a
+    well-formed string rather than half a stream.
+
+    Before the fix, ``_tee_stream`` raised ``UnicodeDecodeError`` inside
+    its ``for line in stream`` loop, the exception was captured into
+    ``err_slot``, and the parent re-raised it — crashing the executor's
+    iteration loop with no surviving stdout.
+    """
+    from ralph_executor.subprocess_utils import popen_text
+
+    script = tmp_path / "bad_byte.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'ok-1\\n')\n"
+        "sys.stdout.buffer.write(b'\\x90\\n')\n"
+        "sys.stdout.buffer.write(b'ok-3\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    proc = popen_text(
+        [sys.executable, "-u", str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=1,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    buf: list[str] = []
+    stderr_buf: list[str] = []
+    stdout_err: list[BaseException] = []
+    stderr_err: list[BaseException] = []
+    t_out = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stdout, "[bad]", buf, stdout_err),
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_tee_stream,
+        args=(proc.stderr, "[bad!]", stderr_buf, stderr_err),
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+    proc.wait()
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+
+    assert not stdout_err, f"tee thread crashed: {stdout_err!r}"
+    assert not stderr_err
+    # Replacement char must be present where the 0x90 byte was.
+    assert buf == ["ok-1\n", "�\n", "ok-3\n"]
 
 
 def test_spawn_claude_p_respects_cwd_and_pbi_dir_overrides(
@@ -831,13 +895,13 @@ def test_spawn_claude_p_kills_child_on_session_timeout(
     def _fake_popen(*args: object, **kwargs: object) -> _FakeProc:
         return fake_proc
 
-    tree_kill_calls: list[subprocess.Popen[str]] = []
+    tree_kill_calls: list[object] = []
 
     def _fake_kill_tree(proc: subprocess.Popen[str]) -> None:
         tree_kill_calls.append(proc)
         proc.kill()
 
-    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("ralph_executor.claude_spawn.popen_text", _fake_popen)
     monkeypatch.setattr(
         "ralph_executor.claude_spawn._kill_process_tree",
         _fake_kill_tree,

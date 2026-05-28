@@ -51,6 +51,8 @@ def _run_git(repo: Path, *args: str) -> str:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
@@ -129,6 +131,8 @@ def read_path_from_head(repo: Path, rel_path: str) -> str | None:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.CalledProcessError:
         return None

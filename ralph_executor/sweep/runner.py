@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from ralph_executor.safety.events import (
     EventType,
     signature_from_text,
 )
+from ralph_executor.subprocess_utils import run_text
 from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
@@ -691,11 +691,10 @@ def _invoke_merge_pr(
         "--pr-id",
         str(pr_id),
     ]
-    result = subprocess.run(  # noqa: S603
+    result = run_text(
         cmd,
         check=False,
         capture_output=True,
-        text=True,
         env=env,
     )
     if result.returncode == 2:
