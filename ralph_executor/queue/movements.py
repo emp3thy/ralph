@@ -138,11 +138,11 @@ def _move(
         f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
     )
     # push_with_rebase tolerates concurrent writers (operator commits, a
-    # second ralph instance, web commits) racing the queue repo's main
-    # between this iteration's start and the move's push.
+    # second ralph instance, web commits) racing the queue repo's
+    # cfg.queue_branch between this iteration's start and the move's push.
     # PushRebaseConflict is the conflict case; iterate_once treats it as
     # a recoverable warning.
-    git_ops.push_with_rebase(queue_repo, remote="origin", branch="main")
+    git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
     return parse_pbi_directory(dst, status=target_state)
 
 
