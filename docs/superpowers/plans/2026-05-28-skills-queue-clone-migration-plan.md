@@ -746,7 +746,7 @@ git commit -m "docs(skills): sweep stale 'ralph-queue branch' references"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Replace the existing Install + One-time setup sections** with:
+- [x] **Step 1: Replace the existing Install + One-time setup sections** with:
 
 ```markdown
 ## Install
@@ -811,7 +811,7 @@ or auth is flaky it will print a warning but still write the config —
 the executor will retry on its next iteration.
 ```
 
-- [ ] **Step 2: Add a new section** after One-time setup:
+- [x] **Step 2: Add a new section** after One-time setup:
 
 ```markdown
 ## Working the queue
@@ -882,7 +882,7 @@ uv run python skills/ralph-triage/scripts/triage.py --pbi-id WI-1234 --to inbox
 ```
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
