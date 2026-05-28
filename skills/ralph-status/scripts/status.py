@@ -230,26 +230,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    states: tuple[str, ...] = (args.state,) if args.state else STATE_FOLDERS
-    rows = _collect_rows(queue_clone, states=states)
+    try:
+        states: tuple[str, ...] = (args.state,) if args.state else STATE_FOLDERS
+        rows = _collect_rows(queue_clone, states=states)
 
-    if args.target_repo:
-        filtered: list[PBIRow | PBIRowError] = [
-            row for row in rows if isinstance(row, PBIRow) and row.target_repo == args.target_repo
-        ]
-        rows = filtered
+        if args.target_repo:
+            # PBIRowError rows have no parseable target_repo to filter on
+            # but the SKILL.md contract requires them to appear in `rows`
+            # so the caller can see parse failures. Pass them through the
+            # filter unconditionally; only PBIRow gets target_repo-matched.
+            filtered: list[PBIRow | PBIRowError] = [
+                row
+                for row in rows
+                if isinstance(row, PBIRowError)
+                or (isinstance(row, PBIRow) and row.target_repo == args.target_repo)
+            ]
+            rows = filtered
 
-    rows = _group_and_sort(rows)
+        rows = _group_and_sort(rows)
 
-    if args.emit_json:
-        sys.stdout.write(_render_json(rows, errors=[]))
-    else:
-        sys.stdout.write(_render_table(rows))
-        pbi_count = len(rows)
-        print(
-            f"# {pbi_count} PBI(s) in {queue_clone} (states: {', '.join(states)})",
-            file=sys.stderr,
-        )
+        if args.emit_json:
+            sys.stdout.write(_render_json(rows, errors=[]))
+        else:
+            sys.stdout.write(_render_table(rows))
+            pbi_count = len(rows)
+            print(
+                f"# {pbi_count} PBI(s) in {queue_clone} (states: {', '.join(states)})",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        # Per SKILL.md: top-level failures print to stderr and exit 2.
+        # Catch-all preserves the documented contract even if a future
+        # change to _render_* or _collect_rows raises something new.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

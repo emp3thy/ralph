@@ -415,6 +415,84 @@ def test_malformed_pbi_becomes_error_row(
     assert broken["type"] is None
 
 
+def test_target_repo_filter_preserves_error_rows(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Malformed PBIs have no parseable target_repo, but the SKILL.md
+    contract requires them to appear in `rows` so the caller sees parse
+    failures. The --target-repo filter must pass them through.
+    """
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "inbox",
+        WI_FEATURE,
+        content=_pbi_md(
+            pbi_id=WI_FEATURE, status="inbox", target_repo=TARGET_AUTH, title="Auth PBI"
+        ),
+    )
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "inbox",
+        WI_PENDING,
+        content=_pbi_md(
+            pbi_id=WI_PENDING, status="inbox", target_repo=TARGET_BILLING, title="Billing PBI"
+        ),
+    )
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "inbox",
+        "WI-broken",
+        content=MALFORMED_PBI_MD,
+    )
+    exit_code = status_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--queue-repo",
+            queue_repo,
+            "--json",
+            "--target-repo",
+            TARGET_AUTH,
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    ids = {row["id"] for row in payload["rows"]}
+    # Filtered-out billing PBI is gone; matched auth PBI and the malformed
+    # row (which cannot be filtered on target_repo) both survive.
+    assert ids == {WI_FEATURE, "WI-broken"}
+
+
+def test_unexpected_exception_in_render_returns_exit_2(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per SKILL.md, top-level failures print to stderr and exit 2. A
+    bug inside _render_table or any future change downstream must not
+    bubble a raw traceback.
+    """
+    workspace, queue_repo = queue_env
+    monkeypatch.setattr(
+        status_module,
+        "_render_table",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("synthetic render crash")),
+    )
+    exit_code = status_module.main(["--workspace", str(workspace), "--queue-repo", queue_repo])
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "synthetic render crash" in err
+    assert err.startswith("error: ")
+
+
 def test_state_filter_rejects_unknown_state(
     seeded_queue: tuple[Path, str],
     status_module: ModuleType,
