@@ -475,7 +475,7 @@ git commit -m "feat(ralph-status): new argument parser; resolve queue from TOML"
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Replace `_COLUMN_ORDER`**
+- [x] **Step 1: Replace `_COLUMN_ORDER`**
 
 ```python
 _COLUMN_ORDER: tuple[str, ...] = (
@@ -489,7 +489,7 @@ _COLUMN_ORDER: tuple[str, ...] = (
 )
 ```
 
-- [ ] **Step 2: Replace `_row_to_cells`**
+- [x] **Step 2: Replace `_row_to_cells`**
 
 ```python
 def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
@@ -517,7 +517,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
 
 Note: `target_repo` was added to `PBIRow` by `RALPH-PBI-TARGET-REPO-FIELD` (#40). It is a string field on every PBI's frontmatter.
 
-- [ ] **Step 3: Add `_group_and_sort` to order rows**
+- [x] **Step 3: Add `_group_and_sort` to order rows**
 
 ```python
 def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowError]:
@@ -531,9 +531,9 @@ def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowErr
 
 Call `_group_and_sort` before `_render_table`.
 
-- [ ] **Step 4: Update `_main` to apply the `--target-repo` filter** after collecting rows, before grouping.
+- [x] **Step 4: Update `_main` to apply the `--target-repo` filter** after collecting rows, before grouping.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py

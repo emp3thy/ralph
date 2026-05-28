@@ -72,7 +72,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 _COLUMN_ORDER: tuple[str, ...] = (
-    "REPO",
+    "TARGET",
     "STATE",
     "ID",
     "TYPE",
@@ -80,6 +80,8 @@ _COLUMN_ORDER: tuple[str, ...] = (
     "AGE",
     "TITLE",
 )
+
+_TARGET_DISPLAY_MAX = 50
 
 
 def _age_string(created_at: datetime | None) -> str:
@@ -102,10 +104,16 @@ def _age_string(created_at: datetime | None) -> str:
     return f"{days}d"
 
 
+def _truncate_target(target: str) -> str:
+    if len(target) <= _TARGET_DISPLAY_MAX:
+        return target
+    return target[: _TARGET_DISPLAY_MAX - 3] + "..."
+
+
 def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
     if isinstance(row, PBIRow):
         return [
-            row.repo_name,
+            _truncate_target(row.target_repo) if row.target_repo else "?",
             row.state,
             row.pbi_id,
             row.pbi_type,
@@ -114,7 +122,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
             row.title,
         ]
     return [
-        row.repo_name,
+        "?",
         row.state,
         row.pbi_dir.name,
         "?",
@@ -122,6 +130,18 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
         "?",
         f"(parse error) {row.message}",
     ]
+
+
+def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowError]:
+    """Stable sort by (target_repo, state, created_at) so output is grouped."""
+
+    def key(row: PBIRow | PBIRowError) -> tuple[str, str, str]:
+        if isinstance(row, PBIRow):
+            created = row.created_at.isoformat() if row.created_at else ""
+            return (row.target_repo or "", row.state, created)
+        return ("", row.state, "")
+
+    return sorted(rows, key=key)
 
 
 def _render_table(rows: list[PBIRow | PBIRowError]) -> str:
@@ -218,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
             row for row in rows if isinstance(row, PBIRow) and row.target_repo == args.target_repo
         ]
         rows = filtered
+
+    rows = _group_and_sort(rows)
 
     if args.emit_json:
         sys.stdout.write(_render_json(rows, errors=[]))
