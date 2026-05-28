@@ -634,14 +634,13 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     try:
         # --- Spawn Claude ------------------------------------------------
         if cfg.use_worktrees:
-            # TASK 7 TODO: swap cfg.repo_path for pbi.work_worktree's
-            # clone root once iterate_once threads TargetClone through.
-            work_wt = work_worktree_path(cfg.repo_path, pbi.id)
             pbi_dir_in_queue = queue_worktree_path(cfg.repo_path) / ".ralph" / "current" / pbi.id
+            # ``cwd`` falls back to ``pbi.work_worktree`` inside
+            # ``spawn_claude_p`` (populated by ``_claim_pbi`` from the
+            # target clone), so no explicit cwd kwarg is needed here.
             outcome = spawn_claude_p(
                 cfg,
                 pbi,
-                cwd=work_wt,
                 pbi_dir=pbi_dir_in_queue,
             )
         else:

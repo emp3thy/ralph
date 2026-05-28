@@ -60,6 +60,91 @@ def test_spawn_invokes_claude_with_pbi_context(
     assert "-p" in outcome.stdout
 
 
+def test_spawn_uses_pbi_work_worktree_as_cwd_when_set(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> None:
+    """spawn_claude_p falls back to ``pbi.work_worktree`` for cwd when
+    the explicit ``cwd`` kwarg is omitted (multi-target mode: claim
+    populates ``pbi.work_worktree`` to the per-PBI worktree inside
+    the target clone)."""
+    from dataclasses import replace
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    work_wt = tmp_path / "fake-clone" / ".ralph-work" / "WI-1234"
+    work_wt.mkdir(parents=True)
+    pbi = replace(pbi, work_worktree=work_wt)
+
+    cwd_dump = tmp_path / "cwd.txt"
+    write_claude_script(
+        fake_claude_binary,
+        f"import os, pathlib\npathlib.Path({str(cwd_dump)!r}).write_text(os.getcwd())\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    assert Path(cwd_dump.read_text()).resolve() == work_wt.resolve()
+
+
+def test_spawn_sets_gh_owner_env_from_target_info(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> None:
+    """env['GH_OWNER'] = pbi.target_info.owner so subprocess gh / pr-github
+    calls write to the target repo's owner, not whatever the operator
+    configured globally."""
+    import json
+    from dataclasses import replace
+
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    pbi = replace(
+        pbi,
+        target_info=TargetRepoInfo(host="github.com", owner="orgA", name="repoA"),
+    )
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert env["GH_OWNER"] == "orgA"
+
+
+def test_spawn_omits_gh_owner_when_target_info_absent(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy single-target PBIs (target_info=None) inherit GH_OWNER from
+    the operator's parent env rather than getting an override. The
+    fallback path matters because not all PBIs go through _claim_pbi's
+    parser (e.g. tests constructing PBIs directly)."""
+    import json
+
+    monkeypatch.delenv("GH_OWNER", raising=False)
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    assert pbi.target_info is None
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert "GH_OWNER" not in env
+
+
 def test_classify_pr_created_when_pr_url_provided(tmp_path: Path) -> None:
     """pr_url is the source of truth — set by spawn_claude_p via the
     real gh CLI call. classify_outcome itself just maps the answer."""
