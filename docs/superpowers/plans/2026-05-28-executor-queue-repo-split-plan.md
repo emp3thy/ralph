@@ -1104,13 +1104,15 @@ uv run pytest -q
 
 Expected: all green. Iter-12 actual: 868 passed / 4 skipped.
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 ```bash
 git push -u origin ralph/EXECUTOR-QUEUE-REPO-SPLIT
 ```
 
-Use the `pr` skill's create-pr op or `gh pr create`. PR description points at this plan and the spec.
+Used `gh pr create` (no `pr` skill in this worktree's scope). PR opened:
+**https://github.com/emp3thy/ralph/pull/48** — title
+"EXECUTOR-QUEUE-REPO-SPLIT: executor reads queue from a separate repo".
 
 ---
 
