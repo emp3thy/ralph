@@ -32,6 +32,17 @@
 - Lint/type: `uv run ruff check`, `uv run ruff format --check`, `uv run mypy` clean on touched files.
 - Notes: `skills/ralph-{promote,triage}/scripts/*.py` and `skills/ralph-status/scripts/status.py` still reference the deleted `checkout_queue_branch` import — broken until Tasks 4–6 land. Whole-suite `pytest -q` still expected to fail at import time on those three skills.
 
+## Iteration 5 — 2026-05-28T17:30:00+00:00
+
+- Step Task 6b: rewrote `skills/ralph-status/scripts/status.py` argparse + entry-point flow to operate on the single queue clone. New argument shape: `--state` (unchanged choices), `--target-repo` (new optional URL filter), `--json` (unchanged), `--workspace` (config override), `--queue-repo` (config override). Dropped `--repo` / `--repos-file` / `--branch` / `--no-cleanup` and the `RALPH_QUEUE_BRANCH` env-var fallback.
+- New `_main` flow: `resolve_workspace_root(args.workspace)` → `resolve_queue_repo(args.queue_repo)` → `acquire_queue_clone(...)` → `_collect_rows` walks `STATE_FOLDERS` (or just `--state` if filtered) via `scripts.pbi_reader.enumerate_state`. Applies `--target-repo` filter post-collection. Renderer still uses `row.repo_name` for now (REPO/STATE/ID/TYPE/SEVERITY/AGE/TITLE columns) — Task 6c swaps to a `TARGET` column.
+- `_render_json` + `_row_to_json` rewritten to a single-queue shape: envelope is `{"rows": [...], "errors": []}` with `target_repo` per row and no `repos` array. Task 6d finalises field set + tests.
+- Imports trimmed of `subprocess`, `shutil`, `tempfile`, `os`, `contextlib` (Task 6a deleted their usages; Task 6b cleared the leftover argparse references). Adds `scripts.queue_writer.{QueueWriterError, acquire_queue_clone, resolve_queue_repo, resolve_workspace_root}`.
+- Smoke check: `uv run python skills/ralph-status/scripts/status.py --help` prints the new shape (no `--repo` / `--repos-file` / `--branch` / `--no-cleanup`).
+- Lint/type: `uv run ruff check`, `uv run ruff format`, `uv run mypy ralph_executor scripts skills` clean (66 source files, no issues).
+- Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 6b checkboxes (Steps 1–4 → [x]).
+- Notes: Prior iterations (Task 5 ralph-triage, Task 6a delete worktree machinery) committed in earlier sessions (9e0fe9f, ca8ba45) but did not append to this HISTORY.md — no iteration numbers were claimed for them; this Iteration 5 entry follows directly from Iteration 4 (Task 4). `tests/skills/test_ralph_status.py` still references the old multi-repo fixtures — left untouched per plan ("Do not run tests yet"). Whole-suite `pytest -q` still expected to fail at import on the test module.
+
 ## Iteration 4 — 2026-05-28T16:30:00+00:00
 
 - Step Task 4: rewrote `skills/ralph-promote/scripts/promote.py` to operate on the queue clone as a STATE MOVER (was: severity bumper). Per spec line 143 and plan Task 4, `ralph-promote` now takes `--pbi-id` + `--from <state>` + `--to <state>` (both required, must differ, both restricted to `QUEUE_STATE_FOLDERS`). Dropped `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, `--severity`, `ALLOWED_SEVERITIES`, and the entire severity-bump idempotency dance (head/working severity cross-check, history dedup loop). Reduced the file from 287 LOC → 271 LOC.
