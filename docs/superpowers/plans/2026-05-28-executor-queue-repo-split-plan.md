@@ -221,7 +221,7 @@ The queue equivalent adds a `git pull --ff-only main` after fetch (the queue clo
 - Create: `ralph_executor/queue_clone.py`
 - Test: `tests/executor/test_queue_clone.py`
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/executor/test_queue_clone.py`:
 
@@ -297,7 +297,7 @@ def test_bad_url_raises_queue_clone_error(tmp_path: Path) -> None:
     assert "queue" in str(exc.value).lower()
 ```
 
-- [ ] **Step 3: Run; expect FAIL (module doesn't exist)**
+- [x] **Step 3: Run; expect FAIL (module doesn't exist)**
 
 ```bash
 uv run pytest tests/executor/test_queue_clone.py -v
@@ -305,7 +305,7 @@ uv run pytest tests/executor/test_queue_clone.py -v
 
 Expected: `ModuleNotFoundError: No module named 'ralph_executor.queue_clone'`.
 
-- [ ] **Step 4: Implement `ralph_executor/queue_clone.py`**
+- [x] **Step 4: Implement `ralph_executor/queue_clone.py`**
 
 ```python
 """Idempotent clone of the queue repo into the workspace.
@@ -374,7 +374,7 @@ def ensure_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float 
     return dest
 ```
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_queue_clone.py -v
@@ -382,7 +382,7 @@ uv run pytest tests/executor/test_queue_clone.py -v
 
 Expected: 3 passes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ralph_executor/queue_clone.py tests/executor/test_queue_clone.py
