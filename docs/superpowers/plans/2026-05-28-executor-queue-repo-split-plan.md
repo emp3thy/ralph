@@ -591,15 +591,15 @@ git commit -m "fix(loop,config): _claim_pbi worktree-only; drop legacy single-ch
 **Files:**
 - Modify: `ralph_executor/queue/movements.py`
 
-- [ ] **Step 1: Identify the line**
+- [x] **Step 1: Identify the line**
 
 ```bash
 grep -n "cfg\.queue_branch\|queue_branch" ralph_executor/queue/movements.py
 ```
 
-- [ ] **Step 2: Replace `cfg.queue_branch` with the literal `"main"`** at every hit.
+- [x] **Step 2: Replace `cfg.queue_branch` with the literal `"main"`** at every hit.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 uv run pytest tests/executor/test_movements.py -v
@@ -607,12 +607,18 @@ uv run pytest tests/executor/test_movements.py -v
 
 Expected: tests pass except where fixtures still use `queue_branch=` in their `ExecutorConfig` — handled in Task 9.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ralph_executor/queue/movements.py
 git commit -m "fix(movements): push moves to main, not queue_branch"
 ```
+
+> **Note (Iteration 6):** Task 6 was completed inside Iteration 4's commit
+> `a74e14d fix(loop): EXECUTOR-QUEUE-REPO-SPLIT — drop queue branch swap, push to main`,
+> which rewrote `_persist_iteration_writes`, `iterate_once` push-conflict catch, and
+> `queue/movements.py` together. Verified post-rebase: `grep cfg.queue_branch
+> ralph_executor/queue/` returns zero hits. No separate commit needed.
 
 ---
 
