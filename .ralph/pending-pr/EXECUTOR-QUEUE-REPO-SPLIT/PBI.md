@@ -1,11 +1,11 @@
 ---
 id: EXECUTOR-QUEUE-REPO-SPLIT
 type: feature
-status: current
+status: pending-pr
 severity: high
 attempts: 2
 created_at: 2026-05-28T01:00:00+00:00
-updated_at: 2026-05-28T09:32:59+00:00
+updated_at: 2026-05-28T11:46:22+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---

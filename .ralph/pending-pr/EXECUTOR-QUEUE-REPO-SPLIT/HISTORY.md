@@ -132,3 +132,122 @@
 - Lint: `uv run ruff check tests/executor/test_movements.py` → All checks passed. `ruff format --check` → 1 file already formatted.
 - Commit: forthcoming (`test(queue): EXECUTOR-QUEUE-REPO-SPLIT — sweep test_movements.py for queue-clone model`).
 - Next iteration: Task 9 slice 4 — sweep `tests/executor/test_loop_integration.py` + `tests/executor/test_worktree.py` if they still reference the legacy branch-dance; then attack the cross-tree files (`tests/safety/test_integration_loop.py`, `tests/safety/test_cycle_detector.py`, `tests/test_queue_writer.py`, `tests/test_setup_ralph_queue_github.py`, `tests/skills/test_ralph_promote.py`) plus the `load_config → user_config.read_queue_repo` bridge flagged in iter 8.
+
+## Iteration 12 — 2026-05-28T18:00:00+00:00
+
+- Task 9 slice 4 (final): closed Task 9 — swept the remaining cross-tree
+  test files + bridged `load_config` to user_config + refreshed the stale
+  `use_worktrees` docstring. Picked up a substantial in-flight diff from
+  the prior iteration (`ralph_executor/config.py`,
+  `tests/executor/test_claude_spawn.py`, `test_cli.py`,
+  `test_cli_reconcile.py`, `test_config_toml.py`, `test_git_ops.py`,
+  `test_loop_integration.py`, `test_worktree.py`,
+  `tests/safety/test_cycle_detector.py`, `test_integration_loop.py`).
+- `ralph_executor/config.py` — added `load_config` fallback to
+  `user_config.read_queue_repo()` when the per-repo TOML lacks the key,
+  so the spec's "`queue_repo` in `~/.ralph/config.toml`" operator gate
+  resolves end-to-end. Error/source path strings now point at
+  `user_config_path()` when the URL came from the user-level file.
+  Rewrote the `use_worktrees` field comment to drop the Stage-A
+  single-checkout phrasing (now: `load_config` rejects `False`; queue
+  clone lives at `<workspace_root>/queue/`).
+- `tests/executor/test_claude_spawn.py` — dropped the
+  `_git(fake_repo, "checkout", "ralph-queue")` line from
+  `_setup_current_pbi`; push target swapped to `origin main`.
+- `tests/executor/test_cli.py` — `test_main_init_subcommand_writes_user_config`
+  now passes `--yes` so iter-8's new `_prompt_queue_repo` doesn't try to
+  read from a closed stdin.
+- `tests/executor/test_cli_reconcile.py` — rebuilt the
+  `fake_repo_with_orphan` fixture under `<tmp_path>/ws/queue/` (the
+  queue-clone topology the post-split CLI expects), seeded
+  `queue_repo = "https://github.com/example/queue"` in the config, set
+  `RALPH_WORKSPACE` and `RALPH_REPO_PATH` env vars per test so
+  `load_config` resolves cleanly. Dropped the now-obsolete
+  `RALPH_USE_WORKTREES=0` env on the two stale-orphan tests.
+- `tests/executor/test_config_toml.py` — `test_use_worktrees_toml_false`
+  now asserts `ConfigError("use_worktrees=False is no longer
+  supported")`; added a paired `test_use_worktrees_env_wins_over_toml`
+  that flips TOML `false` back to `true` via the env override (proves
+  the resolver chain is intact).
+- `tests/executor/test_git_ops.py` — added `_push_extra_branch` helper
+  that creates a `feature` branch on the queue clone for any test that
+  needed a second branch (was implicitly relying on the now-gone
+  `ralph-queue` branch). Six test cases reworked.
+- `tests/executor/test_loop_integration.py` — `_stub_spawn` signature
+  widened to accept the new `cwd=` / `pbi_dir=` keyword args
+  `claude_spawn.spawn_claude_p` now takes. `_populate_inbox_via_git`
+  drops the `checkout ralph-queue` / `checkout main` dance; pushes to
+  `main` instead.
+- `tests/executor/test_worktree.py` — module docstring rewritten to
+  reflect that the queue-worktree concept is gone.
+- `tests/safety/test_cycle_detector.py` — `_cfg` swapped
+  `queue_branch=` → `queue_repo=` and `use_worktrees=False` → `True` so
+  the new `load_config` validator (which `ExecutorConfig` does not run
+  on direct construction, but consistency matters for parity).
+- `tests/safety/test_integration_loop.py` — full
+  topology rebuild for the queue-clone model: bare remote at
+  `<tmp>/queue.git`, queue clone at `<tmp>/ws/queue`, `cfg.queue_repo
+  = file://<tmp>/queue.git`, `cfg.workspace_root = <tmp>/ws`,
+  `use_worktrees=True`. `_write_pbi_in_current` drops the branch dance
+  and now pushes to `main` directly. Added `_stub_target_clone` helper
+  (`monkeypatch ralph_executor.target_clone.ensure_clone` to return
+  the queue clone) so the resumed-PBI path's `ensure_clone` call
+  doesn't try to `git clone` `https://github.com/test/repo`. Lambda
+  stubs around `spawn_claude_p` updated to match the wider signature.
+- Tests: `uv run pytest -q` → **868 passed / 4 skipped** (whole repo).
+  Targeted run on the slice-4 file set: 185 passed.
+- Lint: `uv run ruff check .` → All checks passed. `uv run ruff
+  format --check .` → 136 files already formatted.
+- mypy: `uv run mypy ralph_executor scripts skills tests` → one
+  residual `tests/executor/test_claude_spawn.py:855` non-overlapping
+  equality warning (pre-existing, documented in iter-8 HISTORY as
+  out-of-scope; this iter eliminated the two other pre-existing
+  `queue_branch` call-arg errors in `test_cycle_detector.py` /
+  `test_integration_loop.py`).
+- Files deliberately NOT touched (Task 0 categorisation: out of scope
+  for PBI 1, PBI 2 handles them alongside the skills migration):
+  `tests/test_queue_writer.py` + `scripts/queue_writer.py` (legacy
+  direct-push helper used by ralph-add / ralph-triage / ralph-cancel
+  / ralph-promote skills); `tests/test_setup_ralph_queue_github.py`
+  + `scripts/setup_ralph_queue_github.py` (legacy
+  `ralph-queue`-branch + protection bootstrap on a target repo);
+  `tests/skills/test_ralph_*.py` (skill tests); the `scaffold`
+  subcommand in `cli.py` + `setup_cmds.py` which still creates a
+  `ralph-queue` branch via the OLD operator flow. None of these
+  reference `cfg.queue_branch`; they reference the literal string
+  `"ralph-queue"` or constants in `setup_cmds.QUEUE_BRANCH`. Removing
+  them would break the live skills path that operators still use until
+  PBI 2 lands.
+- Plan: ticked Task 9 steps 1–4 and Task 10 steps 1–3. Only Task 10
+  Step 4 (push branch + open PR) is open — next iteration's work.
+- Commit: forthcoming (`test(queue): EXECUTOR-QUEUE-REPO-SPLIT —
+  task 9 slice 4 cross-tree sweep + load_config bridge`).
+- Next iteration: Task 10 Step 4 — `git push -u origin
+  ralph/EXECUTOR-QUEUE-REPO-SPLIT` + open PR via `pr` skill /
+  `gh pr create` (title: `EXECUTOR-QUEUE-REPO-SPLIT: executor reads
+  queue from a separate repo`, body points at PBI directory + spec +
+  plan).
+
+## Iteration 13 — 2026-05-28T18:30:00+00:00 — PR created
+
+- Pushed `ralph/EXECUTOR-QUEUE-REPO-SPLIT` to `origin` (new branch, set
+  upstream tracking).
+- Opened PR via `gh pr create` (the `pr` skill scripts are not on the
+  current PATH inside the executor's per-PBI worktree; `gh` is the
+  pragmatic equivalent for the github host).
+- PR: **https://github.com/emp3thy/ralph/pull/48**
+- Branch: `ralph/EXECUTOR-QUEUE-REPO-SPLIT`
+- Title: `EXECUTOR-QUEUE-REPO-SPLIT: executor reads queue from a
+  separate repo`
+- PR body covers: summary + PBI 1 / PBI 2 scope split; full per-file
+  changes list; operator gate (5-step post-merge sequence: empty repo
+  → migrate-queue run → TOML add → restart); test plan (full
+  `uv run pytest` + ruff + format + mypy gate results, plus the
+  manual post-merge `migrate-queue` smoke step left unchecked for the
+  operator); references to PBI dir + spec + plan.
+- Plan: ticked Task 10 Step 4 — all boxes closed.
+- Commit: forthcoming (`docs(plans): tick Task 10 Step 4 — PR #48
+  opened`).
+- Executor will move this PBI from `current/` to `pending-pr/` on the
+  next sweep; any reviewer comments arrive as a `PR-feedback` PBI in
+  a future iteration.
