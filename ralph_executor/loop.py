@@ -33,9 +33,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+if TYPE_CHECKING:
+    from ralph_executor.url_utils import TargetRepoInfo
 
 from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
@@ -446,13 +449,15 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     Worktree mode (``cfg.use_worktrees=True``):
       1. Ensure the long-lived queue worktree at
          ``<repo>/.ralph-work/queue/`` is on ``cfg.queue_branch``.
-      2. ``git fetch origin`` so ``origin/<main_branch>`` and any
-         existing ``origin/ralph/<PBI-ID>`` ref are current.
+      2. ``target_clone.ensure_clone`` — clone-once / fetch-each-iter the
+         target repo into ``<workspace_root>/clones/<owner>-<name>/``;
+         ``TargetUnreachable`` maps to ``_ClaimError('target unreachable: …')``.
       3. ``move_inbox_to_current`` operates against the queue worktree
          (movements._move resolves the path via ``cfg.use_worktrees``).
-      4. Materialise the per-PBI work worktree at
-         ``<repo>/.ralph-work/repo-<PBI-ID>/`` on ``ralph/<PBI-ID>``,
-         forked from ``origin/<main_branch>`` when the branch is new.
+      4. Materialise the per-PBI work worktree INSIDE the target clone at
+         ``<clone_root>/.ralph-work/<PBI-ID>/`` on ``ralph/<PBI-ID>``,
+         forked from the clone's ``origin/<main_branch>`` when the branch
+         is new.
 
     Legacy single-checkout mode (``cfg.use_worktrees=False``):
       1. ``move_inbox_to_current`` (commits + pushes on ralph-queue,
@@ -464,6 +469,8 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          feature branch is checked out again in ``_run_ralph`` just
          before spawning Claude.
     """
+    from dataclasses import replace
+
     from ralph_executor.url_utils import parse_target_repo
 
     target_url = _read_target_repo_from_pbi(pbi)
@@ -475,7 +482,7 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         raise _ClaimError(f"unsupported host {info.host!r} (only github.com is supported)")
 
     if cfg.use_worktrees:
-        return _claim_pbi_worktree(cfg, pbi)
+        return _claim_pbi_worktree(cfg, pbi, target_url=target_url, info=info)
 
     event_log = open_log(_queue_repo_root(cfg))
     try:
@@ -497,24 +504,33 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         git_ops.checkout_new(cfg.repo_path, branch)
     # Return to the queue branch so .ralph/ is visible on disk.
     git_ops.checkout(cfg.repo_path, cfg.queue_branch)
-    return moved
+    return replace(moved, target_repo=target_url, target_info=info)
 
 
-def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
+def _claim_pbi_worktree(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    target_url: str,
+    info: TargetRepoInfo,
+) -> PBI:
     """Worktree-mode implementation of ``_claim_pbi``.
 
     The primary checkout's branch is never touched. ``.ralph/`` reads
     and writes go through the queue worktree; code edits go through the
-    per-PBI work worktree.
+    per-PBI work worktree, which now lives INSIDE the target's clone
+    (``<workspace_root>/clones/<owner>-<name>/.ralph-work/<PBI-ID>/``).
     """
+    from dataclasses import replace
+
+    from ralph_executor import target_clone as tc_mod
+
     queue_wt = queue_worktree_path(cfg.repo_path)
     ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
-    # Update remote-tracking refs so the work worktree can fork from a
-    # current ``origin/<main_branch>``. We deliberately do NOT advance the
-    # local ``<main_branch>`` ref — keeping main untouched avoids fighting
-    # the primary checkout when the operator happens to have main checked
-    # out there.
-    git_ops.fetch(cfg.repo_path)
+    try:
+        clone = tc_mod.ensure_clone(info, workspace_root=cfg.workspace_root)
+    except tc_mod.TargetUnreachable as exc:
+        raise _ClaimError(f"target unreachable: {exc}") from exc
     event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
@@ -526,16 +542,19 @@ def _claim_pbi_worktree(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     finally:
         event_log.close()
     branch = _feature_branch_name(moved)
-    # TASK 7 TODO: swap cfg.repo_path for the target clone_root once
-    # _claim_pbi parses pbi.target_repo and runs ensure_clone first.
-    work_wt = work_worktree_path(cfg.repo_path, moved.id)
+    work_wt = work_worktree_path(clone.clone_root, moved.id)
     ensure_worktree(
-        cfg.repo_path,
+        clone.clone_root,
         worktree_path=work_wt,
         branch=branch,
         create_branch_from=f"origin/{cfg.main_branch}",
     )
-    return moved
+    return replace(
+        moved,
+        target_repo=target_url,
+        target_info=info,
+        work_worktree=work_wt,
+    )
 
 
 def _switch_to_feature_branch(cfg: ExecutorConfig, pbi: PBI) -> None:

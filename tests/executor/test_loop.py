@@ -785,14 +785,34 @@ def test_file_touched_skipped_on_empty_commit(
 def cfg_for_repo_worktree(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[ExecutorConfig]:
     """Worktree-mode variant of ``cfg_for_repo`` with best-effort cleanup.
 
     Pytest's ``tmp_path`` cleanup trips on Windows when ``.ralph-work/``
     still holds git-registered worktrees; force-remove them on teardown
     so the next test (and the harness) start clean.
+
+    Task 7 sub-step 7C wires ``_claim_pbi`` to call ``target_clone.ensure_clone``
+    before creating the work worktree. To keep the existing worktree-mode
+    tests (which never set up a real clone) working unchanged, this fixture
+    monkeypatches ``ensure_clone`` to return a ``TargetClone`` whose
+    ``clone_root`` IS ``fake_repo``. Tests that need a distinct clone root
+    can override the monkeypatch.
     """
     cfg = dataclasses.replace(cfg_for_repo, use_worktrees=True)
+
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    def _fake_ensure_clone_to_fake_repo(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=fake_repo)
+
+    monkeypatch.setattr(
+        "ralph_executor.target_clone.ensure_clone",
+        _fake_ensure_clone_to_fake_repo,
+    )
+
     try:
         yield cfg
     finally:
@@ -1189,3 +1209,120 @@ def test_claim_raises_claim_error_for_invalid_url(
     pbi = _build_pbi(pbi_dir, "WI-BAD")
     with pytest.raises(_ClaimError, match="invalid target_repo URL"):
         _claim_pbi(cfg_for_repo, pbi)
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7C: ensure_clone + worktree creation inside clone
+# ----------------------------------------------------------------------
+
+
+def test_claim_in_worktree_mode_clones_target_and_creates_worktree_in_clone(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Happy path: worktree-mode claim runs ensure_clone, creates the per-PBI
+    worktree INSIDE the clone, and returns a PBI with target_info +
+    work_worktree populated."""
+    from dataclasses import replace as dc_replace
+
+    from ralph_executor.loop import _claim_pbi
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    custom_ws = tmp_path / "ws"
+    clone_root = custom_ws / "clones" / "test-repo"
+    cfg = dc_replace(cfg_for_repo_worktree, workspace_root=custom_ws)
+
+    ensure_clone_calls: list[tuple[TargetRepoInfo, Path]] = []
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        ensure_clone_calls.append((info, workspace_root))
+        clone_root.mkdir(parents=True, exist_ok=True)
+        return TargetClone(info=info, clone_root=clone_root)
+
+    ensure_wt_calls: list[dict[str, object]] = []
+
+    def _fake_ensure_worktree(
+        git_root: Path,
+        *,
+        worktree_path: Path,
+        branch: str,
+        create_branch_from: str | None = None,
+    ) -> None:
+        ensure_wt_calls.append(
+            {
+                "git_root": Path(git_root),
+                "worktree_path": Path(worktree_path),
+                "branch": branch,
+                "create_branch_from": create_branch_from,
+            }
+        )
+
+    _populate_inbox(fake_repo, pbi_id="WI-CLONE")
+
+    # Prime the queue worktree and pick the PBI BEFORE installing the
+    # ensure_worktree stub — otherwise _pull_queue's real ensure_worktree
+    # call gets replaced with the no-op stub and git pull errors on a
+    # non-existent directory.
+    from ralph_executor.loop import _pull_queue
+
+    _pull_queue(cfg)
+    source = FilesystemQueueSource(cfg)
+    picked = source.pick_next()
+    assert picked is not None and picked.id == "WI-CLONE"
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
+    monkeypatch.setattr("ralph_executor.loop.ensure_worktree", _fake_ensure_worktree)
+
+    claimed = _claim_pbi(cfg, picked)
+
+    # ensure_clone was called with the parsed info + custom workspace.
+    assert len(ensure_clone_calls) == 1
+    called_info, called_ws = ensure_clone_calls[0]
+    assert called_info.host == "github.com"
+    assert called_info.owner == "test"
+    assert called_info.name == "repo"
+    assert called_ws == custom_ws
+
+    # The per-PBI worktree was materialised against the CLONE, not ralph's repo.
+    work_wt_calls = [c for c in ensure_wt_calls if c["branch"] == "ralph/WI-CLONE"]
+    assert len(work_wt_calls) == 1
+    assert work_wt_calls[0]["git_root"] == clone_root
+    assert work_wt_calls[0]["worktree_path"] == clone_root / ".ralph-work" / "WI-CLONE"
+    assert work_wt_calls[0]["create_branch_from"] == "origin/main"
+
+    # Returned PBI carries the multi-target fields.
+    assert claimed.target_repo == "https://github.com/test/repo"
+    assert claimed.target_info is not None
+    assert claimed.target_info.owner == "test"
+    assert claimed.target_info.name == "repo"
+    assert claimed.work_worktree == clone_root / ".ralph-work" / "WI-CLONE"
+
+
+def test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ensure_clone -> TargetUnreachable maps to _ClaimError("target unreachable: ...")."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+    from ralph_executor.target_clone import TargetUnreachable
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    _populate_inbox(fake_repo, pbi_id="WI-NET")
+    from ralph_executor.loop import _pull_queue
+
+    _pull_queue(cfg_for_repo_worktree)
+    source = FilesystemQueueSource(cfg_for_repo_worktree)
+    picked = source.pick_next()
+    assert picked is not None
+
+    def _raise_unreachable(info: TargetRepoInfo, workspace_root: Path) -> None:
+        raise TargetUnreachable("network unreachable")
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
+
+    with pytest.raises(_ClaimError, match=r"target unreachable: network unreachable"):
+        _claim_pbi(cfg_for_repo_worktree, picked)
