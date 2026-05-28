@@ -8,6 +8,7 @@ the PR skill, moving folders, and writing feedback PBIs.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -27,12 +28,14 @@ from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
 from ralph_executor.sweep.pr_state import AdoSkillError
+from ralph_executor.sweep.target import read_target_info
 from ralph_executor.sweep.types import (
     Action,
     CommentSnapshot,
     Decision,
     PrSnapshot,
 )
+from ralph_executor.url_utils import TargetRepoInfo
 
 log = logging.getLogger(__name__)
 
@@ -290,10 +293,16 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
     attempts = _read_attempts(pbi_dir)
     sidecar = sidecar_state.load_sidecar(pbi_dir)
     try:
+        target_info = read_target_info(pbi_dir)
+    except ValueError as exc:
+        raise _SweepPbiError(f"invalid target_repo: {exc}") from exc
+    sub_env, sub_repo = _per_pbi_subprocess_overrides(target_info, ctx)
+    try:
         snapshot = pr_state.fetch(
             pr_id=pr_id,
             skill_scripts_path=ctx.ado_pr_scripts_path,
-            repo_name=ctx.repo_name or ctx.queue_root.parent.name,
+            repo_name=sub_repo,
+            env=sub_env,
         )
     except AdoSkillError as err:
         raise _SweepPbiError(f"PR skill failure: {err}") from err
@@ -334,6 +343,7 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         snapshot=snapshot,
         sidecar=sidecar,
         ctx=ctx,
+        target_info=target_info,
     )
     return PbiActionRecord(
         pbi_id=pbi_dir.name,
@@ -341,6 +351,25 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         action=decision.action,
         reason=decision.reason,
     )
+
+
+def _per_pbi_subprocess_overrides(
+    target_info: TargetRepoInfo | None,
+    ctx: SweepContext,
+) -> tuple[dict[str, str] | None, str]:
+    """Compute ``(env, repo_name)`` for the sweep's per-PBI subprocess calls.
+
+    When the PBI declares a ``target_repo`` (multi-target rollout):
+      env = parent env overlaid with ``GH_OWNER=<owner>``; repo = ``<name>``.
+    When absent (legacy single-target): env stays ``None`` (subprocess
+    inherits the parent env) and ``repo_name`` falls back to
+    ``ctx.repo_name`` (or ``queue_root.parent.name``, matching the
+    pre-PBI-2 behaviour at the call sites).
+    """
+    if target_info is None:
+        return None, ctx.repo_name or ctx.queue_root.parent.name
+    env = {**os.environ, "GH_OWNER": target_info.owner}
+    return env, target_info.name
 
 
 def _read_pr_id(pbi_dir: Path) -> int:
@@ -390,6 +419,7 @@ def _dispatch(
     snapshot: PrSnapshot,
     sidecar: sidecar_state.SweepSidecar,
     ctx: SweepContext,
+    target_info: TargetRepoInfo | None = None,
 ) -> None:
     qr = ctx.queue_root
     a = decision.action
@@ -411,7 +441,12 @@ def _dispatch(
     elif a is Action.PING_REVIEWER:
         _append_history(pbi_dir, decision.reason, ctx)
     elif a is Action.MERGE_PR:
-        _dispatch_merge_pr(pbi_dir=pbi_dir, snapshot=snapshot, ctx=ctx)
+        _dispatch_merge_pr(
+            pbi_dir=pbi_dir,
+            snapshot=snapshot,
+            ctx=ctx,
+            target_info=target_info,
+        )
     elif a is Action.NOOP:
         return
     else:  # pragma: no cover — defensive
@@ -624,7 +659,13 @@ def _emit_pr_green_then_red(
         )
 
 
-def _invoke_merge_pr(*, pr_id: int, ctx: SweepContext) -> int:
+def _invoke_merge_pr(
+    *,
+    pr_id: int,
+    ctx: SweepContext,
+    repo_name: str | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
     """Subprocess-invoke the ``pr-github`` ``merge_pr.py`` skill.
 
     Returns the raw subprocess exit code (0 = merged, 3 = HTTP error,
@@ -634,6 +675,10 @@ def _invoke_merge_pr(*, pr_id: int, ctx: SweepContext) -> int:
     "retry next sweep" condition. Any other unexpected exit also raises,
     so the dispatch branch never silently swallows a new exit code added
     to the skill in the future.
+
+    ``repo_name`` and ``env`` (when provided) override the legacy
+    ``ctx.repo_name`` + inherited-env behaviour with per-PBI values
+    derived from the PBI's ``target_repo``.
     """
     script = ctx.ado_pr_scripts_path / "merge_pr.py"
     if not script.is_file():
@@ -642,7 +687,7 @@ def _invoke_merge_pr(*, pr_id: int, ctx: SweepContext) -> int:
         sys.executable,
         str(script),
         "--repo",
-        ctx.repo_name or ctx.queue_root.parent.name,
+        repo_name or ctx.repo_name or ctx.queue_root.parent.name,
         "--pr-id",
         str(pr_id),
     ]
@@ -651,6 +696,7 @@ def _invoke_merge_pr(*, pr_id: int, ctx: SweepContext) -> int:
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     if result.returncode == 2:
         raise _SweepPbiError(
@@ -664,6 +710,7 @@ def _dispatch_merge_pr(
     pbi_dir: Path,
     snapshot: PrSnapshot,
     ctx: SweepContext,
+    target_info: TargetRepoInfo | None = None,
 ) -> None:
     """Run merge_pr.py for this PBI and route its exit code.
 
@@ -674,7 +721,8 @@ def _dispatch_merge_pr(
     GitHub error). Anything else → raise ``_SweepPbiError`` so the
     per-PBI guard records it and continues with the remaining PBIs.
     """
-    rc = _invoke_merge_pr(pr_id=snapshot.pr_id, ctx=ctx)
+    sub_env, sub_repo = _per_pbi_subprocess_overrides(target_info, ctx)
+    rc = _invoke_merge_pr(pr_id=snapshot.pr_id, ctx=ctx, repo_name=sub_repo, env=sub_env)
     if rc == 0:
         _move_with_history(
             pbi_dir,

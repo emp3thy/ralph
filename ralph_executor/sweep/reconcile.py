@@ -32,7 +32,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ralph_executor.sweep.runner import SweepContext
+from ralph_executor.sweep.runner import SweepContext, _per_pbi_subprocess_overrides
+from ralph_executor.sweep.target import read_target_info
 from ralph_executor.sweep.types import (
     CurrentReconcileAction,
     CurrentReconcileReport,
@@ -65,12 +66,19 @@ def _invoke_lookup(
     ctx: SweepContext,
     branch: str,
     repo: str,
+    *,
+    env: dict[str, str] | None = None,
 ) -> _LookupResult:
     """Run lookup_by_branch.py and parse stdout.
 
     Raises ReconcileError on exit 2 / malformed JSON.
     Returns ``_LookupResult(state="api_error", ...)`` on exit 3 so the
     caller can map to KEEP_API_ERROR without raising.
+
+    ``env`` (when provided) REPLACES the subprocess environment — pass a
+    superset of ``os.environ`` overlaid with per-PBI overrides
+    (e.g. ``GH_OWNER`` from the orphan PBI's ``target_repo``). When
+    ``None``, the subprocess inherits the parent process env.
     """
     script = ctx.ado_pr_scripts_path / "lookup_by_branch.py"
     proc = subprocess.run(
@@ -86,6 +94,7 @@ def _invoke_lookup(
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if proc.returncode == 2:
         raise ReconcileError(f"lookup_by_branch validation error (exit 2): {proc.stderr.strip()}")
@@ -152,10 +161,15 @@ def reconcile_orphan(
     """
     pbi_id = pbi_dir.name
     branch = f"ralph/{pbi_id}"
-    repo = _resolve_repo_name(ctx)
+    try:
+        target_info = read_target_info(pbi_dir)
+    except ValueError as exc:
+        raise ReconcileError(f"invalid target_repo in {pbi_dir}: {exc}") from exc
+    sub_env, sub_repo = _per_pbi_subprocess_overrides(target_info, ctx)
+    repo = sub_repo if target_info is not None else _resolve_repo_name(ctx)
     queue_root = ctx.queue_root
 
-    result = _invoke_lookup(ctx, branch=branch, repo=repo)
+    result = _invoke_lookup(ctx, branch=branch, repo=repo, env=sub_env)
 
     if result.state == "api_error":
         return ReconcileAction.KEEP_API_ERROR
