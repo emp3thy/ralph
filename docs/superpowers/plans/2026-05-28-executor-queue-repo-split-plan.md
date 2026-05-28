@@ -193,21 +193,33 @@ git commit -m "config(executor): replace queue_branch with queue_repo"
 
 ## Task 2: `queue_clone.py` — clone-on-first, pull-on-subsequent
 
-**Confidence: 90%** — mirrors `target_clone.py`. The `main` (not `ralph-queue`) default branch is the only conceptual delta.
+**Confidence: 95%** — `target_clone.py` exists on `main` (landed via `RALPH-MULTI-REPO-CHECKOUT` #44). Quote its `ensure_clone` shape verbatim; only differences are: fixed clone path `<workspace_root>/queue/` (not `clones/<owner>/<name>/`), takes URL string (not `TargetRepoInfo`), raises `QueueCloneError` (not `TargetUnreachable`), and pulls `main` on subsequent calls (queue clone IS the working tree, not just a ref fetch source).
 
-**Mitigation:** Before writing, read `ralph_executor/target_clone.py` end-to-end so the new module follows the same error-handling, exception-type, and timeout conventions.
+**Reference (already on main, do not duplicate without need):**
+
+```python
+# ralph_executor/target_clone.py
+def ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+    clone_root = workspace_root / "clones" / info.owner / info.name
+    clone_root.parent.mkdir(parents=True, exist_ok=True)
+    if (clone_root / ".git").is_dir():
+        try:
+            git_ops.fetch(clone_root)
+        except git_ops.GitCommandError as exc:
+            raise TargetUnreachable(f"git fetch failed for {info.clone_url}: {exc}") from exc
+    else:
+        try:
+            git_ops.clone(info.clone_url, clone_root)
+        except git_ops.GitCommandError as exc:
+            raise TargetUnreachable(f"git clone failed for {info.clone_url}: {exc}") from exc
+    return TargetClone(info=info, clone_root=clone_root)
+```
+
+The queue equivalent adds a `git pull --ff-only main` after fetch (the queue clone IS the working tree).
 
 **Files:**
 - Create: `ralph_executor/queue_clone.py`
 - Test: `tests/executor/test_queue_clone.py`
-
-- [ ] **Step 1: Read the existing pattern**
-
-```bash
-uv run python -c "import pathlib; print(pathlib.Path('ralph_executor/target_clone.py').read_text())"
-```
-
-Note: function signature, exception class, error message style, `git fetch && git pull` flag usage. Copy the structural shape.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -465,79 +477,109 @@ git commit -m "feat(loop): _pull_queue uses ensure_queue_clone"
 
 ## Task 4: Remove `_ensure_on_queue_branch` callers + `queue_branch` push references
 
-**Confidence: 88%** — mechanical but spans many call sites in loop.py.
+**Confidence: 94%** — exact lines enumerated from a fresh grep against the post-rebase `main`. Mechanical edit at named lines.
 
-**Mitigation:** Use Task 0's enumerated list. Edit each call site, then run the full test suite locally to catch any remaining reference.
+**Call sites in `ralph_executor/loop.py` (line numbers as of post-rebase HEAD):**
+
+| Line | Statement | Action |
+|---|---|---|
+| 255–266 | `def _ensure_on_queue_branch(...)` definition | Delete whole function. |
+| 302 | `_ensure_on_queue_branch(cfg)` inside `_persist_iteration_writes` | Delete the line. |
+| 303 | `queue_repo = queue_worktree_path(...) if cfg.use_worktrees else cfg.repo_path` | Replace with `queue_repo = _queue_repo_root(cfg)`. |
+| 322 | `git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)` | Replace branch arg with `"main"`. |
+| 338 | `log.debug("pulling %s", cfg.queue_branch)` | Replace with `log.debug("refreshing queue clone")`. |
+| 343 | `ensure_worktree(...)` in worktree-mode `_pull_queue` | Whole `_pull_queue` body collapses to `ensure_queue_clone(cfg.workspace_root, cfg.queue_repo)`. See Task 3. |
+| 344 | `git_ops.pull(queue_wt, cfg.queue_branch)` | Removed with the rest of `_pull_queue`. |
+| 346 | `_ensure_on_queue_branch(cfg)` in legacy-mode `_pull_queue` | Delete. |
+| 347 | `git_ops.pull(cfg.repo_path, cfg.queue_branch)` | Delete. |
+| 592 | `git_ops.checkout(cfg.repo_path, cfg.queue_branch)` end of `_claim_pbi` legacy path | Covered in Task 5. |
+| 615 | `ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)` in `_claim_pbi_worktree` | Covered in Task 5. |
+| 669 | `_ensure_on_queue_branch(cfg)` | Delete. |
+| 815 | docstring reference `cfg.queue_branch` | Update docstring text. |
+| 822 | `queue_repo = _queue_repo_root(cfg)` (already uses helper) | No change. |
+
+**Call sites in `ralph_executor/queue/movements.py`:**
+
+| Line | Statement | Action |
+|---|---|---|
+| 106 | `git_ops.checkout(queue_repo, cfg.queue_branch)` | Delete. |
+| 128 | `git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)` | Replace branch arg with `"main"`. |
 
 **Files:**
-- Modify: `ralph_executor/loop.py`
+- Modify: `ralph_executor/loop.py`, `ralph_executor/queue/movements.py`
 
-- [ ] **Step 1: Enumerate every `_ensure_on_queue_branch` and `cfg.queue_branch` reference inside loop.py**
+- [ ] **Step 1: Make every edit in the table above**
+
+Use the line numbers as anchors. Re-grep after editing — there should be zero `cfg.queue_branch` references in production code:
 
 ```bash
-grep -n "_ensure_on_queue_branch\|cfg\.queue_branch" ralph_executor/loop.py
+grep -n "cfg\.queue_branch\|_ensure_on_queue_branch" ralph_executor/
 ```
 
-- [ ] **Step 2: Delete every `_ensure_on_queue_branch(cfg)` line**
-
-The queue clone is permanently on `main`; nothing to swap. Each call becomes a no-op delete.
-
-- [ ] **Step 3: Replace every `git_ops.push(queue_repo, cfg.queue_branch)` with `git_ops.push(queue_repo, "main")`**
-
-- [ ] **Step 4: Run the full executor + loop test suite**
+- [ ] **Step 2: Run the full executor + loop test suite**
 
 ```bash
 uv run pytest tests/executor/ tests/safety/ -v
 ```
 
-Failures are expected for tests that still construct `ExecutorConfig(queue_branch=...)`. Those get fixed in Task 9.
+Failures expected only for fixtures still using `queue_branch="…"`. Those get fixed in Task 9.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add ralph_executor/loop.py
+git add ralph_executor/loop.py ralph_executor/queue/movements.py
 git commit -m "fix(loop): drop queue branch swapping and push to main"
 ```
 
 ---
 
-## Task 5: `_claim_pbi` updates for queue clone layout
+## Task 5: `_claim_pbi` + `_claim_pbi_worktree` updates
 
-**Confidence: 88%** — claim already worktree-aware after multi-repo PBI; needs path-resolution review.
+**Confidence: 93%** — post-rebase `_claim_pbi` already integrates `target_clone.ensure_clone` for the per-PBI worktree. Only two lines reference `cfg.queue_branch` and need surgical edits.
 
-**Mitigation:** Before editing, read the full current `_claim_pbi` and `_claim_pbi_worktree`. Confirm `pbi.path` resolves against the queue clone (`<workspace_root>/queue/.ralph/inbox/<id>/`) — the multi-repo PBI's `parse_pbi_directory` likely already does this, but verify.
+**Current state of `_claim_pbi` (post-rebase, lines 524–593):** the function reads `target_repo` from the PBI, calls `parse_target_repo`, host-gates GitHub, then branches into worktree vs legacy mode. The legacy path ends with `git_ops.checkout(cfg.repo_path, cfg.queue_branch)` (line 592). The worktree path calls `ensure_worktree(..., branch=cfg.queue_branch)` (line 615) on the queue worktree.
+
+After the split:
+- **Legacy mode (lines 583–593)**: the entire branch-dance is irrelevant — there's no "swap back to ralph-queue" because the queue clone is its own checkout. Delete the legacy mode. With `queue_repo` model, `use_worktrees=False` is no longer a supported config; in `load_config`, raise `ConfigError` if `use_worktrees` is False. (Update Task 1 to enforce this — see below.)
+- **Worktree mode (`_claim_pbi_worktree`, line 596+)**: the queue worktree concept disappears (the queue clone IS the working tree). Replace `ensure_worktree(...)` for the queue at line 615 with a no-op (already covered by `_pull_queue` calling `ensure_queue_clone`). Per-PBI work worktree under `<target-clone>/.ralph-work/<id>/` is unchanged — that's the multi-repo PBI's existing logic.
 
 **Files:**
-- Modify: `ralph_executor/loop.py`
+- Modify: `ralph_executor/loop.py` (lines 524–660), `ralph_executor/config.py` (load_config validation)
 
-- [ ] **Step 1: Read current `_claim_pbi` family**
+- [ ] **Step 1: Add a `use_worktrees=False` rejection to `load_config`**
 
-```bash
-grep -n "^def _claim_pbi" ralph_executor/loop.py
+In `config.py` `load_config`, after resolving `use_worktrees`, raise:
+
+```python
+if not use_worktrees:
+    raise ConfigError(
+        "use_worktrees=False is no longer supported. The queue is a separate "
+        "clone on the operator's workspace; the single-checkout branch-dance "
+        "model is gone. Remove 'use_worktrees = false' from your config.toml."
+    )
 ```
 
-Read both functions (lines `_claim_pbi` and `_claim_pbi_worktree`). Confirm:
-- Source path of the PBI = queue clone's `.ralph/inbox/<id>/` (via `pbi.path`).
-- Destination = queue clone's `.ralph/current/<id>/`.
-- Per-PBI worktree creation under target clone — unchanged.
+- [ ] **Step 2: Delete the legacy mode from `_claim_pbi`**
 
-- [ ] **Step 2: Edit any path computation that assumed `<repo_path>/.ralph-work/queue/`**
+Lines 570–593 (the `if cfg.use_worktrees:` branch + `else:` body): keep the multi-target prelude (parse_target_repo, host gate, `_ClaimError` raises) and the call to `_claim_pbi_worktree`. Delete the `else:` legacy branch entirely.
 
-Replace with `cfg.workspace_root / "queue"`. Use `_queue_repo_root(cfg)` where the helper already covers it.
+- [ ] **Step 3: Edit `_claim_pbi_worktree` (line 596+)**
 
-- [ ] **Step 3: Run the claim-related tests**
+Delete the `ensure_worktree(...)` call that creates the queue worktree (line 615). The queue is already a clone on disk — `_pull_queue` materialised it earlier in the iteration. Keep everything related to the per-PBI work worktree inside the target clone.
+
+- [ ] **Step 4: Run claim-related tests**
 
 ```bash
 uv run pytest tests/executor/ -k "claim or pbi" -v
 ```
 
-Make passes (some failures are expected for fixture-related issues, which Task 9 handles).
+Failures expected only for fixtures still passing `use_worktrees=False` or constructing `ExecutorConfig(queue_branch=…)`. Task 9 handles fixtures.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ralph_executor/loop.py
-git commit -m "fix(loop): _claim_pbi reads queue clone under workspace_root/queue"
+git add ralph_executor/loop.py ralph_executor/config.py
+git commit -m "fix(loop,config): _claim_pbi worktree-only; drop legacy single-checkout mode"
 ```
 
 ---
@@ -574,11 +616,9 @@ git commit -m "fix(movements): push moves to main, not queue_branch"
 
 ---
 
-## Task 7: CLI — add `--queue-repo` flag + `migrate-queue` subcommand
+## Task 7a: `copy_queue_tree_filtered` — pure file-filter helper
 
-**Confidence: 80%** — new subcommand, new file copy logic.
-
-**Mitigation:** Implement the file-filter helper first with its own unit test (independent of the CLI wiring). Then layer the subcommand on top. Refuse the "target empty" check via `git ls-remote --heads` (no commits → empty output for `main`), avoiding a gh-API roundtrip.
+**Confidence: 95%** — pure function over the filesystem; unit-testable without git.
 
 **Files:**
 - Create: `ralph_executor/migrate_queue.py` (the file-filter helper + the subcommand handler)
@@ -837,27 +877,94 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 4: Run the tests; expect PASS**
+- [ ] **Step 4: Run the helper test; expect PASS**
+
+```bash
+uv run pytest tests/executor/test_migrate_queue.py::test_copy_filtered_excludes_done -v
+```
+
+- [ ] **Step 5: Commit (helper only — CLI wiring follows in 7b)**
+
+```bash
+git add ralph_executor/migrate_queue.py tests/executor/test_migrate_queue.py
+git commit -m "feat(migrate-queue): copy_queue_tree_filtered helper"
+```
+
+---
+
+## Task 7b: `migrate-queue` CLI subcommand + git push
+
+**Confidence: 92%** — wraps Task 7a's helper with argparse + git calls. Empty-target check via `git ls-remote --heads` (no commits → empty output) — no gh-API roundtrip.
+
+**Files:**
+- Modify: `ralph_executor/migrate_queue.py` (add `main` and `_target_is_empty`), `ralph_executor/cli.py`
+
+- [ ] **Step 1: Add the remaining tests**
+
+`tests/executor/test_migrate_queue.py`:
+
+```python
+def test_migrate_main_pushes_to_empty_target(tmp_path: Path) -> None:
+    """Full migration smoke: source → bare remote → clone-and-verify."""
+    src = _seed_source(tmp_path)
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "--initial-branch=main")
+
+    rc = migrate_main(["--source", str(src), "--target", f"file://{bare}"])
+    assert rc == 0
+
+    clone = tmp_path / "verify"
+    subprocess.run(["git", "clone", str(bare), str(clone)], check=True, capture_output=True)
+    assert (clone / ".ralph" / "inbox" / "WI-1" / "PBI.md").exists()
+    assert not (clone / ".ralph" / "done").exists()
+
+
+def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
+    src = _seed_source(tmp_path)
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "--initial-branch=main")
+    # Push a seed commit so the target is non-empty.
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch=main")
+    (seed / "x").write_text("x", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    with pytest.raises(MigrateQueueError) as exc:
+        migrate_main(["--source", str(src), "--target", f"file://{bare}"])
+    assert "not empty" in str(exc.value).lower()
+```
+
+- [ ] **Step 2: Run; expect FAIL** (only `copy_queue_tree_filtered` exists from 7a)
+
+- [ ] **Step 3: Add `_target_is_empty` and `main` to `migrate_queue.py`**
+
+Use the exact bodies from Task 7a's earlier `migrate_queue.py` draft (they were already paired in the original 7). The `main` function:
+1. Parses `--source` and `--target`.
+2. Validates source has `.ralph/inbox/`.
+3. Calls `_target_is_empty(target)` — raises `MigrateQueueError` if non-empty.
+4. Stages a temp dir.
+5. Calls `copy_queue_tree_filtered(src, stage)` (from 7a).
+6. `git init --initial-branch=main`, `git add .`, `git commit`, `git remote add origin`, `git push origin main`.
+7. Prints summary and follow-up TOML / branch-deletion commands.
+
+- [ ] **Step 4: Wire into `ralph_executor/cli.py`**
+
+Add an `argparse` subcommand `migrate-queue` whose handler imports and calls `ralph_executor.migrate_queue.main(remaining_argv)`. Add a top-level `--queue-repo` flag (one-shot override of TOML) handled in the same `_apply_overrides` machinery as other flags. The migrate subcommand uses its own `--target`; the top-level flag does not pass through.
+
+- [ ] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_migrate_queue.py -v
-```
-
-- [ ] **Step 5: Wire `migrate-queue` into the CLI**
-
-In `ralph_executor/cli.py`:
-- Add an `argparse` subcommand `migrate-queue` whose handler imports and calls `ralph_executor.migrate_queue.main(remaining_argv)`.
-- Add a `--queue-repo` top-level flag (one-shot override of TOML) handled in the same `_apply_overrides` machinery as other flags. Take care: only the top-level / default subcommand consumes `--queue-repo`; the migrate subcommand uses its own `--target`.
-
-- [ ] **Step 6: Smoke test the CLI**
-
-```bash
 uv run ralph-executor migrate-queue --help
 ```
 
-Expected: usage text mentions `--source` and `--target`.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add ralph_executor/migrate_queue.py ralph_executor/cli.py tests/executor/test_migrate_queue.py

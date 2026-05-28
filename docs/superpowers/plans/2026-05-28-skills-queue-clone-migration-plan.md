@@ -67,9 +67,7 @@ No commit for Task 0.
 
 ## Task 1: `scripts/queue_writer.py` — swap `checkout_queue_branch` for `acquire_queue_clone`
 
-**Confidence: 90%** — wrapper around the PBI 1 helper.
-
-**Mitigation:** The skills want a Path to operate on, not just a thin re-export. Provide a small wrapper that reads the queue clone path from config (via `ExecutorConfig.queue_repo` + `workspace_root`) so skills don't each replicate the resolve logic.
+**Confidence: 95%** — thin re-export of PBI 1's `ensure_queue_clone`. No new logic.
 
 **Files:**
 - Modify: `scripts/queue_writer.py`
@@ -146,9 +144,27 @@ git commit -m "refactor(queue_writer): acquire_queue_clone replaces checkout_que
 
 ## Task 2: `ralph-add` — `--target-repo` only, write to queue clone
 
-**Confidence: 88%** — small interface change but the workitem-fetcher path is unchanged.
+**Confidence: 93%** — small interface change; templating/commit/push logic in `add.py` is unchanged. Only deletions + arg-parser edits.
 
-**Mitigation:** Re-read `skills/ralph-add/scripts/add.py` end-to-end before editing. The PBI write path (templating, commit, push) is identical — only the working directory changes.
+**Reference (current `add.py` head, do not change behaviour of validators):**
+
+```python
+# skills/ralph-add/scripts/add.py
+DEFAULT_QUEUE_BRANCH = "ralph-queue"           # delete this line
+ATTACHMENT_SUBDIR = "attachments"               # keep
+ALLOWED_SEVERITIES = ("critical", "high", "normal", "low")  # keep
+
+from scripts.queue_writer import (
+    QueueWriterError,
+    checkout_queue_branch,                      # delete this import
+    commit_paths,
+    ensure_git_repo,                            # delete (no longer applicable — queue clone always exists after acquire)
+    push,                                       # keep — pushes to origin/main now
+)
+# add: from scripts.queue_writer import acquire_queue_clone
+```
+
+The `validate` schema validator + `attachments` handling + commit message style are unchanged.
 
 **Files:**
 - Modify: `skills/ralph-add/scripts/add.py`, `skills/ralph-add/SKILL.md`
@@ -344,15 +360,254 @@ git commit -m "feat(ralph-triage): operate on queue clone"
 
 ---
 
-## Task 6: `ralph-status` — full rewrite around the single queue clone
+## Task 6 (split into 6a–6d): `ralph-status` — full rewrite around the single queue clone
 
-**Confidence: 80%** — deepest rewrite. Multi-repo aggregation machinery deletes; new `target_repo` grouping logic added.
+Original 80% confidence Task 6 split into four single-responsibility subtasks. Each subtask is small, testable in isolation, and lands as its own commit.
 
-**Mitigation:**
-- Pre-read `skills/ralph-status/scripts/status.py` end-to-end and the existing `tests/skills/test_ralph_status.py`. Note every function that depends on the worktree-per-repo model.
-- Draft the new argument shape inline below before editing.
-- Delete `_extract_queue_snapshot`, `_create_worktree`, `_remove_worktree`, `RepoConfig`, `RepoSnapshot` — those are the multi-repo machinery.
-- Keep `_age_string`, `_iso`, the table-rendering helpers, the JSON shape (just drop the `repo` path field; `target_repo` replaces it).
+---
+
+## Task 6a: Delete obsolete machinery in `ralph-status`
+
+**Confidence: 95%** — pure deletion.
+
+**Files:**
+- Modify: `skills/ralph-status/scripts/status.py`
+
+- [ ] **Step 1: Delete the following functions / dataclasses / constants:**
+
+- `DEFAULT_QUEUE_BRANCH`
+- `RepoConfig` dataclass
+- `RepoSnapshot` dataclass
+- `_load_repos_config`
+- `_run_git`, `_is_git_repo`, `_ensure_branch_exists`, `_resolve_branch_ref`
+- `_create_worktree`, `_remove_worktree`
+- `_extract_queue_snapshot`
+
+These are all the worktree-per-repo machinery that the new model doesn't need.
+
+- [ ] **Step 2: Smoke check — imports should now be smaller**
+
+```bash
+grep -n "^import\|^from" skills/ralph-status/scripts/status.py
+```
+
+Expected: `argparse`, `json`, `sys`, `dataclasses`, `datetime`, `pathlib`, `STATE_FOLDERS` / `PBIRow` / `PBIRowError` / `enumerate_state` from `scripts.pbi_reader`. The `subprocess`, `shutil`, `tempfile`, `os`, `contextlib` imports drop.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add skills/ralph-status/scripts/status.py
+git commit -m "refactor(ralph-status): delete multi-repo worktree machinery"
+```
+
+Note: the file is in a broken state between 6a and 6b — argparse references the deleted helpers. **Do not run tests yet.** 6b restores buildability.
+
+---
+
+## Task 6b: New argument parser
+
+**Confidence: 95%** — argparse is mechanical.
+
+**Files:**
+- Modify: `skills/ralph-status/scripts/status.py`
+
+- [ ] **Step 1: Replace `_parse_args` with the new shape**
+
+```python
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ralph-status",
+        description=(
+            "Read-only view of the ralph queue. Reads "
+            "$RALPH_WORKSPACE/queue/.ralph/ and groups output by target_repo."
+        ),
+    )
+    parser.add_argument(
+        "--state",
+        choices=STATE_FOLDERS,
+        help="Filter rows to a single state.",
+    )
+    parser.add_argument(
+        "--target-repo",
+        help="Filter rows to PBIs whose target_repo matches this URL.",
+    )
+    parser.add_argument(
+        "--json",
+        dest="emit_json",
+        action="store_true",
+        help="Emit JSON to stdout instead of a fixed-width table.",
+    )
+    parser.add_argument(
+        "--workspace",
+        type=Path,
+        help="Override workspace_root from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
+    )
+    return parser.parse_args(argv)
+```
+
+- [ ] **Step 2: Update `_main` to resolve workspace_root and queue_repo from `~/.ralph/config.toml`** (use `ralph_executor.user_config.load_user_config` or equivalent; if a wrapper doesn't exist, read the TOML directly with `tomllib`).
+
+- [ ] **Step 3: Smoke check the parser**
+
+```bash
+uv run python skills/ralph-status/scripts/status.py --help
+```
+
+Expected: help text matches the new shape (no `--repo` / `--repos-file` / `--branch` / `--no-cleanup`).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add skills/ralph-status/scripts/status.py
+git commit -m "feat(ralph-status): new argument parser; resolve queue from TOML"
+```
+
+---
+
+## Task 6c: `target_repo` grouping + table renderer
+
+**Confidence: 93%** — replaces existing renderer; algorithm is sort + group.
+
+**Files:**
+- Modify: `skills/ralph-status/scripts/status.py`
+
+- [ ] **Step 1: Replace `_COLUMN_ORDER`**
+
+```python
+_COLUMN_ORDER: tuple[str, ...] = (
+    "TARGET",
+    "STATE",
+    "ID",
+    "TYPE",
+    "SEVERITY",
+    "AGE",
+    "TITLE",
+)
+```
+
+- [ ] **Step 2: Replace `_row_to_cells`**
+
+```python
+def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
+    target = (row.target_repo or "?") if isinstance(row, PBIRow) else "?"
+    # Truncate target URL to a readable length in terminal output.
+    target_display = target if len(target) <= 50 else target[:47] + "..."
+    if isinstance(row, PBIRow):
+        return [
+            target_display,
+            row.state,
+            row.pbi_id,
+            row.pbi_type,
+            row.severity,
+            _age_string(row.created_at),
+            row.title,
+        ]
+    return [
+        target_display,
+        row.state,
+        row.pbi_dir.name,
+        "?", "?", "?",
+        f"(parse error) {row.message}",
+    ]
+```
+
+Note: `target_repo` was added to `PBIRow` by `RALPH-PBI-TARGET-REPO-FIELD` (#40). It is a string field on every PBI's frontmatter.
+
+- [ ] **Step 3: Add `_group_and_sort` to order rows**
+
+```python
+def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowError]:
+    """Stable sort by (target_repo, state, created_at) — preserves grouping in output."""
+    def key(row: PBIRow | PBIRowError) -> tuple[str, str, str]:
+        if isinstance(row, PBIRow):
+            return (row.target_repo or "", row.state, row.created_at.isoformat() if row.created_at else "")
+        return ("", row.state, "")
+    return sorted(rows, key=key)
+```
+
+Call `_group_and_sort` before `_render_table`.
+
+- [ ] **Step 4: Update `_main` to apply the `--target-repo` filter** after collecting rows, before grouping.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add skills/ralph-status/scripts/status.py
+git commit -m "feat(ralph-status): group by target_repo; new TARGET column"
+```
+
+---
+
+## Task 6d: JSON shape + filter wiring + tests
+
+**Confidence: 92%** — final assembly + test rewrites.
+
+**Files:**
+- Modify: `skills/ralph-status/scripts/status.py`
+- Test: `tests/skills/test_ralph_status.py`
+
+- [ ] **Step 1: Replace `_row_to_json`**
+
+```python
+def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
+    if isinstance(row, PBIRow):
+        return {
+            "target_repo": row.target_repo,
+            "state": row.state,
+            "id": row.pbi_id,
+            "type": row.pbi_type,
+            "severity": row.severity,
+            "attempts": row.attempts,
+            "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at),
+            "title": row.title,
+            "pbi_dir": row.relative_pbi_dir(),
+            "error": None,
+        }
+    return {
+        "target_repo": None,
+        "state": row.state,
+        "id": row.pbi_dir.name,
+        "type": None,
+        "severity": None,
+        "attempts": None,
+        "created_at": None,
+        "updated_at": None,
+        "title": None,
+        "pbi_dir": str(row.pbi_dir),
+        "error": row.message,
+    }
+```
+
+Top-level JSON envelope: `{"rows": [...], "errors": []}`. No `repos` array (single queue).
+
+- [ ] **Step 2: Rewrite `tests/skills/test_ralph_status.py`**
+
+Replace all multi-repo fixtures with single-queue-clone fixtures:
+- Bare git repo as the queue remote.
+- Seeded with 3-4 PBIs across `inbox/`, `current/`, `pending-pr/`, each with distinct `target_repo` values.
+- Tests:
+  - Default: all PBIs listed, grouped by `target_repo`.
+  - `--state current`: only current rows.
+  - `--target-repo X`: only rows for X.
+  - `--json`: new envelope shape; no `repos` key; rows have `target_repo`.
+
+- [ ] **Step 3: Run; expect PASS**
+
+```bash
+uv run pytest tests/skills/test_ralph_status.py -v
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add skills/ralph-status/ tests/skills/test_ralph_status.py
+git commit -m "feat(ralph-status): new JSON shape; filter wiring; rewrite tests"
+```
 
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`, `skills/ralph-status/SKILL.md`
