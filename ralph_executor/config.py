@@ -566,6 +566,20 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_QUEUE_BRANCH,
         source_label=source_label,
     )
+    queue_branch = queue_branch.strip()
+    if not queue_branch:
+        raise ConfigError(
+            f"{source_label}: queue_branch must be a non-empty branch name"
+        )
+    if queue_branch == "HEAD":
+        raise ConfigError(
+            f"{source_label}: queue_branch must be a branch name, not 'HEAD'"
+        )
+    if queue_branch.startswith("refs/heads/"):
+        raise ConfigError(
+            f"{source_label}: queue_branch must not include the 'refs/heads/' "
+            f"prefix (got {queue_branch!r})"
+        )
     max_attempts = _resolve_int(
         name="max_attempts",
         env_name="RALPH_MAX_ATTEMPTS",

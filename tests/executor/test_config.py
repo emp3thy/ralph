@@ -342,3 +342,22 @@ def test_queue_branch_env_override_beats_toml(tmp_path, monkeypatch):
 
     cfg = load_config()
     assert cfg.queue_branch == "env-value"
+
+
+@pytest.mark.parametrize("bad_value", ["", "   ", "HEAD", "refs/heads/foo"])
+def test_queue_branch_rejects_invalid(tmp_path, monkeypatch, bad_value):
+    """Empty / HEAD / refs-prefixed branch names raise ConfigError."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".ralph").mkdir()
+    (repo / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n'
+        f'queue_branch = "{bad_value}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
+    monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
+
+    with pytest.raises(ConfigError, match="queue_branch"):
+        load_config()
