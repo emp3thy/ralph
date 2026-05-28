@@ -2,13 +2,13 @@
 
 ``ralph-cancel`` is the only mutation we allow on ``.ralph/current/``:
 it drops an empty ``CANCEL`` sentinel file inside the directory of the
-PBI Ralph is actively working on, then commits + pushes to
-``ralph-queue``. Ralph notices the sentinel on its next iteration and
-abandons the PBI.
+PBI Ralph is actively working on, then commits + pushes ``main`` to the
+queue clone's origin. Ralph notices the sentinel on its next iteration
+and abandons the PBI.
 
 The script lives at ``skills/ralph-cancel/scripts/cancel.py``. Tests
-build a fake ``ralph-queue`` clone in ``tmp_path`` and verify each
-behaviour without any network or real ADO.
+build a bare git repo as the "queue remote", seed PBIs onto its ``main``
+branch, and verify each behaviour without any network or real Git host.
 """
 
 from __future__ import annotations
@@ -51,34 +51,45 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "ralph-cancel@example.com")
+    _git(repo, "config", "user.name", "ralph-cancel")
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Iterator[Path]:
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-    subprocess.run(["git", "init", str(work)], check=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    yield work
+def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
+    """Build a bare queue remote + an empty workspace dir.
+
+    The bare remote is seeded with an empty ``main`` so
+    ``ensure_queue_clone`` can clone it cleanly. Returns
+    ``(workspace_root, queue_repo_url)`` for the test to pass into
+    ``ralph-cancel`` via ``--workspace`` / ``--queue-repo``.
+    """
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    _configure_identity(seed)
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+    yield workspace, str(bare)
 
 
 def _seed_pbi(
-    repo: Path,
+    bare_url: str,
+    tmp_path: Path,
     state_folder: str,
     pbi_id: str,
+    *,
     entry_file: str = "PBI.md",
-) -> Path:
-    """Create a PBI directory on the ralph-queue branch and commit it."""
-    _git(repo, "checkout", "ralph-queue")
-    pbi_dir = repo / ".ralph" / state_folder / pbi_id
+) -> None:
+    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back."""
+    work = tmp_path / f"seed-{pbi_id}-{state_folder}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / state_folder / pbi_id
     pbi_dir.mkdir(parents=True)
     (pbi_dir / entry_file).write_text(
         "---\n"
@@ -95,58 +106,91 @@ def _seed_pbi(
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _git(repo, "add", f".ralph/{state_folder}/{pbi_id}")
-    _git(repo, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
-    _git(repo, "push", "origin", "ralph-queue")
-    _git(repo, "checkout", "main")
-    return pbi_dir
+    _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
+    _git(work, "push", "origin", "main")
+
+
+def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
+    verify = tmp_path / f"verify-{Path(bare_url).name}"
+    subprocess.run(
+        ["git", "clone", bare_url, str(verify)],
+        check=True,
+        capture_output=True,
+    )
+    return verify
+
+
+def _argv(
+    *,
+    pbi_id: str,
+    workspace: Path,
+    queue_repo: str,
+    extra: list[str] | None = None,
+) -> list[str]:
+    argv = [
+        "--pbi-id",
+        pbi_id,
+        "--workspace",
+        str(workspace),
+        "--queue-repo",
+        queue_repo,
+    ]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
 
 
 def test_cancel_drops_sentinel_in_current(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "current", "WI-1234")
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-1234")
+
+    # Pre-clone so committer identity is configured before cancel commits.
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-1234",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(pbi_id="WI-1234", workspace=workspace, queue_repo=queue_repo)
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_id"] == "WI-1234"
     assert payload["sentinel_path"].endswith("WI-1234/CANCEL")
     assert payload["pushed"] is True
     assert payload["commit_sha"]
 
-    _git(git_repo, "checkout", "ralph-queue")
-    cancel_file = git_repo / ".ralph" / "current" / "WI-1234" / "CANCEL"
+    verify = _verify_clone(tmp_path, queue_repo)
+    cancel_file = verify / ".ralph" / "current" / "WI-1234" / "CANCEL"
     assert cancel_file.is_file()
     assert cancel_file.read_bytes() == b""
 
-    latest = _git(git_repo, "log", "-1", "--pretty=%s").strip()
+    latest = _git(verify, "log", "-1", "--pretty=%s").strip()
     assert latest == "chore(queue): cancel WI-1234"
 
 
 def test_cancel_refuses_pbi_outside_current(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "inbox", "WI-2000")
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-2000")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-2000",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(pbi_id="WI-2000", workspace=workspace, queue_repo=queue_repo)
     )
     assert exit_code == 2
     stderr = capsys.readouterr().err.lower()
@@ -154,17 +198,16 @@ def test_cancel_refuses_pbi_outside_current(
 
 
 def test_cancel_errors_on_missing_pbi(
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-DOES-NOT-EXIST",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(pbi_id="WI-DOES-NOT-EXIST", workspace=workspace, queue_repo=queue_repo)
     )
     assert exit_code == 2
     stderr = capsys.readouterr().err.lower()
@@ -172,82 +215,87 @@ def test_cancel_errors_on_missing_pbi(
 
 
 def test_cancel_no_push_keeps_remote_at_previous_sha(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "current", "WI-3000")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-3000")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    before = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-3000",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _argv(pbi_id="WI-3000", workspace=workspace, queue_repo=queue_repo, extra=["--no-push"])
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
     assert before == after
 
 
 def test_cancel_dry_run_writes_nothing(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_pbi(git_repo, "current", "WI-4000")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-4000")
+    before = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-4000",
-            "--repo",
-            str(git_repo),
-            "--dry-run",
-        ]
+        _argv(pbi_id="WI-4000", workspace=workspace, queue_repo=queue_repo, extra=["--dry-run"])
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["pushed"] is False
     assert payload["commit_sha"] == ""
 
-    _git(git_repo, "checkout", "ralph-queue")
-    cancel_file = git_repo / ".ralph" / "current" / "WI-4000" / "CANCEL"
-    assert not cancel_file.exists()
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    # Dry-run must NOT clone the queue or push.
+    assert not (workspace / "queue").exists()
+    after = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     assert before == after
 
 
 def test_cancel_idempotent_when_sentinel_already_present(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    pbi_dir = _seed_pbi(git_repo, "current", "WI-5000")
-    _git(git_repo, "checkout", "ralph-queue")
-    (pbi_dir / "CANCEL").write_text("", encoding="utf-8")
-    _git(git_repo, "add", ".ralph/current/WI-5000/CANCEL")
-    _git(git_repo, "commit", "-m", "chore(test): pre-existing cancel")
-    _git(git_repo, "push", "origin", "ralph-queue")
-    _git(git_repo, "checkout", "main")
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-5000")
+    # Push a pre-existing CANCEL sentinel into main.
+    seed = tmp_path / "seed-cancel"
+    subprocess.run(["git", "clone", queue_repo, str(seed)], check=True, capture_output=True)
+    _configure_identity(seed)
+    (seed / ".ralph" / "current" / "WI-5000" / "CANCEL").write_text("", encoding="utf-8")
+    _git(seed, "add", ".ralph/current/WI-5000/CANCEL")
+    _git(seed, "commit", "-m", "chore(test): pre-existing cancel")
+    _git(seed, "push", "origin", "main")
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-5000",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(pbi_id="WI-5000", workspace=workspace, queue_repo=queue_repo)
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["already_cancelled"] is True
     assert payload["commit_sha"] == ""
@@ -255,7 +303,8 @@ def test_cancel_idempotent_when_sentinel_already_present(
 
 
 def test_cancel_runs_full_path_when_sentinel_on_disk_but_not_committed(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     cancel_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -265,53 +314,96 @@ def test_cancel_runs_full_path_when_sentinel_on_disk_but_not_committed(
     The script then exited 0 with ``already_cancelled=True`` even though
     HEAD was unchanged — ralph would never see the cancel. Fix routes
     the check through ``git cat-file -e HEAD:<path>``; this test seeds
-    the bad-state (sentinel on disk + staged but NOT committed) and
-    asserts the next invocation re-runs the full commit + push path."""
-    pbi_dir = _seed_pbi(git_repo, "current", "WI-5050")
-    _git(git_repo, "checkout", "ralph-queue")
+    the bad-state (sentinel on disk + staged but NOT committed in the
+    queue clone) and asserts the next invocation re-runs the full commit
+    + push path."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-5050")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    clone = workspace / "queue"
     # Stage but do NOT commit — simulates a previously-failed cancel
-    # whose `git add` succeeded but whose `git commit` hook rejected
-    # the change.
-    (pbi_dir / "CANCEL").write_text("", encoding="utf-8")
-    _git(git_repo, "add", ".ralph/current/WI-5050/CANCEL")
-    _git(git_repo, "checkout", "main")
-
-    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+    # whose ``git add`` succeeded but whose ``git commit`` hook rejected.
+    (clone / ".ralph" / "current" / "WI-5050" / "CANCEL").write_text("", encoding="utf-8")
+    _git(clone, "add", ".ralph/current/WI-5050/CANCEL")
+    head_before = _git(clone, "rev-parse", "HEAD").strip()
 
     exit_code = cancel_module.main(
-        [
-            "--pbi-id",
-            "WI-5050",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _argv(pbi_id="WI-5050", workspace=workspace, queue_repo=queue_repo, extra=["--no-push"])
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["already_cancelled"] is False, (
         "must re-run the full path when the sentinel is not in HEAD, "
         "even if it exists on the filesystem"
     )
     assert payload["commit_sha"] != ""
-    head_after = _git(git_repo, "rev-parse", "ralph-queue")
-    assert head_after != head_before, "a new commit must land on ralph-queue"
+    head_after = _git(clone, "rev-parse", "HEAD").strip()
+    assert head_after != head_before, "a new commit must land on main"
 
 
-def test_cancel_repo_not_a_repo_errors(
+def test_cancel_errors_when_queue_repo_unset(
     tmp_path: Path,
     cancel_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    not_a_repo = tmp_path / "not_a_repo"
-    not_a_repo.mkdir()
+    """Without --queue-repo and without TOML queue_repo, exit 2 with a clear error."""
+    workspace = tmp_path / "ws"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
     exit_code = cancel_module.main(
         [
             "--pbi-id",
             "WI-1",
-            "--repo",
-            str(not_a_repo),
+            "--workspace",
+            str(workspace),
         ]
     )
     assert exit_code == 2
-    assert "not a git repository" in capsys.readouterr().err.lower()
+    err = capsys.readouterr().err
+    assert "queue_repo" in err.lower()
+
+
+def test_cancel_queue_repo_resolved_from_toml(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    cancel_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When --queue-repo is omitted, the TOML value is used."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-6000")
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    (fake_home / ".ralph").mkdir()
+    # file:// URL with forward slashes survives TOML basic-string escaping on Windows.
+    queue_url = "file:///" + Path(queue_repo).as_posix().lstrip("/")
+    (fake_home / ".ralph" / "config.toml").write_text(
+        f'queue_repo = "{queue_url}"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = cancel_module.main(
+        [
+            "--pbi-id",
+            "WI-6000",
+            "--workspace",
+            str(workspace),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pbi_id"] == "WI-6000"
+    assert payload["commit_sha"] != ""

@@ -238,28 +238,28 @@ git commit -m "feat(ralph-add): operate on queue clone; --target-repo replaces -
 - Modify: `skills/ralph-cancel/scripts/cancel.py`, `skills/ralph-cancel/SKILL.md`
 - Test: `tests/skills/test_ralph_cancel.py`
 
-- [ ] **Step 1: Update tests to use the fake-queue-remote pattern**
+- [x] **Step 1: Update tests to use the fake-queue-remote pattern**
 
 Same shape as Task 2's test rewrite.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `skills/ralph-cancel/scripts/cancel.py`**
+- [x] **Step 3: Edit `skills/ralph-cancel/scripts/cancel.py`**
 
 - Remove `--repo`, `--branch`.
 - Resolve `workspace_root` + `queue_repo` from config.
 - `acquire_queue_clone` to get the clone path.
 - Operate on `<clone>/.ralph/current/<pbi-id>/` (write CANCEL sentinel, commit, push to main).
 
-- [ ] **Step 4: Update SKILL.md.**
+- [x] **Step 4: Update SKILL.md.**
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_cancel.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-cancel/ tests/skills/test_ralph_cancel.py
