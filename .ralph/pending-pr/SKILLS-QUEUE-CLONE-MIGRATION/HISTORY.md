@@ -96,3 +96,21 @@
 - Lint/type: doc-only; no .py edits in this iteration.
 - Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 9 checkboxes (Steps 1–2 → [x]).
 - Notes: Tasks 1–9 now complete. Next iteration picks up Task 10 (full gate: ruff check + ruff format --check + mypy + `pytest -q` + push + open PR). Iteration 7's broader-suite run was 208 passed / 2 expected fails in `tests/skills/test_supervisor_skills_smoke.py` (still references deleted `--repo` argv on cancel/promote/triage); Task 10 must either fix that test or note it as a known-failing scope-creep candidate before opening the PR.
+
+## Iteration 11 — 2026-05-28T23:30:00+00:00 — PR ship
+
+- Step Task 10: full gate. `uv run ruff check .` → clean (139 files, only the 5 stale `# noqa` warnings in `skills/ralph-doctor/scripts/checks/{hooks,skills}.py` that pre-date this PBI). `uv run ruff format --check .` → 139 files already formatted. `uv run mypy ralph_executor scripts skills tests` → no issues in 133 source files.
+- Step Task 10 / supervisor-smoke fix: rewrote `tests/skills/test_supervisor_skills_smoke.py` from scratch around the `queue_env` fixture pattern (bare queue remote + seeded `main`). Replaced the 2 obsolete tests (`test_promote_then_triage_round_trip` exercising the deleted `--severity` bump path, `test_cancel_then_promote_is_independent` exercising `--repo` on cancel + the deleted promote severity bump) with two tests fitting the new model:
+  - `test_triage_then_promote_round_trip` — seed `.ralph/blocked/WI-9000` (attempts=3) → `ralph-triage --to inbox --note ...` → `ralph-promote --from inbox --to current`. Verifies the PBI ends in `current/`, attempts=0 (set by triage), status=current (set by promote), HISTORY.md carries entries from both skills.
+  - `test_cancel_and_promote_are_independent` — seed `.ralph/current/WI-9100` + `.ralph/inbox/WI-9101` → cancel WI-9100, promote WI-9101 inbox→current. Verifies CANCEL sentinel + the promoted PBI moved correctly without stomping.
+- Step Task 10 / encoding-audit fix: `tests/executor/test_subprocess_encoding_audit.py` flagged 8 violations across `tests/skills/test_ralph_{add,cancel,promote,triage}.py` — two `subprocess.run(["git", "ls-remote", queue_repo, "main"], ..., text=True)` calls per file with no `encoding=`/`errors=`. Added `encoding="utf-8", errors="replace"` to all 8 call sites via `replace_all` (each file has identical pattern, two occurrences).
+- Tests: green — `uv run pytest -q` → 982 passed, 4 skipped (2 shellcheck-not-installed in `tests/packaging/test_scripts.py`, 2 opt-in `RALPH_PROMPT_SMOKE` in `tests/test_prompt_smoke.py`).
+- Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 10 checkboxes (Steps 1–4 → [x]).
+- Notes: All 10 plan tasks now complete. Ready to push `ralph/SKILLS-QUEUE-CLONE-MIGRATION` and open the PR against `main` via `gh pr create`. The README `## Per-repo setup` + `## Running ralph` sections still describe the obsolete `ralph-queue` branch model (flagged in Iteration 9 notes) — left for a separate doc-cleanup PBI per Task 8's bounded scope.
+
+## Iteration 12 — 2026-05-28T23:45:00+00:00 — PR created
+
+- PR: #50
+- URL: https://github.com/emp3thy/ralph/pull/50
+- Branch: ralph/SKILLS-QUEUE-CLONE-MIGRATION (pushed to origin, 13 commits ahead of main)
+- Title: SKILLS-QUEUE-CLONE-MIGRATION: migrate operator skills + docs to queue-clone model

@@ -1,11 +1,11 @@
 ---
 id: SKILLS-QUEUE-CLONE-MIGRATION
 type: feature
-status: current
+status: pending-pr
 severity: high
 attempts: 0
 created_at: 2026-05-28T01:01:00+00:00
-updated_at: 2026-05-28T13:26:54+00:00
+updated_at: 2026-05-28T14:54:24+00:00
 depends_on: ["EXECUTOR-QUEUE-REPO-SPLIT"]
 target_repo: https://github.com/emp3thy/ralph
 ---
