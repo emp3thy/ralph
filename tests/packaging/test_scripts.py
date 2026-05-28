@@ -28,6 +28,8 @@ def test_script_passes_shellcheck(name: str) -> None:
         ["shellcheck", str(SCRIPTS / name)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert result.returncode == 0, f"shellcheck findings:\n{result.stdout}\n{result.stderr}"
@@ -38,6 +40,8 @@ def test_build_script_help_exits_zero() -> None:
         ["bash", str(SCRIPTS / "build_image.sh"), "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert result.returncode == 0
@@ -50,6 +54,8 @@ def test_build_script_requires_host() -> None:
         ["bash", str(SCRIPTS / "build_image.sh")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert result.returncode == 2, (
@@ -65,6 +71,8 @@ def test_build_script_rejects_unknown_host() -> None:
         ["bash", str(SCRIPTS / "build_image.sh"), "--host", "gitlab"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert result.returncode == 2
@@ -91,6 +99,8 @@ def test_build_script_accepts_valid_hosts(host: str) -> None:
             ["bash", str(SCRIPTS / "build_image.sh"), "--host", host],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             env=env,
         )

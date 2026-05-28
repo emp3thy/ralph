@@ -67,6 +67,8 @@ def _populate_inbox_via_git(fake_repo: Path, pbi_id: str = "WI-INTEG") -> None:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
     write_sample_pbi(fake_repo, pbi_id=pbi_id)

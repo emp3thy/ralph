@@ -82,7 +82,7 @@ def _stub_subprocess(
             stderr=stderr,
         )
 
-    monkeypatch.setattr("ralph_executor.sweep.reconcile.subprocess.run", _fake_run)
+    monkeypatch.setattr("ralph_executor.sweep.reconcile.run_text", _fake_run)
     return invocations
 
 
@@ -427,7 +427,7 @@ def test_reconcile_all_processes_every_orphan(
             stderr="",
         )
 
-    monkeypatch.setattr("ralph_executor.sweep.reconcile.subprocess.run", _fake_run)
+    monkeypatch.setattr("ralph_executor.sweep.reconcile.run_text", _fake_run)
 
     report = reconcile_all(fake_ctx)
 
@@ -457,7 +457,7 @@ def test_reconcile_all_isolates_per_pbi_failures(
         out, code = next(state_payloads)
         return subprocess.CompletedProcess(args=argv, returncode=code, stdout=out, stderr="")
 
-    monkeypatch.setattr("ralph_executor.sweep.reconcile.subprocess.run", _fake_run)
+    monkeypatch.setattr("ralph_executor.sweep.reconcile.run_text", _fake_run)
 
     report = reconcile_all(fake_ctx)
 

@@ -17,6 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ralph_executor.subprocess_utils import run_text
+
 log = logging.getLogger(__name__)
 
 _STATE_DIRS = ("inbox", "current", "pending-pr", "blocked", "archive")
@@ -30,7 +32,7 @@ def _run_git(
     repo: Path | None, *args: str, timeout: float = 120.0
 ) -> subprocess.CompletedProcess[str]:
     argv = ["git", *(["-C", str(repo)] if repo is not None else []), *args]
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    return run_text(argv, capture_output=True, timeout=timeout)
 
 
 def copy_queue_tree_filtered(source: Path, dest: Path) -> dict[str, int]:

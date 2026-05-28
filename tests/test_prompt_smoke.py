@@ -149,6 +149,8 @@ def _run_claude(workspace: Path) -> subprocess.CompletedProcess[str]:
         cwd=workspace,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=CLAUDE_TIMEOUT_SECONDS,
         check=False,
     )

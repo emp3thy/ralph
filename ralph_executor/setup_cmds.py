@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from ralph_executor.config import ConfigError, validate_repo_path
+from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
     read_queue_repo,
@@ -186,10 +187,9 @@ def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
     ``ls-remote``.
     """
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", url],
+        result = run_text(
+            ["git", "ls-remote", url],
             capture_output=True,
-            text=True,
             timeout=timeout,
             check=False,
         )
@@ -282,10 +282,9 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
         print("WARNING: gh CLI not found on PATH — install from https://cli.github.com/")
     else:
         try:
-            result = subprocess.run(
+            result = run_text(
                 [gh, "auth", "status"],
                 capture_output=True,
-                text=True,
                 check=False,
             )
             if result.returncode != 0:
@@ -317,11 +316,10 @@ def _git(repo: Path, *args: str) -> str:
     Raises ``ScaffoldError`` on non-zero exit so the caller can convert
     to a clean operator-facing message rather than a traceback.
     """
-    result = subprocess.run(
+    result = run_text(
         ["git", *args],
         cwd=str(repo),
         capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode != 0:
@@ -332,11 +330,10 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _has_branch(repo: Path, branch: str) -> bool:
-    result = subprocess.run(
+    result = run_text(
         ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
         cwd=str(repo),
         capture_output=True,
-        text=True,
         check=False,
     )
     return result.returncode == 0
@@ -436,11 +433,10 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
         # independent — the previous string-match on "nothing to commit"
         # broke on non-English git installs (e.g. "rien à valider").
         # ralph_executor.git_ops.commit_index uses the same idiom.
-        diff_check = subprocess.run(
+        diff_check = run_text(
             ["git", "diff", "--cached", "--quiet"],
             cwd=str(repo),
             capture_output=True,
-            text=True,
             check=False,
         )
         if diff_check.returncode >= 2:
@@ -449,11 +445,10 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
                 f"{diff_check.stderr.strip() or diff_check.stdout.strip()}"
             )
         if diff_check.returncode == 1:
-            commit_status = subprocess.run(
+            commit_status = run_text(
                 ["git", "commit", "-m", "chore(queue): scaffold .ralph/ skeleton"],
                 cwd=str(repo),
                 capture_output=True,
-                text=True,
                 check=False,
             )
             if commit_status.returncode != 0:

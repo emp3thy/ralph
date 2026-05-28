@@ -418,12 +418,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     and exits 0 so callers don't break.
     """
     try:
-        import subprocess
+        from ralph_executor.subprocess_utils import run_text
 
-        result = subprocess.run(
+        result = run_text(
             ["ralph-doctor", "--json"] if args.json_output else ["ralph-doctor"],
             capture_output=True,
-            text=True,
         )
         print(result.stdout, end="")
         if result.stderr:

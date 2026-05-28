@@ -94,6 +94,8 @@ def _remote_head(remote: Path, branch: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return out.stdout.strip()
 
@@ -106,6 +108,8 @@ def test_push_with_rebase_no_remote_advance(two_repos: tuple[Path, Path]) -> Non
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     push_with_rebase(local, remote="origin", branch="main")
     assert _remote_head(remote, "main") == local_head
@@ -130,6 +134,8 @@ def test_push_with_rebase_remote_advanced_non_conflicting(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.splitlines()
     assert log[0] == "local commit"
     assert log[1] == "remote commit"
@@ -138,6 +144,8 @@ def test_push_with_rebase_remote_advanced_non_conflicting(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert _remote_head(remote, "main") == local_head
 
@@ -157,6 +165,8 @@ def test_push_with_rebase_conflict_raises(two_repos: tuple[Path, Path], tmp_path
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     with pytest.raises(PushRebaseConflict) as exc:
         push_with_rebase(local, remote="origin", branch="main")
@@ -168,6 +178,8 @@ def test_push_with_rebase_conflict_raises(two_repos: tuple[Path, Path], tmp_path
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert post_head == pre_head
     assert not (local / ".git" / "rebase-merge").exists()
@@ -256,6 +268,8 @@ def test_push_with_rebase_one_retry_on_race(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.splitlines()
     assert "local commit" in log_remote
     assert "racer commit" in log_remote
