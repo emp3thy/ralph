@@ -44,7 +44,7 @@
 **Files:**
 - (read-only)
 
-- [ ] **Step 1: Run grep**
+- [x] **Step 1: Run grep**
 
 ```bash
 uv run python -c "import subprocess; subprocess.run(['rg', '-l', 'queue_branch'], check=True)"
@@ -56,7 +56,7 @@ Or simpler:
 grep -rl "queue_branch\|cfg\.queue_branch" ralph_executor scripts skills tests | sort
 ```
 
-- [ ] **Step 2: Categorise each hit**
+- [x] **Step 2: Categorise each hit**
 
 Write the list to scratch (a paste in the implementation PR is fine). Categorise each file as one of:
 - **CONFIG**: defines the field or default → remove (Task 1).
@@ -65,7 +65,7 @@ Write the list to scratch (a paste in the implementation PR is fine). Categorise
 - **TEST**: constructs `ExecutorConfig(queue_branch=...)` → swap to `queue_repo=...` (Task 9).
 - **DOC**: spec / plan / README mentioning the old model → out of scope of this PBI (PBI 2 handles docs).
 
-- [ ] **Step 3: Sanity check — no other surfaces**
+- [x] **Step 3: Sanity check — no other surfaces**
 
 Confirm no `RALPH_QUEUE_BRANCH` env reads remain in non-doc code:
 
@@ -87,7 +87,7 @@ No commit for Task 0 — it's a discovery step.
 - Modify: `ralph_executor/config.py`
 - Test: `tests/executor/test_config.py`, `tests/executor/test_config_toml.py`
 
-- [ ] **Step 1: Write the failing test (config.py field present, queue_branch absent)**
+- [x] **Step 1: Write the failing test (config.py field present, queue_branch absent)**
 
 Append to `tests/executor/test_config.py`:
 
@@ -130,7 +130,7 @@ def test_load_config_accepts_queue_repo(tmp_path):
     assert cfg.queue_repo == "https://github.com/emp3thy/ralph-queue"
 ```
 
-- [ ] **Step 2: Run the tests; verify they FAIL**
+- [x] **Step 2: Run the tests; verify they FAIL**
 
 ```bash
 uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo_field tests/executor/test_config.py::test_load_config_rejects_missing_queue_repo tests/executor/test_config.py::test_load_config_accepts_queue_repo -v
@@ -138,7 +138,7 @@ uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo
 
 Expected: 3 failures (AttributeError or similar — the field doesn't exist yet).
 
-- [ ] **Step 3: Edit `ralph_executor/config.py`**
+- [x] **Step 3: Edit `ralph_executor/config.py`**
 
 In the constants block near line 40:
 - Delete: `DEFAULT_QUEUE_BRANCH = "ralph-queue"`
@@ -156,7 +156,7 @@ In `load_config`:
 - Add a `queue_repo` resolver: read `queue_repo` from TOML; if absent, raise `ConfigError("queue_repo not configured. Add 'queue_repo = \"<url>\"' to your config.toml or pass --queue-repo.")`.
 - Validate format with `parse_target_repo` from `ralph_executor.url_utils` — same validator multi-repo PBI introduced. Bad value → `ConfigError(f"queue_repo {value!r} is not a valid HTTPS URL: {exc}")`.
 
-- [ ] **Step 4: Run the tests; verify they PASS**
+- [x] **Step 4: Run the tests; verify they PASS**
 
 ```bash
 uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo_field tests/executor/test_config.py::test_load_config_rejects_missing_queue_repo tests/executor/test_config.py::test_load_config_accepts_queue_repo -v
@@ -164,7 +164,7 @@ uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo
 
 Expected: 3 passes.
 
-- [ ] **Step 5: Update existing config tests that pass `queue_branch=`**
+- [x] **Step 5: Update existing config tests that pass `queue_branch=`**
 
 Run:
 
@@ -174,7 +174,7 @@ grep -rln "queue_branch" tests/
 
 For each file, swap `queue_branch="ralph-queue"` → `queue_repo="https://github.com/example/queue"` in every `ExecutorConfig(...)` call. The URL doesn't have to be real for unit tests; use the example domain consistently.
 
-- [ ] **Step 6: Full config-test run**
+- [x] **Step 6: Full config-test run**
 
 ```bash
 uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -v
@@ -182,7 +182,7 @@ uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -
 
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add ralph_executor/config.py tests/executor/test_config.py tests/executor/test_config_toml.py
