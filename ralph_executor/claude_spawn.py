@@ -423,13 +423,16 @@ def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
     if sys.platform == "win32":
         # /T = also terminate child processes; /F = forceful. We ignore
         # the return code: a non-zero exit just means the process was
-        # already gone, which is the desired end state.
-        subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-            check=False,
-            capture_output=True,
-            timeout=10,
-        )
+        # already gone, which is the desired end state. Suppress
+        # TimeoutExpired so ``_kill_process_tree`` never propagates an
+        # exception from inside an ``except`` handler in the caller.
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                check=False,
+                capture_output=True,
+                timeout=10,
+            )
         # ``taskkill`` does the work; ``proc.kill()`` is a no-op fallback
         # in case ``taskkill`` is unavailable on the operator's PATH (rare
         # on a real Windows install but cheap to guard against).
@@ -597,6 +600,11 @@ def spawn_claude_p(
             cfg.claude_session_timeout_seconds,
         )
         _kill_process_tree(proc)
+        # Reap the child so it doesn't linger as a zombie (or trip
+        # ResourceWarning under ``pytest -W error``); ignore OSError if
+        # taskkill / killpg already let Popen finalise.
+        with contextlib.suppress(OSError):
+            proc.wait()
         timed_out = True
         returncode = -1
     except BaseException:
@@ -605,6 +613,8 @@ def spawn_claude_p(
         # cleanly, join them, then re-raise. Without this, the non-daemon
         # threads would block interpreter shutdown forever.
         _kill_process_tree(proc)
+        with contextlib.suppress(OSError):
+            proc.wait()
         t_out.join()
         t_err.join()
         raise
