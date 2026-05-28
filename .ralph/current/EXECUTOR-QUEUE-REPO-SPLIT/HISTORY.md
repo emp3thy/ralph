@@ -109,3 +109,13 @@
 - Remaining Task 9 work (deferred to subsequent iterations to keep iter slices reviewable): `tests/executor/test_filesystem_queue.py` (15 `_git(fake_repo, "checkout", "ralph-queue")` callsites), `test_movements.py`, `test_git_ops.py`, `test_claude_spawn.py`, `test_cli_reconcile.py`, `test_loop_integration.py`, `test_worktree.py`, `test_cli.py`, `test_config_toml.py`, `test_setup_cmds.py`; `tests/safety/test_integration_loop.py`, `test_cycle_detector.py`; `tests/skills/test_ralph_*.py`; `tests/test_queue_writer.py`, `test_setup_ralph_queue_github.py`, `test_gh_client.py`. Also the `load_config` → `user_config.read_queue_repo` bridge flagged in iter 8 still needs landing.
 - Commit: forthcoming (`fix(queue): EXECUTOR-QUEUE-REPO-SPLIT — filesystem queue source reads queue clone; loop + conftest test sweep`).
 - Next iteration: Task 9 slice 2 — sweep `test_filesystem_queue.py` (mechanical: drop `_git(fake_repo, "checkout", "ralph-queue")` line, the new fake_repo is already on main with `.ralph/` skeleton).
+
+## Iteration 10 — 2026-05-28T17:00:00+00:00
+
+- Task 9 slice 2: swept `tests/executor/test_filesystem_queue.py` per Iter-9 plan.
+  - Deleted all 15 `_git(fake_repo, "checkout", "ralph-queue")` lines via `replace_all`. The new `fake_repo` is already a clone on `main` with the `.ralph/` skeleton seeded by `conftest.fake_repo`, so the legacy branch-dance is a no-op (and now fails because `ralph-queue` does not exist).
+  - Dropped the now-unused `fake_repo: Path` parameter from `test_current_pbi_returns_none_when_empty` (pyright flagged the unused arg after the checkout removal; the `cfg_for_repo` fixture transitively requires `fake_repo`, so removing the explicit arg does not change fixture materialisation).
+- Tests: `uv run pytest tests/executor/test_filesystem_queue.py -q` → 17 passed.
+- Lint: `uv run ruff check tests/executor/test_filesystem_queue.py` clean; `ruff format --check` → already formatted.
+- Commit: forthcoming (`test(queue): EXECUTOR-QUEUE-REPO-SPLIT — drop ralph-queue checkouts from test_filesystem_queue.py`).
+- Next iteration: Task 9 slice 3 — sweep `tests/executor/test_movements.py` (the `cfg_for_repo` fixture there still mirrors the legacy `~/ralph-workspaces` workspace_root pattern; rebuild against the new queue-clone fixture or delete + recreate as queue-clone-model tests).
