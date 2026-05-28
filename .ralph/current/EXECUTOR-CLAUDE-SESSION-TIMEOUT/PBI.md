@@ -1,11 +1,11 @@
 ---
 id: EXECUTOR-CLAUDE-SESSION-TIMEOUT
 type: feature
-status: inbox
+status: current
 severity: normal
 attempts: 0
 created_at: 2026-05-27T23:35:00+00:00
-updated_at: 2026-05-28T00:05:00+00:00
+updated_at: 2026-05-28T01:23:51+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---

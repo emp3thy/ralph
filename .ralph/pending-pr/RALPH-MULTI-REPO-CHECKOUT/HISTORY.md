@@ -70,3 +70,4 @@
 - Base: main
 - 12 commits ahead of main (url-utils → git-ops.clone → target-clone → config workspace_root → worktree refactor → types fields → loop 7A/7B/7C → loop iterate_once → spawn → sweep)
 - Opened via `pr-github create-pr` (skills/pr-github/scripts/create_pr.py); GH_OWNER=emp3thy, GH_TOKEN from env.
+- 2026-05-28T01:23:46.417624+00:00 sweep: PR stale: no activity for >= 3 days, 0:00:00 (last activity 0001-01-01T00:00:00+00:00)
