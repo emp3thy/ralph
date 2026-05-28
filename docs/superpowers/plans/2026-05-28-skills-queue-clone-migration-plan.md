@@ -411,7 +411,7 @@ Note: the file is in a broken state between 6a and 6b — argparse references th
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Replace `_parse_args` with the new shape**
+- [x] **Step 1: Replace `_parse_args` with the new shape**
 
 ```python
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -449,9 +449,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 ```
 
-- [ ] **Step 2: Update `_main` to resolve workspace_root and queue_repo from `~/.ralph/config.toml`** (use `ralph_executor.user_config.load_user_config` or equivalent; if a wrapper doesn't exist, read the TOML directly with `tomllib`).
+- [x] **Step 2: Update `_main` to resolve workspace_root and queue_repo from `~/.ralph/config.toml`** (use `ralph_executor.user_config.load_user_config` or equivalent; if a wrapper doesn't exist, read the TOML directly with `tomllib`).
 
-- [ ] **Step 3: Smoke check the parser**
+- [x] **Step 3: Smoke check the parser**
 
 ```bash
 uv run python skills/ralph-status/scripts/status.py --help
@@ -459,7 +459,7 @@ uv run python skills/ralph-status/scripts/status.py --help
 
 Expected: help text matches the new shape (no `--repo` / `--repos-file` / `--branch` / `--no-cleanup`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py
