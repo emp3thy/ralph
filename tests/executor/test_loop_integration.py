@@ -344,3 +344,21 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         f"main must NOT advance during the iteration (before={main_before}, "
         f"after={main_after})"
     )
+
+    # Tip-advance alone could be satisfied by a bogus push (e.g. an empty
+    # commit). Pin the new ralph-queue tip's commit subject to what
+    # ``move_inbox_to_current`` produces — i.e. the inbox→current claim
+    # commit for this PBI. See ``ralph_executor/queue/movements.py``:
+    # ``_move`` formats ``{commit_prefix}: move {pbi.id} from {src} to {dst}``
+    # and ``move_inbox_to_current`` sets ``commit_prefix="chore(ralph-queue)"``.
+    subject = subprocess.run(
+        ["git", "-C", str(bare), "log", "-1", "--format=%s", "ralph-queue"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    expected_subject = f"chore(ralph-queue): move {pbi_id} from inbox to current"
+    assert subject == expected_subject, (
+        f"ralph-queue tip subject must be the claim commit "
+        f"(expected={expected_subject!r}, got={subject!r})"
+    )
