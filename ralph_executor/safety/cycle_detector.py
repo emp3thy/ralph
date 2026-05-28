@@ -19,18 +19,27 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from ralph_executor.config import (
+    DEFAULT_SAME_FILE_MIN_PRS,
+    DEFAULT_SAME_FILE_WINDOW_HOURS,
+    ExecutorConfig,
+)
 from ralph_executor.safety.events import Event, EventType
 
 # ----------------------------------------------------------------------
 # Thresholds (tunable; mirror the spec's "Layer 3" table)
+#
+# ``same_file_thrashing`` thresholds live on ``ExecutorConfig`` (see
+# ``DEFAULT_SAME_FILE_MIN_PRS`` / ``DEFAULT_SAME_FILE_WINDOW_HOURS`` in
+# ``ralph_executor.config``) so operators can dial them per repo without
+# a code change. The other rules' thresholds stay here until a similar
+# false-positive forces them up.
 # ----------------------------------------------------------------------
 
 SIGNATURE_RECURRENCE_WINDOW = timedelta(hours=24)
 WHACK_A_MOLE_WINDOW = timedelta(hours=4)
 WHACK_A_MOLE_MIN_OPENS = 12
 WHACK_A_MOLE_RATIO_THRESHOLD = 0.7
-SAME_FILE_WINDOW = timedelta(hours=24)
-SAME_FILE_MIN_PRS = 10
 REGRESSION_WINDOW = timedelta(hours=72)
 ATTEMPT_BASELINE_WINDOW = timedelta(hours=72)
 ATTEMPT_RECENT_WINDOW = timedelta(hours=12)
@@ -177,9 +186,23 @@ def evaluate_whack_a_mole(events: list[Event], now: datetime) -> CycleSignal | N
 # ----------------------------------------------------------------------
 
 
-def evaluate_same_file_thrashing(events: list[Event], now: datetime) -> CycleSignal | None:
-    """Trip when one file is touched by ``SAME_FILE_MIN_PRS`` distinct PRs in 24h."""
-    window = SAME_FILE_WINDOW
+def evaluate_same_file_thrashing(
+    events: list[Event],
+    now: datetime,
+    *,
+    min_prs: int = DEFAULT_SAME_FILE_MIN_PRS,
+    window_hours: float = DEFAULT_SAME_FILE_WINDOW_HOURS,
+) -> CycleSignal | None:
+    """Trip when one file is touched by ``min_prs`` distinct PRs in ``window_hours``.
+
+    Thresholds are passed through from ``ExecutorConfig`` by
+    ``evaluate_all`` so operators can tune them per repo without a code
+    change (see ``ralph_executor.config.DEFAULT_SAME_FILE_MIN_PRS`` /
+    ``DEFAULT_SAME_FILE_WINDOW_HOURS``). The keyword defaults preserve
+    the historical 10/24h behavior for any standalone caller (e.g.
+    direct unit tests) that does not pass a config.
+    """
+    window = timedelta(hours=window_hours)
     pr_events = [
         ev for ev in events if ev.kind == EventType.PR_CREATED and _within(window, now, ev)
     ]
@@ -190,7 +213,7 @@ def evaluate_same_file_thrashing(events: list[Event], now: datetime) -> CycleSig
     for path, evs in hits.items():
         # Distinct PBIs (a single PBI might re-push the same file).
         distinct_pbis = {ev.pbi_id for ev in evs}
-        if len(distinct_pbis) >= SAME_FILE_MIN_PRS:
+        if len(distinct_pbis) >= min_prs:
             return CycleSignal(
                 kind=SignalKind.SAME_FILE_THRASHING,
                 description=(
@@ -336,24 +359,32 @@ def evaluate_blocked_growth(events: list[Event], now: datetime) -> CycleSignal |
 # Aggregator
 # ----------------------------------------------------------------------
 
-_ALL_DETECTORS = (
-    evaluate_signature_recurrence,
-    evaluate_whack_a_mole,
-    evaluate_same_file_thrashing,
-    evaluate_regression_cascade,
-    evaluate_attempt_divergence,
-    evaluate_blocked_growth,
-)
 
-
-def evaluate_all(events: list[Event], now: datetime) -> list[CycleSignal]:
+def evaluate_all(
+    events: list[Event],
+    now: datetime,
+    cfg: ExecutorConfig | None = None,
+) -> list[CycleSignal]:
     """Run every detector and return every tripped signal.
 
-    The order of returned signals mirrors the order of detectors above.
+    Signal order in the result mirrors the spec's "Layer 3" table —
+    signature_recurrence, whack_a_mole, same_file_thrashing,
+    regression_cascade, attempt_divergence, blocked_growth — regardless
+    of internal dispatch order. ``cfg`` carries the same_file_thrashing
+    thresholds; when ``None`` (e.g. unit tests that don't need to override)
+    the detector's keyword defaults apply.
     """
-    results: list[CycleSignal] = []
-    for detector in _ALL_DETECTORS:
-        signal = detector(events, now)
-        if signal is not None:
-            results.append(signal)
-    return results
+    min_prs = cfg.same_file_min_prs if cfg is not None else DEFAULT_SAME_FILE_MIN_PRS
+    window_hours = cfg.same_file_window_hours if cfg is not None else DEFAULT_SAME_FILE_WINDOW_HOURS
+    # Dispatch in the spec's "Layer 3" table order so callers see a
+    # stable sequence even though ``same_file_thrashing`` now takes
+    # different args than the other rules.
+    ordered: list[CycleSignal | None] = [
+        evaluate_signature_recurrence(events, now),
+        evaluate_whack_a_mole(events, now),
+        evaluate_same_file_thrashing(events, now, min_prs=min_prs, window_hours=window_hours),
+        evaluate_regression_cascade(events, now),
+        evaluate_attempt_divergence(events, now),
+        evaluate_blocked_growth(events, now),
+    ]
+    return [signal for signal in ordered if signal is not None]

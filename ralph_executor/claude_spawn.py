@@ -94,6 +94,19 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path) -> list[str]:
         "--output-format",
         "stream-json",
         "--verbose",
+        # Scope the permission mode to ralph's subprocess rather than
+        # letting it inherit the host's ``~/.claude/settings.json``
+        # ``defaultMode``. Without this, an interactive operator running
+        # ``claude`` on the same host would have to globally relax their
+        # safety classifier just so ralph can write files the executor
+        # needs (e.g. ``.claude/settings.json`` under ROSA). Default
+        # value is the executor config's ``claude_permission_mode``
+        # (``bypassPermissions`` unless overridden) — ralph is
+        # non-interactive and cannot answer permission prompts. MUST
+        # appear BEFORE ``-p``; tokens after ``-p`` are consumed as the
+        # prompt value by claude's arg parser.
+        "--permission-mode",
+        cfg.claude_permission_mode,
         "-p",
         (
             "Read ./prompt/PROMPT.md and work the PBI in "

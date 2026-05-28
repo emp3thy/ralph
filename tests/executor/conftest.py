@@ -197,6 +197,7 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         log_level=20,  # logging.INFO
         iteration_sleep_seconds=0.0,
         claude_binary=str(fake_claude_binary),
+        claude_permission_mode="bypassPermissions",
         anthropic_api_key="fake-key",
         git_host="github",
         gh_owner="",
@@ -213,6 +214,8 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         stale_days=3,
         bash_max_timeout_ms=900_000,
         workspace_root=Path.home() / "ralph-workspaces",
+        same_file_min_prs=10,
+        same_file_window_hours=24.0,
     )
 
 

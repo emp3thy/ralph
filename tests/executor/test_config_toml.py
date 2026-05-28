@@ -31,6 +31,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_LOG_LEVEL",
         "RALPH_ITERATION_SLEEP_SECONDS",
         "RALPH_CLAUDE_BINARY",
+        "RALPH_CLAUDE_PERMISSION_MODE",
         "RALPH_GIT_HOST",
         "GH_OWNER",
         "ADO_ORG_URL",
@@ -44,6 +45,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "BASH_MAX_TIMEOUT_MS",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
         "RALPH_WORKSPACE",
+        "RALPH_SAME_FILE_MIN_PRS",
+        "RALPH_SAME_FILE_WINDOW_HOURS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -151,6 +154,37 @@ def test_env_git_host_wins_over_toml(clean_env: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("RALPH_GIT_HOST", "ado")
     cfg = load_config()
     assert cfg.git_host == "ado"
+
+
+def test_claude_permission_mode_default(clean_env: Path) -> None:
+    """No TOML key + no env -> bypassPermissions default. The executor
+    spawns claude non-interactively and cannot answer permission prompts."""
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "bypassPermissions"
+
+
+def test_claude_permission_mode_picked_up_from_toml(clean_env: Path) -> None:
+    """Operators pinning a stricter mode (e.g. ``acceptEdits`` or
+    ``plan``) for a particular project can do so via TOML rather than
+    exporting env every shell."""
+    _write_toml(clean_env, 'claude_permission_mode = "acceptEdits"\n')
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "acceptEdits"
+
+
+def test_env_claude_permission_mode_wins_over_toml(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, 'claude_permission_mode = "acceptEdits"\n')
+    monkeypatch.setenv("RALPH_CLAUDE_PERMISSION_MODE", "plan")
+    cfg = load_config()
+    assert cfg.claude_permission_mode == "plan"
+
+
+def test_invalid_claude_permission_mode_in_toml_raises(clean_env: Path) -> None:
+    _write_toml(clean_env, 'claude_permission_mode = "yolo"\n')
+    with pytest.raises(ConfigError, match="claude_permission_mode"):
+        load_config()
 
 
 def test_git_host_empty_when_neither_set(clean_env: Path) -> None:
@@ -438,4 +472,51 @@ def test_workspace_root_tilde_expansion(clean_env: Path, monkeypatch: pytest.Mon
 def test_workspace_root_non_string_toml_rejected(clean_env: Path) -> None:
     _write_toml(clean_env, "workspace_root = 42\n")
     with pytest.raises(ConfigError, match="workspace_root"):
+        load_config()
+
+
+def test_same_file_thresholds_defaults(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 10
+    assert cfg.same_file_window_hours == 24.0
+
+
+def test_same_file_thresholds_picked_up_from_toml(clean_env: Path) -> None:
+    _write_toml(
+        clean_env,
+        """
+        same_file_min_prs = 25
+        same_file_window_hours = 12.0
+        """,
+    )
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 25
+    assert cfg.same_file_window_hours == 12.0
+
+
+def test_env_wins_over_toml_for_same_file_thresholds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(
+        clean_env,
+        "same_file_min_prs = 25\nsame_file_window_hours = 12.0\n",
+    )
+    monkeypatch.setenv("RALPH_SAME_FILE_MIN_PRS", "40")
+    monkeypatch.setenv("RALPH_SAME_FILE_WINDOW_HOURS", "6")
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 40
+    assert cfg.same_file_window_hours == 6.0
+
+
+def test_same_file_min_prs_rejected_when_zero(clean_env: Path) -> None:
+    _write_toml(clean_env, "same_file_min_prs = 0\n")
+    with pytest.raises(ConfigError, match="same_file_min_prs must be positive"):
+        load_config()
+
+
+def test_same_file_window_hours_rejected_when_negative_in_env(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RALPH_SAME_FILE_WINDOW_HOURS", "-1")
+    with pytest.raises(ConfigError, match="same_file_window_hours must be positive"):
         load_config()

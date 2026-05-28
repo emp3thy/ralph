@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ralph_executor.safety.cycle_detector import (
     SignalKind,
@@ -189,7 +190,7 @@ class TestSameFileThrashing:
             )
             for i in range(9)
         ]
-        assert evaluate_same_file_thrashing(_events(events), now) is None
+        assert evaluate_same_file_thrashing(_events(events), now) is None  # default 10 / 24h
 
     def test_ignores_files_touched_long_ago(self, now: datetime) -> None:
         target = "src/auth/handler.py"
@@ -203,6 +204,70 @@ class TestSameFileThrashing:
             for i in range(10)
         ]
         assert evaluate_same_file_thrashing(_events(events), now) is None
+
+    def test_threshold_override_lowers_trip_point(self, now: datetime) -> None:
+        """A 3-PR set does not trip the default (10) but trips when the
+        operator lowers ``min_prs`` via config — the path the loop driver
+        takes when it passes ``cfg.same_file_min_prs`` through
+        ``evaluate_all``."""
+        target = "src/auth/handler.py"
+        events = _events(
+            [
+                make_event(
+                    kind=EventType.PR_CREATED,
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
+                    pbi_id=f"WI-{i}",
+                    payload={"files": [target]},
+                )
+                for i in range(3)
+            ]
+        )
+        # Default threshold (10): no signal.
+        assert evaluate_same_file_thrashing(events, now) is None
+        # Lowered threshold: trips at 3.
+        signal = evaluate_same_file_thrashing(events, now, min_prs=3, window_hours=24.0)
+        assert signal is not None
+        assert signal.kind == SignalKind.SAME_FILE_THRASHING
+
+    def test_threshold_override_raises_trip_point(self, now: datetime) -> None:
+        """The escape hatch the PBI was filed for: a busy 24h with 10
+        distinct PRs no longer trips once the operator raises
+        ``min_prs`` to a sprint-appropriate ceiling."""
+        target = "ralph_executor/loop.py"
+        events = _events(
+            [
+                make_event(
+                    kind=EventType.PR_CREATED,
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
+                    pbi_id=f"WI-{i}",
+                    payload={"files": [target]},
+                )
+                for i in range(10)
+            ]
+        )
+        # Default trips.
+        assert evaluate_same_file_thrashing(events, now) is not None
+        # Raised threshold: no signal.
+        assert evaluate_same_file_thrashing(events, now, min_prs=20, window_hours=24.0) is None
+
+    def test_window_override_narrows_lookback(self, now: datetime) -> None:
+        """Shrinking ``window_hours`` to 6 drops the 8 events older than
+        6h, so the remaining 2 events are below ``min_prs=10`` and the
+        rule does not trip."""
+        target = "ralph_executor/loop.py"
+        events = _events(
+            [
+                make_event(
+                    kind=EventType.PR_CREATED,
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
+                    pbi_id=f"WI-{i}",
+                    payload={"files": [target]},
+                )
+                for i in range(10)
+            ]
+        )
+        assert evaluate_same_file_thrashing(events, now) is not None  # 24h default
+        assert evaluate_same_file_thrashing(events, now, window_hours=6.0) is None
 
 
 # ----------------------------------------------------------------------
@@ -463,6 +528,63 @@ class TestEvaluateAll:
 
     def test_aggregator_returns_empty_when_calm(self, now: datetime) -> None:
         assert evaluate_all([], now) == []
+
+    def test_aggregator_forwards_same_file_cfg_thresholds(
+        self, now: datetime, tmp_path: Path
+    ) -> None:
+        """``evaluate_all`` reads ``cfg.same_file_min_prs`` and
+        ``cfg.same_file_window_hours`` and passes them through to the
+        same_file_thrashing detector. With a lowered ``min_prs=3``, three
+        PRs are enough to trip; with ``min_prs=20`` the same events stay
+        below the floor."""
+        # Build a minimal ExecutorConfig — only the same_file fields matter
+        # here, the rest are hand-rolled defaults so the dataclass instantiates.
+        from ralph_executor.config import ExecutorConfig
+
+        def _cfg(min_prs: int) -> ExecutorConfig:
+            return ExecutorConfig(
+                repo_path=tmp_path,
+                queue_branch="ralph-queue",
+                main_branch="main",
+                max_attempts=3,
+                log_level=20,
+                iteration_sleep_seconds=0.0,
+                claude_binary="claude",
+                claude_permission_mode="bypassPermissions",
+                anthropic_api_key="",
+                git_host="github",
+                gh_owner="",
+                ado_org_url="",
+                ado_project="",
+                halt_webhook="",
+                pr_check_poll_max_attempts=1,
+                pr_check_poll_interval_seconds=0.1,
+                use_worktrees=False,
+                bot_author_email="",
+                stale_days=3,
+                bash_max_timeout_ms=900_000,
+                same_file_min_prs=min_prs,
+                same_file_window_hours=24.0,
+            )
+
+        target = "ralph_executor/loop.py"
+        events = _events(
+            [
+                make_event(
+                    kind=EventType.PR_CREATED,
+                    recorded_at=offset(now, hours=-(20 - i * 2)),
+                    pbi_id=f"WI-{i}",
+                    payload={"files": [target]},
+                )
+                for i in range(3)
+            ]
+        )
+        # Lowered cfg threshold trips.
+        signals_low = evaluate_all(events, now, _cfg(min_prs=3))
+        assert any(s.kind == SignalKind.SAME_FILE_THRASHING for s in signals_low)
+        # Raised cfg threshold suppresses.
+        signals_high = evaluate_all(events, now, _cfg(min_prs=20))
+        assert not any(s.kind == SignalKind.SAME_FILE_THRASHING for s in signals_high)
 
 
 # UTC import used indirectly via conftest fixtures -- suppress unused warning

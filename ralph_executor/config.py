@@ -46,6 +46,23 @@ DEFAULT_MAX_ATTEMPTS = 20
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_ITERATION_SLEEP_SECONDS = 30.0
 DEFAULT_CLAUDE_BINARY = "claude"
+# Permission mode passed to the spawned ``claude -p`` subprocess via
+# ``--permission-mode``. Setting it explicitly stops the executor's
+# Claude subprocess from inheriting the host's
+# ``~/.claude/settings.json`` ``defaultMode``, so a host configured in
+# ``auto`` mode (with its safety classifier) does not have to be
+# globally relaxed just to let ralph write files like
+# ``.claude/settings.json``. Default is ``bypassPermissions`` because
+# ralph runs in non-interactive ``-p`` mode and cannot answer permission
+# prompts.
+DEFAULT_CLAUDE_PERMISSION_MODE = "bypassPermissions"
+# Mirrors the claude CLI's documented ``--permission-mode`` enum (see
+# ``claude --help``). Validated in ``load_config`` so a typo surfaces
+# immediately rather than being passed through to claude (which exits 1
+# on an unrecognised value).
+_VALID_CLAUDE_PERMISSION_MODES = frozenset(
+    {"acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"}
+)
 # CI-green verifier budget (Plan 18, Task 6). 6 polls × 30 s = 3-minute
 # wall budget per iteration; longer waits roll over into the next
 # iteration via classify_outcome -> ``partial``.
@@ -66,6 +83,15 @@ DEFAULT_BASH_MAX_TIMEOUT_MS = 900_000
 # ``mergeable_state == "clean"`` (CI green + required approvals + no
 # conflicts + branch up-to-date). Default False — operators opt in.
 DEFAULT_AUTO_MERGE_CLEAN_PRS = False
+# Cycle-detector same_file_thrashing thresholds. The rule trips when one
+# file is touched by ``same_file_min_prs`` distinct PBIs inside a rolling
+# ``same_file_window_hours`` window. Defaults preserve the historical
+# module-level constants in ``ralph_executor.safety.cycle_detector``
+# (10 PRs / 24h). Operators raise the floor manually for high-velocity
+# sprints where the central executor module legitimately receives many
+# feature additions and the rule otherwise false-trips.
+DEFAULT_SAME_FILE_MIN_PRS = 10
+DEFAULT_SAME_FILE_WINDOW_HOURS = 24.0
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -81,6 +107,10 @@ _TOML_KNOWN_KEYS = frozenset(
         "log_level",
         "iteration_sleep_seconds",
         "claude_binary",
+        # Permission mode for the spawned claude subprocess. See
+        # DEFAULT_CLAUDE_PERMISSION_MODE above for why this is
+        # bypassPermissions by default.
+        "claude_permission_mode",
         "git_host",
         # Per-host project identifiers + alerting. Promoted from env-only
         # in this layer because they are project state, not secrets.
@@ -110,9 +140,13 @@ _TOML_KNOWN_KEYS = frozenset(
         "auto_merge_clean_prs",
         # Target-repo clones live under this root: each PBI's
         # target_repo gets a subdir
-        # ``<workspace_root>/clones/<owner>-<name>/``. Default
+        # ``<workspace_root>/clones/<owner>/<name>/``. Default
         # ``$HOME/ralph-workspaces``. Env override: RALPH_WORKSPACE.
         "workspace_root",
+        # Cycle-detector same_file_thrashing thresholds — see
+        # DEFAULT_SAME_FILE_MIN_PRS / DEFAULT_SAME_FILE_WINDOW_HOURS.
+        "same_file_min_prs",
+        "same_file_window_hours",
     }
 )
 
@@ -138,6 +172,14 @@ class ExecutorConfig:
     log_level: int
     iteration_sleep_seconds: float
     claude_binary: str
+    # Permission mode forwarded to the spawned ``claude -p`` subprocess
+    # via ``--permission-mode``. Default ``"bypassPermissions"`` —
+    # the executor runs Claude non-interactively and cannot answer
+    # permission prompts, so the spawned subprocess must not inherit a
+    # host ``defaultMode`` that prompts. Allowed values are the claude
+    # CLI's documented ``--permission-mode`` enum (validated in
+    # ``load_config``).
+    claude_permission_mode: str
     anthropic_api_key: str
     # Empty string = "not set in TOML/env"; host_select falls back to
     # reading ``RALPH_GIT_HOST`` directly and errors if that is also
@@ -188,9 +230,18 @@ class ExecutorConfig:
     # wanted to review is unrecoverable; opt in carefully.
     auto_merge_clean_prs: bool = DEFAULT_AUTO_MERGE_CLEAN_PRS
     # Where target-repo clones live. Default: $HOME/ralph-workspaces.
-    # Each target gets a subdir: <workspace_root>/clones/<owner>-<name>/.
+    # Each target gets a subdir: <workspace_root>/clones/<owner>/<name>/.
     # Override via TOML key `workspace_root` or env `RALPH_WORKSPACE`.
     workspace_root: Path = field(default_factory=lambda: Path.home() / "ralph-workspaces")
+    # Cycle-detector same_file_thrashing thresholds (Layer 3 safety).
+    # ``same_file_min_prs`` is the distinct-PBI floor that trips the
+    # rule; ``same_file_window_hours`` is the rolling window over which
+    # PBIs are counted. Both strictly positive (validated in
+    # ``load_config``). Defaults preserve the prior module-level
+    # constants (10 / 24h) — operators raise them for high-velocity
+    # sprints where a central module legitimately receives many PRs.
+    same_file_min_prs: int = DEFAULT_SAME_FILE_MIN_PRS
+    same_file_window_hours: float = DEFAULT_SAME_FILE_WINDOW_HOURS
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -442,6 +493,18 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_CLAUDE_BINARY,
         source_label=source_label,
     )
+    claude_permission_mode = _resolve_str(
+        name="claude_permission_mode",
+        env_name="RALPH_CLAUDE_PERMISSION_MODE",
+        toml_value=toml_overrides.get("claude_permission_mode"),
+        default=DEFAULT_CLAUDE_PERMISSION_MODE,
+        source_label=source_label,
+    )
+    if claude_permission_mode not in _VALID_CLAUDE_PERMISSION_MODES:
+        raise ConfigError(
+            f"{source_label}: claude_permission_mode={claude_permission_mode!r} "
+            f"not in {sorted(_VALID_CLAUDE_PERMISSION_MODES)}"
+        )
     git_host = _resolve_str(
         name="git_host",
         env_name="RALPH_GIT_HOST",
@@ -539,6 +602,29 @@ def load_config() -> ExecutorConfig:
         default=Path.home() / "ralph-workspaces",
         source_label=source_label,
     )
+    same_file_min_prs = _resolve_int(
+        name="same_file_min_prs",
+        env_name="RALPH_SAME_FILE_MIN_PRS",
+        toml_value=toml_overrides.get("same_file_min_prs"),
+        default=DEFAULT_SAME_FILE_MIN_PRS,
+        source_label=source_label,
+    )
+    if same_file_min_prs <= 0:
+        raise ConfigError(
+            f"{source_label}: same_file_min_prs must be positive (got {same_file_min_prs})"
+        )
+    same_file_window_hours = _resolve_float(
+        name="same_file_window_hours",
+        env_name="RALPH_SAME_FILE_WINDOW_HOURS",
+        toml_value=toml_overrides.get("same_file_window_hours"),
+        default=DEFAULT_SAME_FILE_WINDOW_HOURS,
+        source_label=source_label,
+    )
+    if same_file_window_hours <= 0:
+        raise ConfigError(
+            f"{source_label}: same_file_window_hours must be positive "
+            f"(got {same_file_window_hours})"
+        )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -548,6 +634,7 @@ def load_config() -> ExecutorConfig:
         log_level=log_level,
         iteration_sleep_seconds=sleep_seconds,
         claude_binary=claude_binary,
+        claude_permission_mode=claude_permission_mode,
         anthropic_api_key=anthropic_key,
         git_host=git_host,
         gh_owner=gh_owner,
@@ -562,4 +649,6 @@ def load_config() -> ExecutorConfig:
         bash_max_timeout_ms=bash_max_timeout_ms,
         auto_merge_clean_prs=auto_merge_clean_prs,
         workspace_root=workspace_root,
+        same_file_min_prs=same_file_min_prs,
+        same_file_window_hours=same_file_window_hours,
     )
