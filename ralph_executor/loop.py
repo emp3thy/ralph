@@ -271,19 +271,17 @@ def _persist_iteration_writes(
     iteration. No-ops cleanly when the index ends up empty and when the
     PBI was already moved out of current/ by a sibling code path.
 
-    In worktree mode (``cfg.use_worktrees=True``) all git operations run
-    against the long-lived queue worktree at
-    ``<repo>/.ralph-work/queue/`` — no branch switching on the primary
-    checkout. Legacy single-checkout mode keeps the original behaviour
-    (``_ensure_on_queue_branch`` swaps the primary to ``cfg.queue_branch``
-    before staging).
+    All git operations run against the queue clone at
+    ``<workspace_root>/queue/`` (materialised by ``_pull_queue`` earlier
+    in the iteration). The clone is its own working tree on ``main``;
+    no branch switching is required.
 
     Emits ``FILE_TOUCHED`` to ``event_log`` when a new commit lands and
     the diff is non-empty. The cycle detector reserves the event for
     future per-iteration rules (no current rule reads it; emit for
     forward compatibility).
     """
-    queue_repo = queue_worktree_path(cfg.repo_path) if cfg.use_worktrees else cfg.repo_path
+    queue_repo = _queue_repo_root(cfg)
     pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
     if not pbi_dir.is_dir():
         # PBI was moved out of current/ by handle_stuck or
@@ -299,10 +297,10 @@ def _persist_iteration_writes(
     if head_after != head_before:
         log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
         # push_with_rebase rebases the local persist commit onto a raced
-        # origin/<queue_branch> instead of failing the push outright. The
+        # origin/main instead of failing the push outright. The
         # caller (iterate_once) catches PushRebaseConflict and converts
         # it to a recoverable LoopResult so the loop keeps running.
-        git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
+        git_ops.push_with_rebase(queue_repo, remote="origin", branch="main")
         if event_log is not None:
             files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:
@@ -875,7 +873,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
         # ``handle_stuck`` on terminal outcomes, both of which call
         # ``push_with_rebase`` via ``movements._move``. A concurrent
-        # writer on ``cfg.queue_branch`` can make that push raise
+        # writer on the queue repo's ``main`` can make that push raise
         # ``PushRebaseConflict`` — without this catch the executor
         # process would crash, exactly the failure mode this code
         # path exists to prevent.
@@ -902,16 +900,15 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                 now=datetime.now(tz=UTC),
             )
         except PushRebaseConflict as exc:
-            # Concurrent writer advanced the queue branch in a way that
-            # conflicts with the iteration's persist commit. The local
-            # commit was abandoned (rebase --abort), the on-disk writes
-            # remain in the queue worktree, and the next iteration will
-            # re-stage them. Log a WARNING and surface the outcome so
-            # operator dashboards see it — the loop must NOT crash.
+            # Concurrent writer advanced the queue repo's main in a way
+            # that conflicts with the iteration's persist commit. The
+            # local commit was abandoned (rebase --abort), the on-disk
+            # writes remain in the queue clone, and the next iteration
+            # will re-stage them. Log a WARNING and surface the outcome
+            # so operator dashboards see it — the loop must NOT crash.
             log.warning(
-                "iterate_once: push conflict on %s (paths: %s); "
+                "iterate_once: push conflict on queue main (paths: %s); "
                 "skipping this iteration's persist, loop will retry next round",
-                cfg.queue_branch,
                 ", ".join(exc.conflict_paths) or "<unknown>",
             )
             return IterationResult(outcome="push_conflict", pbi_id=current.id)

@@ -508,7 +508,7 @@ git commit -m "feat(loop): _pull_queue uses ensure_queue_clone"
 **Files:**
 - Modify: `ralph_executor/loop.py`, `ralph_executor/queue/movements.py`
 
-- [ ] **Step 1: Make every edit in the table above**
+- [x] **Step 1: Make every edit in the table above**
 
 Use the line numbers as anchors. Re-grep after editing — there should be zero `cfg.queue_branch` references in production code:
 
@@ -516,7 +516,7 @@ Use the line numbers as anchors. Re-grep after editing — there should be zero 
 grep -n "cfg\.queue_branch\|_ensure_on_queue_branch" ralph_executor/
 ```
 
-- [ ] **Step 2: Run the full executor + loop test suite**
+- [x] **Step 2: Run the full executor + loop test suite**
 
 ```bash
 uv run pytest tests/executor/ tests/safety/ -v
@@ -524,7 +524,7 @@ uv run pytest tests/executor/ tests/safety/ -v
 
 Failures expected only for fixtures still using `queue_branch="…"`. Those get fixed in Task 9.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add ralph_executor/loop.py ralph_executor/queue/movements.py
