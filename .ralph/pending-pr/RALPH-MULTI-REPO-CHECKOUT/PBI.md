@@ -1,11 +1,11 @@
 ---
 id: RALPH-MULTI-REPO-CHECKOUT
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T00:05:00+00:00
-updated_at: 2026-05-27T23:06:08+00:00
+updated_at: 2026-05-28T01:07:27+00:00
 depends_on: ["RALPH-PBI-TARGET-REPO-FIELD"]
 target_repo: https://github.com/emp3thy/ralph
 ---

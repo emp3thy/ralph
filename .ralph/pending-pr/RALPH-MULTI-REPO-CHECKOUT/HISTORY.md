@@ -54,3 +54,19 @@
 - Tests: 2 new tests in test_loop.py (`test_claim_in_worktree_mode_clones_target_and_creates_worktree_in_clone`, `test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable`). Both green. Full `tests/executor tests/safety` sweep 469/469 green.
 - Lint: ruff check + ruff format clean project-wide; mypy --strict on loop.py clean.
 - Notes: To keep the existing worktree-mode tests in test_loop.py passing without setting up a real clone, extended the `cfg_for_repo_worktree` fixture to monkeypatch `ralph_executor.target_clone.ensure_clone` to return `TargetClone(clone_root=fake_repo)`. So `work_worktree_path(clone.clone_root, id) == work_worktree_path(fake_repo, id)` for those tests, preserving their assertions. The 2 new 7C tests override the monkeypatch in-test to a distinct clone_root and verify ensure_worktree is invoked against the clone, not `cfg.repo_path`. Also: monkeypatch ordering matters — `_pull_queue` must run BEFORE installing the no-op `ensure_worktree` stub, otherwise `git pull` errors on a non-existent queue worktree directory (NotADirectoryError on Windows). Next iteration: Step 7.8 — `iterate_once` catches `_ClaimError` and moves the offending PBI to `blocked/<id>/` with the reason appended to HISTORY.md, plus the `_move_to_blocked_with_reason` helper.
+
+## Iteration 9 — 2026-05-28T05:00:00Z
+
+- Step: Task 10 — full-suite gate. Tasks 7.8 (`iterate_once` catches `_ClaimError`), 8 (`claude_spawn` cwd + GH_OWNER), 9 (sweep per-PBI GH_OWNER + `--repo`) already landed in prior commits (5c77800, fc8de64, dcc89b1). This iteration runs the gating commands.
+- Tests: `uv run pytest tests/` → 822 passed, 4 skipped (shellcheck + opt-in prompt smoke), 0 failed in 341.99s.
+- Lint: `uv run ruff check ralph_executor/ skills/ scripts/ tests/` clean; `uv run ruff format --check` 132 files already formatted; `uv run mypy --strict ralph_executor/ scripts/` clean (37 source files).
+- Notes: All PLAN.md acceptance boxes already checked. No code changes this iteration. PBI complete — proceeding to ship PR next.
+
+## Iteration 10 — 2026-05-28T05:15:00Z — PR created
+
+- PR: #44 — https://github.com/emp3thy/ralph/pull/44
+- Branch: ralph/RALPH-MULTI-REPO-CHECKOUT (pushed; tracks origin/ralph/RALPH-MULTI-REPO-CHECKOUT)
+- Title: RALPH-MULTI-REPO-CHECKOUT: ralph loop operates on pbi.target_repo dynamically
+- Base: main
+- 12 commits ahead of main (url-utils → git-ops.clone → target-clone → config workspace_root → worktree refactor → types fields → loop 7A/7B/7C → loop iterate_once → spawn → sweep)
+- Opened via `pr-github create-pr` (skills/pr-github/scripts/create_pr.py); GH_OWNER=emp3thy, GH_TOKEN from env.
