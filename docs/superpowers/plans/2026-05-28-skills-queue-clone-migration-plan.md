@@ -73,7 +73,7 @@ No commit for Task 0.
 - Modify: `scripts/queue_writer.py`
 - Test: `tests/test_queue_writer.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_queue_writer.py`:
 
@@ -102,9 +102,9 @@ def test_checkout_queue_branch_is_removed():
     assert not hasattr(qw, "checkout_queue_branch")
 ```
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `scripts/queue_writer.py`**
+- [x] **Step 3: Edit `scripts/queue_writer.py`**
 
 - Delete the `checkout_queue_branch` function.
 - Delete any module-level `DEFAULT_QUEUE_BRANCH` constant.
@@ -127,13 +127,13 @@ def acquire_queue_clone(workspace_root, queue_repo, *, timeout=120.0):
     return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
 ```
 
-- [ ] **Step 4: Run the tests; expect PASS**
+- [x] **Step 4: Run the tests; expect PASS**
 
 ```bash
 uv run pytest tests/test_queue_writer.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/queue_writer.py tests/test_queue_writer.py

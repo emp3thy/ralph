@@ -1,11 +1,11 @@
-"""Shared helpers for skills that mutate the ``ralph-queue`` branch.
+"""Shared helpers for skills that mutate the queue clone.
 
 The four supervisor skills (`ralph-add`, `ralph-cancel`, `ralph-promote`,
-`ralph-triage`) all follow the same pattern: validate the target repo,
-switch onto `ralph-queue`, mutate one or more PBI directories, commit,
-optionally push. This module is the single source of truth for that
-pattern so the skills stay consistent and the git-related test surface
-has a single home.
+`ralph-triage`) all follow the same pattern: acquire the queue clone at
+``<workspace_root>/queue/`` (always on ``main``), mutate one or more PBI
+directories under ``.ralph/``, commit, optionally push. This module is
+the single source of truth for that pattern so the skills stay
+consistent and the git-related test surface has a single home.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from ralph_executor.queue_clone import ensure_queue_clone
 
 QUEUE_STATE_FOLDERS: tuple[str, ...] = (
     "current",
@@ -68,27 +70,16 @@ def ensure_git_repo(repo: Path) -> None:
         raise QueueWriterError(f"{repo} is not a git repository (no .git/ directory)")
 
 
-def checkout_queue_branch(repo: Path, branch: str) -> None:
-    """Switch the working tree onto ``branch``.
+def acquire_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+    """Idempotent queue clone for operator skills.
 
-    If the branch exists locally, ``git checkout <branch>``. Otherwise, if
-    ``origin/<branch>`` exists, create a tracking branch. Otherwise raise
-    ``QueueWriterError`` -- the caller must run the ``ralph-queue`` setup
-    runbook first (Plan 2).
+    Thin wrapper around ``ralph_executor.queue_clone.ensure_queue_clone``
+    so skills can import a stable surface from this module without taking
+    a dependency on the executor package layout directly. On first call
+    the queue repo is cloned to ``<workspace_root>/queue``; on subsequent
+    calls the existing clone is fetched and fast-forwarded on ``main``.
     """
-    ensure_git_repo(repo)
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        _run_git(repo, "checkout", branch)
-        return
-    remote = _run_git(repo, "branch", "-r", "--list", f"origin/{branch}")
-    if remote.strip():
-        _run_git(repo, "checkout", "-b", branch, f"origin/{branch}")
-        return
-    raise QueueWriterError(
-        f"branch {branch!r} not found locally or as origin/{branch}; "
-        "run docs/runbooks/ralph-queue-setup.md first"
-    )
+    return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
 
 
 def is_path_in_head(repo: Path, rel_path: str) -> bool:
