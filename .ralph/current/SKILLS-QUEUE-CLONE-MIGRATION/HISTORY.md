@@ -43,6 +43,15 @@
 - Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 6b checkboxes (Steps 1–4 → [x]).
 - Notes: Prior iterations (Task 5 ralph-triage, Task 6a delete worktree machinery) committed in earlier sessions (9e0fe9f, ca8ba45) but did not append to this HISTORY.md — no iteration numbers were claimed for them; this Iteration 5 entry follows directly from Iteration 4 (Task 4). `tests/skills/test_ralph_status.py` still references the old multi-repo fixtures — left untouched per plan ("Do not run tests yet"). Whole-suite `pytest -q` still expected to fail at import on the test module.
 
+## Iteration 6 — 2026-05-28T18:30:00+00:00
+
+- Step Task 6c: rewrote `_COLUMN_ORDER`, `_row_to_cells`, and the entry-point flow in `skills/ralph-status/scripts/status.py` so the table renders a `TARGET` column (was `REPO`) sourced from `PBIRow.target_repo`. Long URLs are truncated to 50 chars (47 + "...") via a new `_truncate_target` helper. Missing/empty `target_repo` renders as `"?"`. The PBIRowError row still renders 7 cells: `"?"` for TARGET, then state, dir-name, three `"?"` placeholders, and the `(parse error) <msg>` title cell.
+- Added `_group_and_sort` which stable-sorts rows by `(target_repo, state, created_at-iso)` so the default output groups all rows for a given target under contiguous lines. PBIRowError rows sort to the head (empty target). `main()` now applies the `--target-repo` filter first (already in place from Task 6b) and pipes the result through `_group_and_sort` before rendering — same ordering applies to both `--json` and table output.
+- Smoke check: `uv run python skills/ralph-status/scripts/status.py --help` still prints the Task 6b argument shape (no `--repo` / `--repos-file` / `--branch` / `--no-cleanup`).
+- Lint/type: `uv run ruff check`, `uv run ruff format --check`, `uv run mypy skills/ralph-status/scripts/status.py` clean.
+- Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 6c checkboxes (Steps 1–5 → [x]).
+- Notes: `tests/skills/test_ralph_status.py` still references the old multi-repo fixtures — left untouched per plan ("Do not run tests yet" carries through to Task 6d, which rewrites them). Whole-suite `pytest -q` still expected to fail at import on that test module. Stale Pyright diagnostics flagged `_TARGET_DISPLAY_MAX` and `_group_and_sort` as unused after the first two edits — both are referenced after the third edit (`_truncate_target` reads the const; `main` calls `_group_and_sort`) and mypy confirms.
+
 ## Iteration 4 — 2026-05-28T16:30:00+00:00
 
 - Step Task 4: rewrote `skills/ralph-promote/scripts/promote.py` to operate on the queue clone as a STATE MOVER (was: severity bumper). Per spec line 143 and plan Task 4, `ralph-promote` now takes `--pbi-id` + `--from <state>` + `--to <state>` (both required, must differ, both restricted to `QUEUE_STATE_FOLDERS`). Dropped `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, `--severity`, `ALLOWED_SEVERITIES`, and the entire severity-bump idempotency dance (head/working severity cross-check, history dedup loop). Reduced the file from 287 LOC → 271 LOC.
