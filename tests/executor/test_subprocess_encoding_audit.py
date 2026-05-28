@@ -17,7 +17,7 @@ See ``BUG-SUBPROCESS-WINDOWS-ENCODING-AUDIT`` for the full backstory.
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 import pytest
@@ -45,15 +45,6 @@ _EXCLUDED = frozenset(
     }
 )
 
-# Multi-line ``subprocess.run(...)`` / ``subprocess.Popen(...)`` capture.
-# The ``[^()]*?`` body is conservative — it does NOT cross another
-# parenthesis, which would let nested calls slip through. In practice
-# every audited call site fits the pattern.
-_CALL_RE = re.compile(
-    r"subprocess\.(?:run|Popen)\s*\(((?:[^()]|\([^()]*\))*)\)",
-    re.DOTALL,
-)
-
 
 def _iter_py_files() -> list[Path]:
     out: list[Path] = []
@@ -64,21 +55,63 @@ def _iter_py_files() -> list[Path]:
     return out
 
 
+def _is_subprocess_run_or_popen(call: ast.Call) -> bool:
+    """Return True for ``subprocess.run(...)`` / ``subprocess.Popen(...)`` calls.
+
+    Other call shapes (``Popen(...)`` without the ``subprocess.`` prefix,
+    aliased imports like ``from subprocess import run``) are intentionally
+    NOT matched — the audit guards the explicit module-qualified pattern
+    and ``subprocess_utils`` provides the wrapped helpers for everything
+    else.
+    """
+    func = call.func
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr not in {"run", "Popen"}:
+        return False
+    return isinstance(func.value, ast.Name) and func.value.id == "subprocess"
+
+
+def _kwarg_is_true(kw: ast.keyword) -> bool:
+    """Return True if ``kw.value`` evaluates to literal ``True``.
+
+    Only matches ``ast.Constant(True)``; an expression like ``text=flag``
+    is treated as text-mode-off for the audit, matching the regex-era
+    behaviour.
+    """
+    return isinstance(kw.value, ast.Constant) and kw.value.value is True
+
+
 def _violations_in(path: Path) -> list[tuple[int, str]]:
+    """Walk ``path``'s AST and flag text-mode subprocess calls with no encoding.
+
+    AST-based (replaces the previous depth-1 regex) so the audit is
+    robust against arbitrarily-nested parenthesised expressions in the
+    argument list (e.g. ``cwd=str(Path(repo))``).
+    """
     src = path.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src, filename=str(path))
+    except SyntaxError:
+        return []
     bad: list[tuple[int, str]] = []
-    for match in _CALL_RE.finditer(src):
-        body = match.group(1)
-        # Only flag calls that turn on text mode. A purely-bytes call
-        # (``text=False`` or unset) is encoding-agnostic and not a
-        # vulnerability surface.
-        if "text=True" not in body and "universal_newlines=True" not in body:
+    src_lines = src.splitlines()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_subprocess_run_or_popen(node):
             continue
-        if re.search(r"\bencoding\s*=", body):
+        kwargs = {kw.arg: kw for kw in node.keywords if kw.arg is not None}
+        text_on = (
+            "text" in kwargs
+            and _kwarg_is_true(kwargs["text"])
+            or "universal_newlines" in kwargs
+            and _kwarg_is_true(kwargs["universal_newlines"])
+        )
+        if not text_on:
             continue
-        # Report the call-site line for the failure message.
-        line = src.count("\n", 0, match.start()) + 1
-        bad.append((line, match.group(0).splitlines()[0]))
+        if "encoding" in kwargs:
+            continue
+        snippet = src_lines[node.lineno - 1].strip() if 0 < node.lineno <= len(src_lines) else ""
+        bad.append((node.lineno, snippet))
     return bad
 
 
