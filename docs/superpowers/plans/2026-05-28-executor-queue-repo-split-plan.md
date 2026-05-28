@@ -399,7 +399,7 @@ git commit -m "feat(executor): ensure_queue_clone — idempotent queue repo clon
 - Modify: `ralph_executor/loop.py`
 - Test: `tests/executor/test_loop.py` (existing) — assert `_pull_queue` calls `ensure_queue_clone`.
 
-- [ ] **Step 1: Add a failing test**
+- [x] **Step 1: Add a failing test**
 
 Append to `tests/executor/test_loop.py` (or create the file if absent):
 
@@ -428,13 +428,13 @@ def test_pull_queue_calls_ensure_queue_clone(monkeypatch, tmp_path):
 
 If `_make_test_cfg` doesn't exist in this file, build the cfg inline using `ExecutorConfig(...)` with the new `queue_repo` arg.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/executor/test_loop.py::test_pull_queue_calls_ensure_queue_clone -v
 ```
 
-- [ ] **Step 3: Edit `ralph_executor/loop.py`**
+- [x] **Step 3: Edit `ralph_executor/loop.py`**
 
 Add to the imports block:
 
@@ -460,13 +460,13 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
 
 Delete `_ensure_on_queue_branch` (callers go away in Task 4).
 
-- [ ] **Step 4: Run the test; expect PASS**
+- [x] **Step 4: Run the test; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_loop.py::test_pull_queue_calls_ensure_queue_clone -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/loop.py tests/executor/test_loop.py

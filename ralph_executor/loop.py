@@ -50,6 +50,7 @@ from ralph_executor.queue.movements import (
     move_inbox_to_blocked,
     move_inbox_to_current,
 )
+from ralph_executor.queue_clone import ensure_queue_clone
 from ralph_executor.safety import (
     AttemptCounter,
     AttemptsExceeded,
@@ -76,20 +77,17 @@ log = logging.getLogger(__name__)
 
 
 def _queue_repo_root(cfg: ExecutorConfig) -> Path:
-    """Repo root that owns ``.ralph/`` (events.db, sentinel, blocked/, …).
+    """Filesystem path of the queue clone. Always ``<workspace_root>/queue``.
 
-    In worktree mode ``.ralph/`` lives in the queue worktree, not the
-    primary checkout (which is typically on ``main`` and has no
-    ``.ralph/`` directory). Every operation that reads or writes under
-    ``.ralph/`` — opening the event log, moving PBIs to ``.ralph/blocked/``,
-    handling STUCK.md, checking/writing the halt sentinel — must route
-    through this helper. Otherwise the side-effects silently land in the
-    primary checkout's working tree, where they are never committed or
-    pushed and become invisible after a process restart.
+    The queue repo is cloned by ``ensure_queue_clone`` into
+    ``<workspace_root>/queue`` and owns ``.ralph/`` (events.db, sentinel,
+    blocked/, …). Every operation that reads or writes under ``.ralph/`` —
+    opening the event log, moving PBIs to ``.ralph/blocked/``, handling
+    STUCK.md, checking/writing the halt sentinel — routes through this
+    helper so the side-effects land in the queue clone that gets pushed
+    to ``origin/main`` of ``queue_repo``.
     """
-    if cfg.use_worktrees:
-        return queue_worktree_path(cfg.repo_path)
-    return cfg.repo_path
+    return cfg.workspace_root / "queue"
 
 
 IterationOutcome = Literal[
@@ -252,20 +250,6 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
 # ----------------------------------------------------------------------
 
 
-def _ensure_on_queue_branch(cfg: ExecutorConfig) -> None:
-    """Make the primary checkout's HEAD match ``cfg.queue_branch``.
-
-    In worktree mode the queue worktree owns ``cfg.queue_branch`` and
-    git refuses to check the same branch out in two worktrees, so this
-    is a no-op — callers that need to read ``.ralph/`` use the queue
-    worktree path instead.
-    """
-    if cfg.use_worktrees:
-        return
-    if git_ops.current_branch(cfg.repo_path) != cfg.queue_branch:
-        git_ops.checkout(cfg.repo_path, cfg.queue_branch)
-
-
 def _persist_iteration_writes(
     cfg: ExecutorConfig,
     pbi_id: str,
@@ -299,7 +283,6 @@ def _persist_iteration_writes(
     future per-iteration rules (no current rule reads it; emit for
     forward compatibility).
     """
-    _ensure_on_queue_branch(cfg)
     queue_repo = queue_worktree_path(cfg.repo_path) if cfg.use_worktrees else cfg.repo_path
     pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
     if not pbi_dir.is_dir():
@@ -335,16 +318,8 @@ def _persist_iteration_writes(
 
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
-    log.debug("pulling %s", cfg.queue_branch)
-    if cfg.use_worktrees:
-        # Materialise (or reuse) the queue worktree before pulling so the
-        # very first iteration on a fresh repo still has a path to update.
-        queue_wt = queue_worktree_path(cfg.repo_path)
-        ensure_worktree(cfg.repo_path, worktree_path=queue_wt, branch=cfg.queue_branch)
-        git_ops.pull(queue_wt, cfg.queue_branch)
-        return
-    _ensure_on_queue_branch(cfg)
-    git_ops.pull(cfg.repo_path, cfg.queue_branch)
+    log.debug("refreshing queue clone for %s", cfg.queue_repo)
+    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo)
 
 
 def _pull_main(cfg: ExecutorConfig) -> None:
@@ -914,8 +889,6 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                 ", ".join(exc.conflict_paths) or "<unknown>",
             )
             return IterationResult(outcome="push_conflict", pbi_id=current.id)
-        # Restore queue branch so .ralph/ is visible on disk after the call.
-        _ensure_on_queue_branch(cfg)
         # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
         # inside the PBI dir. The move_current_to_* paths handle their
         # own commits via git mv, but partial/error outcomes leave the
@@ -993,8 +966,6 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         log.warning("claim failed for PBI %s: %s; moving to blocked/", picked.id, exc)
         _move_to_blocked_with_reason(cfg, picked, reason=str(exc))
         return IterationResult(outcome="claim_failed", pbi_id=picked.id)
-    # _claim_pbi already returns to queue branch; re-assert for clarity.
-    _ensure_on_queue_branch(cfg)
     if _check_cycle_detector(cfg, source):
         raise HaltedError(
             meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",

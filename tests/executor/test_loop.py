@@ -1368,6 +1368,32 @@ def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
     assert "unsupported host" in history
 
 
+def test_pull_queue_calls_ensure_queue_clone(
+    cfg_for_repo: ExecutorConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_pull_queue`` must delegate to ``queue_clone.ensure_queue_clone``."""
+    from ralph_executor import loop
+
+    cfg = dataclasses.replace(
+        cfg_for_repo,
+        workspace_root=tmp_path,
+        queue_repo="https://github.com/example/q",
+    )
+    calls: list[tuple[Path, str]] = []
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        calls.append((workspace_root, queue_repo))
+        return workspace_root / "queue"
+
+    monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
+
+    loop._pull_queue(cfg)
+
+    assert calls == [(tmp_path, "https://github.com/example/q")]
+
+
 def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable_in_worktree_mode(
     cfg_for_repo_worktree: ExecutorConfig,
     fake_repo: Path,
