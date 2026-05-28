@@ -231,11 +231,10 @@ def _seed_main_readme(
 
 def _seed_ralph_skeleton(
     client: GhClient, owner: str, repo: str, queue_branch: str, *, dry_run: bool
-) -> int:
-    """Returns the number of .gitkeep files created."""
-    created = 0
+) -> None:
+    """Seed `.ralph/<state>/.gitkeep` placeholders on the queue branch."""
     for folder in QUEUE_STATE_FOLDERS:
-        if _put_content(
+        _put_content(
             client,
             owner,
             repo,
@@ -244,9 +243,30 @@ def _seed_ralph_skeleton(
             content_bytes=b"",
             message=f"chore(queue): seed {folder}/",
             dry_run=dry_run,
-        ):
-            created += 1
-    return created
+        )
+
+
+_RALPH_CONFIG_STUB = (
+    "# Per-queue ralph-executor config.\n"
+    "# Settings here are loaded by the executor + operator skills.\n"
+    "# See docs/superpowers/specs/2026-05-28-queue-repo-split-design.md.\n"
+)
+
+
+def _seed_ralph_config_stub(
+    client: GhClient, owner: str, repo: str, queue_branch: str, *, dry_run: bool
+) -> None:
+    """Seed `.ralph/config.toml` stub on the queue branch (idempotent)."""
+    _put_content(
+        client,
+        owner,
+        repo,
+        ".ralph/config.toml",
+        branch=queue_branch,
+        content_bytes=_RALPH_CONFIG_STUB.encode("utf-8"),
+        message="chore(queue): seed .ralph/config.toml stub",
+        dry_run=dry_run,
+    )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -369,11 +389,19 @@ def main(argv: list[str] | None = None) -> int:
         _seed_ralph_skeleton(
             client, owner, args.repo, args.branch, dry_run=args.dry_run
         )
+        # Seed .ralph/config.toml stub on queue_branch (idempotent)
+        _seed_ralph_config_stub(
+            client, owner, args.repo, args.branch, dry_run=args.dry_run
+        )
 
+        # Protection-handling precedence: --no-protection always wins (even
+        # under --dry-run), then --dry-run, then the real PUT. Keeping the
+        # branches independent makes the output transparent about which
+        # flag suppressed the PUT.
         protection_applied = False
         if args.no_protection:
             print(
-                f"--no-protection set; skipping protection PUT on {args.branch}",
+                f"skipping branch protection (--no-protection) on {args.branch}",
                 file=sys.stderr,
             )
         elif args.dry_run:

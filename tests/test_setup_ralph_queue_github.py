@@ -136,6 +136,19 @@ def _register_seed_endpoints() -> None:
             json={"commit": {"sha": "k" * 40}},
             status=201,
         )
+    # .ralph/config.toml stub on ralph-queue
+    responses.add(
+        responses.GET,
+        f"{REPO_URL}/contents/.ralph/config.toml",
+        json={"message": "Not Found"},
+        status=404,
+    )
+    responses.add(
+        responses.PUT,
+        f"{REPO_URL}/contents/.ralph/config.toml",
+        json={"commit": {"sha": "c" * 40}},
+        status=201,
+    )
 
 
 @responses.activate
@@ -242,6 +255,12 @@ def test_dry_run_makes_no_mutations(env: None, capsys: pytest.CaptureFixture[str
             json={"message": "Not Found"},
             status=404,
         )
+    responses.add(
+        responses.GET,
+        f"{REPO_URL}/contents/.ralph/config.toml",
+        json={"message": "Not Found"},
+        status=404,
+    )
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO, "--dry-run"])
     assert exit_code == 0
@@ -495,3 +514,31 @@ def test_seeds_readme_and_skeleton(monkeypatch: pytest.MonkeyPatch) -> None:
     # Skeleton PUTs on ralph-queue, one per state folder
     for folder in ("inbox", "current", "pending-pr", "blocked", "archive", "done"):
         assert any(path.endswith(f"/contents/.ralph/{folder}/.gitkeep") for path, _ in puts)
+
+
+def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setup script seeds .ralph/config.toml on the queue branch."""
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            if "/contents/README.md" in path or "/contents/.ralph" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc123"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append((path, json_body or {}))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    assert any(path.endswith("/contents/.ralph/config.toml") for path, _ in puts)
