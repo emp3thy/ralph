@@ -1,11 +1,11 @@
 ---
 id: BUG-SUBPROCESS-WINDOWS-ENCODING-AUDIT
 type: bug
-status: inbox
+status: current
 severity: high
 attempts: 0
 created_at: 2026-05-28T10:30:00+00:00
-updated_at: 2026-05-28T10:30:00+00:00
+updated_at: 2026-05-28T11:46:35+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---

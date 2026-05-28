@@ -251,3 +251,4 @@
 - Executor will move this PBI from `current/` to `pending-pr/` on the
   next sweep; any reviewer comments arrive as a `PR-feedback` PBI in
   a future iteration.
+- 2026-05-28T11:46:32.505304+00:00 sweep: PR stale: no activity for >= 3 days, 0:00:00 (last activity 0001-01-01T00:00:00+00:00)
