@@ -1,6 +1,6 @@
 ---
 name: ralph-status
-description: Read-only view of Ralph's queue across one or more service repos. Enumerates the .ralph/{inbox,current,pending-pr,done,blocked} folders on each repo's ralph-queue branch, parses each PBI's frontmatter, and renders a terminal-friendly table to stdout. Supports filtering by state and JSON output for downstream automation.
+description: Read-only view of the Ralph queue. Reads the single queue clone at <workspace_root>/queue/, walks the .ralph/{inbox,current,pending-pr,done,blocked} state folders, parses each PBI's frontmatter against the canonical schema, and renders a fixed-width table grouped by target_repo. Supports filtering by --state and --target-repo, plus --json for downstream automation.
 
 ---
 
@@ -9,119 +9,135 @@ description: Read-only view of Ralph's queue across one or more service repos. E
 ## What this skill does
 
 The `ralph-status` skill is the BA / PM / triager workboard for Ralph. It
-reads (never writes) the queue state from one or more service repos and
-renders it as a terminal-friendly table. The data sources are the
-`.ralph/` directories on each repo's `ralph-queue` branch — exactly the
-same trees `ralph-add` writes to.
+reads (never writes) the queue state from the **single queue clone** at
+`<workspace_root>/queue/` and renders it as a terminal-friendly table
+grouped by the PBI's `target_repo` field. The data source is the
+`.ralph/` directory on the queue clone's `main` branch — exactly the
+same tree `ralph-add`, `ralph-cancel`, `ralph-promote`, and
+`ralph-triage` write to.
 
-For each configured repo, the skill:
+For each invocation, the skill:
 
-1. Creates a short-lived `git worktree` on the `ralph-queue` branch (or
-   the branch named via `--branch`). The worktree lives in a temp
-   directory and is torn down on exit so the user's working tree is
-   untouched.
-2. Walks the five state folders: `inbox/`, `current/`, `pending-pr/`,
-   `done/`, `blocked/`.
-3. For each PBI directory, reads its entry file (`PBI.md`, `BUG.md`,
+1. Resolves `workspace_root` and `queue_repo` from
+   `~/.ralph/config.toml` (overridable via `--workspace` /
+   `--queue-repo`).
+2. Calls `acquire_queue_clone(workspace_root, queue_repo)` — clone on
+   first call, fast-forward pull on subsequent calls. Always on `main`.
+3. Walks the five state folders inside the clone: `inbox/`, `current/`,
+   `pending-pr/`, `done/`, `blocked/`.
+4. For each PBI directory, reads its entry file (`PBI.md`, `BUG.md`,
    `FEEDBACK.md`) and parses the YAML frontmatter against the canonical
    schema defined in Plan 1.
-4. Renders one row per PBI to stdout, optionally filtered by `--state`
-   and optionally serialised as JSON via `--json`.
+5. Applies `--state` and `--target-repo` filters, then stable-sorts rows
+   by `(target_repo, state, created_at)` so output is grouped.
+6. Renders one row per PBI to stdout, either as a fixed-width table or
+   as JSON via `--json`.
 
 ## When to use it
 
 Use `ralph-status` to answer "what is Ralph doing right now?" or "what
-is queued on service X?". It replaces the kanban UI a v2 web supervisor
+is queued for service X?". It replaces the kanban UI a v2 web supervisor
 would expose.
 
 ## Inputs
 
 | Flag | Required | Description |
 |---|---|---|
-| `--repo <path>` | one of `--repo` / `--repos-file` | Path to a checkout (or any working tree) of a service repo. The skill creates a worktree on `ralph-queue` from this repo. |
-| `--repos-file <path>` | one of `--repo` / `--repos-file` | Path to a config file listing multiple repos (one repo path per non-blank line; lines starting with `#` are ignored). |
 | `--state <state>` | no | Filter rows to a single state. Allowed values: `inbox`, `current`, `pending-pr`, `done`, `blocked`. Default: all five. |
-| `--branch <name>` | no | Queue branch name. Default: `ralph-queue` (also picked up from `RALPH_QUEUE_BRANCH` if set). |
+| `--target-repo <url>` | no | Filter rows to PBIs whose `target_repo` frontmatter field equals this URL exactly. |
 | `--json` | no | Emit JSON to stdout instead of a fixed-width table. |
-| `--no-cleanup` | no | Keep the temporary worktree(s) on disk after the command exits. Useful for debugging the data the skill saw. |
+| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. |
+| `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. |
 
-## Environment variables
+## Configuration
 
-| Variable | Purpose |
-|---|---|
-| `RALPH_QUEUE_BRANCH` | Default queue branch name; overridden by `--branch`. Optional. |
+`ralph-status` reads `workspace_root` and `queue_repo` from
+`~/.ralph/config.toml` (populated by `ralph-executor init`). The CLI
+flags above override the TOML values one-by-one. If `queue_repo` is
+neither set in TOML nor passed via `--queue-repo`, the skill exits 2
+with a clear error.
 
 ## Output
 
 ### Table mode (default)
 
 ```
-REPO                STATE         ID            TYPE        SEVERITY  AGE      TITLE
-service-auth        inbox         WI-1234       feature     normal    2h       Add /healthz endpoint
-service-auth        current       WI-1235       bug         critical  1h       Pod crashloops on ROSA
-service-billing     pending-pr    WI-980        feature     high      6h       Migrate invoices to v2
+TARGET                                  STATE       ID        TYPE     SEVERITY  AGE   TITLE
+https://github.com/emp3thy/svc-auth     inbox       WI-1234   feature  normal    2h    Add /healthz endpoint
+https://github.com/emp3thy/svc-auth     current     WI-1235   bug      critical  1h    Pod crashloops on ROSA
+https://github.com/emp3thy/svc-billing  pending-pr  WI-980    feature  high      6h    Migrate invoices to v2
 ```
 
-Columns are width-aligned to the widest value in the rendered set. The
-`AGE` column shows the time since `created_at` (`m` minutes, `h` hours,
-`d` days; `?` if `created_at` is missing or unparseable).
+Rows are grouped by `target_repo` then `state` then `created_at`, so all
+PBIs for a given target sit on contiguous lines. Columns are
+width-aligned to the widest value in the rendered set. The `TARGET`
+column truncates URLs longer than 50 characters with a trailing `...`.
+The `AGE` column shows the time since `created_at` (`s` seconds, `m`
+minutes, `h` hours, `d` days; `?` if `created_at` is missing or
+unparseable).
 
 Malformed PBIs (missing entry file, invalid YAML, missing required
-fields) render as a `?` row with the directory name in the ID column
-and the parse error in the TITLE column — they never abort the command.
+fields) render as a row with `?` for TARGET / TYPE / SEVERITY / AGE,
+the directory name in the ID column, and `(parse error) <msg>` in the
+TITLE column — they never abort the command.
+
+A one-line summary (`# N PBI(s) in <queue-clone> (states: ...)`) is
+written to stderr after the table so stdout stays purely tabular.
 
 ### JSON mode (`--json`)
 
 ```json
 {
+  "errors": [],
   "rows": [
     {
-      "repo": "/path/to/service-auth",
-      "repo_name": "service-auth",
-      "state": "inbox",
-      "id": "WI-1234",
-      "type": "feature",
-      "severity": "normal",
-      "created_at": "2026-05-24T09:15:00+00:00",
-      "updated_at": "2026-05-24T09:15:00+00:00",
       "attempts": 0,
-      "title": "Add /healthz endpoint",
+      "created_at": "2026-05-24T09:15:00+00:00",
+      "error": null,
+      "id": "WI-1234",
       "pbi_dir": ".ralph/inbox/WI-1234",
-      "error": null
+      "severity": "normal",
+      "state": "inbox",
+      "target_repo": "https://github.com/emp3thy/svc-auth",
+      "title": "Add /healthz endpoint",
+      "type": "feature",
+      "updated_at": "2026-05-24T09:15:00+00:00"
     }
-  ],
-  "errors": [],
-  "repos": [
-    {"path": "/path/to/service-auth", "name": "service-auth", "branch": "ralph-queue"}
   ]
 }
 ```
 
-Malformed PBIs appear in `rows` with `error` set to a string describing
-the parse failure. Repos that could not be inspected at all (path
-missing, branch missing) appear in the top-level `errors` array and
-cause exit code 2 — they are not soft-failed like individual PBIs.
+The envelope is `{"rows": [...], "errors": []}` — there is no `repos`
+key (the model has a single queue). Malformed PBIs appear in `rows`
+with `error` set to the parse-failure message and `target_repo` /
+`type` / `severity` / `attempts` / `created_at` / `updated_at` /
+`title` all `null`. Top-level failures (queue clone could not be
+materialised, config missing) print to stderr and exit 2 — they do not
+appear in the JSON envelope.
 
 ## How it is invoked
 
 ```bash
-uv run python skills/ralph-status/scripts/status.py --repo /path/to/service-auth
-uv run python skills/ralph-status/scripts/status.py --repos-file ~/.config/ralph/repos
-uv run python skills/ralph-status/scripts/status.py --repo /path/to/svc --state current
-uv run python skills/ralph-status/scripts/status.py --repo /path/to/svc --json
+uv run python skills/ralph-status/scripts/status.py
+uv run python skills/ralph-status/scripts/status.py --state current
+uv run python skills/ralph-status/scripts/status.py --target-repo https://github.com/emp3thy/svc-auth
+uv run python skills/ralph-status/scripts/status.py --json
 ```
 
-Tests live at `tests/skills/test_ralph_status.py` and use local bare +
-worktree git fixtures (the same pattern as the `ralph-add` skill's
-tests) — no network, no real ADO, no real remote.
+Tests live at `tests/skills/test_ralph_status.py` and use a bare git
+remote as the queue plus a temp workspace (the same pattern as the
+other queue-clone skills) — no network, no real host, no real remote.
 
 ## What this skill does NOT do
 
-- It does not mutate `ralph-queue`, the service repo's working tree,
-  or the user's current branch. The temporary worktree is removed on
-  exit unless `--no-cleanup` is set.
-- It does not call ADO or any other remote API. It only reads git.
+- It does not mutate the queue clone, the queue remote, or anything
+  else on disk beyond `acquire_queue_clone`'s standard
+  clone-or-fast-forward.
+- It does not touch any target service repo. The `target_repo` field
+  is read from each PBI's frontmatter purely for grouping and
+  filtering.
+- It does not call GitHub, Azure DevOps, or any other remote API.
 - It does not invoke `claude -p` or otherwise touch the executor.
 - It does not aggregate PR status (CI green / red, reviewer decisions).
-  PR state lives elsewhere; the queue folder a PBI sits in is the
-  truth surface this skill reads.
+  PR state lives elsewhere; the queue folder a PBI sits in is the truth
+  surface this skill reads.

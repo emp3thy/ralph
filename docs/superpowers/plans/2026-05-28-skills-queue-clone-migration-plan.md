@@ -720,15 +720,15 @@ git commit -m "feat(ralph-status): rewrite around single queue clone, group by t
 
 **Files:** every `skills/ralph-*/SKILL.md`
 
-- [ ] **Step 1: Grep for stale model references**
+- [x] **Step 1: Grep for stale model references**
 
 ```bash
 grep -rn "ralph-queue branch\|--branch\|--repos-file\|service repo" skills/ralph-*/SKILL.md
 ```
 
-- [ ] **Step 2: Fix any straggler**
+- [x] **Step 2: Fix any straggler**
 
-- [ ] **Step 3: Commit (if anything changed)**
+- [x] **Step 3: Commit (if anything changed)**
 
 ```bash
 git add skills/ralph-*/SKILL.md
