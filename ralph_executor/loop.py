@@ -229,7 +229,7 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
         events = event_log.recent(window=timedelta(hours=72), now=now)
     finally:
         event_log.close()
-    signals = evaluate_all(events, now)
+    signals = evaluate_all(events, now, cfg)
     if not signals:
         return False
     log.warning(

@@ -77,6 +77,15 @@ CONFIG_TOML_STUB = """\
 # still wanted to review is unrecoverable. Env override:
 # RALPH_AUTO_MERGE_CLEAN_PRS=1.
 # auto_merge_clean_prs = false
+#
+# Cycle-detector same_file_thrashing thresholds (Layer 3 safety). The rule
+# trips when one file is touched by `same_file_min_prs` distinct PBIs inside
+# a rolling `same_file_window_hours` window. Defaults 10 / 24h. Operators
+# raise them for high-velocity sprints where a central module legitimately
+# receives many PRs and the rule otherwise false-trips. Both must be
+# positive. Env overrides: RALPH_SAME_FILE_MIN_PRS, RALPH_SAME_FILE_WINDOW_HOURS.
+# same_file_min_prs = 10
+# same_file_window_hours = 24
 """
 
 
