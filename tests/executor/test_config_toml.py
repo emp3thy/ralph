@@ -44,6 +44,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_STALE_DAYS",
         "BASH_MAX_TIMEOUT_MS",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
+        "RALPH_SAME_FILE_MIN_PRS",
+        "RALPH_SAME_FILE_WINDOW_HOURS",
     ):
         monkeypatch.delenv(var, raising=False)
     return git_repo
@@ -430,4 +432,51 @@ def test_auto_merge_clean_prs_env_wins_over_toml(
 def test_auto_merge_clean_prs_toml_wrong_type_raises(clean_env: Path) -> None:
     _write_toml(clean_env, 'auto_merge_clean_prs = "yes"\n')
     with pytest.raises(ConfigError, match="auto_merge_clean_prs must be a boolean"):
+        load_config()
+
+
+def test_same_file_thresholds_defaults(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 10
+    assert cfg.same_file_window_hours == 24.0
+
+
+def test_same_file_thresholds_picked_up_from_toml(clean_env: Path) -> None:
+    _write_toml(
+        clean_env,
+        """
+        same_file_min_prs = 25
+        same_file_window_hours = 12.0
+        """,
+    )
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 25
+    assert cfg.same_file_window_hours == 12.0
+
+
+def test_env_wins_over_toml_for_same_file_thresholds(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(
+        clean_env,
+        "same_file_min_prs = 25\nsame_file_window_hours = 12.0\n",
+    )
+    monkeypatch.setenv("RALPH_SAME_FILE_MIN_PRS", "40")
+    monkeypatch.setenv("RALPH_SAME_FILE_WINDOW_HOURS", "6")
+    cfg = load_config()
+    assert cfg.same_file_min_prs == 40
+    assert cfg.same_file_window_hours == 6.0
+
+
+def test_same_file_min_prs_rejected_when_zero(clean_env: Path) -> None:
+    _write_toml(clean_env, "same_file_min_prs = 0\n")
+    with pytest.raises(ConfigError, match="same_file_min_prs must be positive"):
+        load_config()
+
+
+def test_same_file_window_hours_rejected_when_negative_in_env(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RALPH_SAME_FILE_WINDOW_HOURS", "-1")
+    with pytest.raises(ConfigError, match="same_file_window_hours must be positive"):
         load_config()

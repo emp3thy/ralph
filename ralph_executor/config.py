@@ -83,6 +83,15 @@ DEFAULT_BASH_MAX_TIMEOUT_MS = 900_000
 # ``mergeable_state == "clean"`` (CI green + required approvals + no
 # conflicts + branch up-to-date). Default False — operators opt in.
 DEFAULT_AUTO_MERGE_CLEAN_PRS = False
+# Cycle-detector same_file_thrashing thresholds. The rule trips when one
+# file is touched by ``same_file_min_prs`` distinct PBIs inside a rolling
+# ``same_file_window_hours`` window. Defaults preserve the historical
+# module-level constants in ``ralph_executor.safety.cycle_detector``
+# (10 PRs / 24h). Operators raise the floor manually for high-velocity
+# sprints where the central executor module legitimately receives many
+# feature additions and the rule otherwise false-trips.
+DEFAULT_SAME_FILE_MIN_PRS = 10
+DEFAULT_SAME_FILE_WINDOW_HOURS = 24.0
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -129,6 +138,10 @@ _TOML_KNOWN_KEYS = frozenset(
         # TOML or RALPH_AUTO_MERGE_CLEAN_PRS=1. See
         # DEFAULT_AUTO_MERGE_CLEAN_PRS for the semantics.
         "auto_merge_clean_prs",
+        # Cycle-detector same_file_thrashing thresholds — see
+        # DEFAULT_SAME_FILE_MIN_PRS / DEFAULT_SAME_FILE_WINDOW_HOURS.
+        "same_file_min_prs",
+        "same_file_window_hours",
     }
 )
 
@@ -211,6 +224,15 @@ class ExecutorConfig:
     # (``RALPH_AUTO_MERGE_CLEAN_PRS=1``). Merging a PR a human still
     # wanted to review is unrecoverable; opt in carefully.
     auto_merge_clean_prs: bool = DEFAULT_AUTO_MERGE_CLEAN_PRS
+    # Cycle-detector same_file_thrashing thresholds (Layer 3 safety).
+    # ``same_file_min_prs`` is the distinct-PBI floor that trips the
+    # rule; ``same_file_window_hours`` is the rolling window over which
+    # PBIs are counted. Both strictly positive (validated in
+    # ``load_config``). Defaults preserve the prior module-level
+    # constants (10 / 24h) — operators raise them for high-velocity
+    # sprints where a central module legitimately receives many PRs.
+    same_file_min_prs: int = DEFAULT_SAME_FILE_MIN_PRS
+    same_file_window_hours: float = DEFAULT_SAME_FILE_WINDOW_HOURS
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -543,6 +565,29 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_AUTO_MERGE_CLEAN_PRS,
         source_label=source_label,
     )
+    same_file_min_prs = _resolve_int(
+        name="same_file_min_prs",
+        env_name="RALPH_SAME_FILE_MIN_PRS",
+        toml_value=toml_overrides.get("same_file_min_prs"),
+        default=DEFAULT_SAME_FILE_MIN_PRS,
+        source_label=source_label,
+    )
+    if same_file_min_prs <= 0:
+        raise ConfigError(
+            f"{source_label}: same_file_min_prs must be positive (got {same_file_min_prs})"
+        )
+    same_file_window_hours = _resolve_float(
+        name="same_file_window_hours",
+        env_name="RALPH_SAME_FILE_WINDOW_HOURS",
+        toml_value=toml_overrides.get("same_file_window_hours"),
+        default=DEFAULT_SAME_FILE_WINDOW_HOURS,
+        source_label=source_label,
+    )
+    if same_file_window_hours <= 0:
+        raise ConfigError(
+            f"{source_label}: same_file_window_hours must be positive "
+            f"(got {same_file_window_hours})"
+        )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -566,4 +611,6 @@ def load_config() -> ExecutorConfig:
         stale_days=stale_days,
         bash_max_timeout_ms=bash_max_timeout_ms,
         auto_merge_clean_prs=auto_merge_clean_prs,
+        same_file_min_prs=same_file_min_prs,
+        same_file_window_hours=same_file_window_hours,
     )
