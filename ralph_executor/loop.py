@@ -823,17 +823,32 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         #     repository for every iteration after the first).
         from dataclasses import replace as _replace
 
+        from ralph_executor.url_utils import TargetRepoInfo, parse_target_repo
+
         try:
             target_url = _read_target_repo_from_pbi(current)
         except _ClaimError:
             target_url = ""
+        # Parse the URL outside the worktree-mode guard so non-worktree
+        # mode resumed PBIs also get target_info populated — without it
+        # ``spawn_claude_p``'s ``GH_OWNER`` injection (guarded by
+        # ``pbi.target_info is not None``) silently no-ops for every
+        # iteration after the first, and any ``gh`` / ``pr-github`` call
+        # the spawned Claude makes uses the wrong (or absent) owner.
+        info: TargetRepoInfo | None = None
+        if target_url:
+            try:
+                info = parse_target_repo(target_url)
+            except ValueError:
+                # Malformed target_repo on disk shouldn't crash the resume
+                # path — let spawn_claude_p fall back to its env-default
+                # owner, same as legacy behaviour before this PR.
+                info = None
         work_wt: Path | None = None
-        if cfg.use_worktrees and target_url:
+        if cfg.use_worktrees and info is not None:
             try:
                 from ralph_executor.target_clone import ensure_clone
-                from ralph_executor.url_utils import parse_target_repo
 
-                info = parse_target_repo(target_url)
                 clone = ensure_clone(info, workspace_root=cfg.workspace_root)
                 work_wt = work_worktree_path(clone.clone_root, current.id)
             except Exception:
@@ -843,7 +858,12 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                     current.id,
                     exc_info=True,
                 )
-        current = _replace(current, target_repo=target_url, work_worktree=work_wt)
+        current = _replace(
+            current,
+            target_repo=target_url,
+            target_info=info,
+            work_worktree=work_wt,
+        )
         # Current occupied → run Ralph on it (attempt counter + spawn).
         # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
         # ``handle_stuck`` on terminal outcomes, both of which call
