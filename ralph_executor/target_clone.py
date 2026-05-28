@@ -1,7 +1,7 @@
 """Manage clone-once + fetch-each-iter lifecycle per target repo.
 
 Given a TargetRepoInfo and operator workspace_root:
-- If <workspace_root>/clones/<info.slug>/ doesn't exist: git clone
+- If <workspace_root>/clones/<owner>/<name>/ doesn't exist: git clone
 - If exists: git fetch origin (refresh main + branches)
 - Any git failure -> TargetUnreachable (caller decides — move to blocked
   typically)
@@ -39,17 +39,20 @@ def ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
     """Return a TargetClone, cloning or fetching as needed.
 
     Disk layout:
-      <workspace_root>/clones/<info.slug>/
+      <workspace_root>/clones/<owner>/<name>/
+
+    Two-level structure (not flat ``<owner>-<name>``) so that
+    e.g. ``owner=foo-bar, name=baz`` and ``owner=foo, name=bar-baz``
+    — both valid GitHub coordinates — resolve to distinct directories.
 
     First call for a given target: ``git clone <info.clone_url> <root>``.
     Subsequent calls: ``git fetch origin`` inside <root>.
 
-    Creates ``workspace_root/clones/`` if missing. Raises
+    Creates parent directories as needed. Raises
     ``TargetUnreachable`` on any git failure.
     """
-    clones_dir = workspace_root / "clones"
-    clones_dir.mkdir(parents=True, exist_ok=True)
-    clone_root = clones_dir / info.slug
+    clone_root = workspace_root / "clones" / info.owner / info.name
+    clone_root.parent.mkdir(parents=True, exist_ok=True)
 
     if (clone_root / ".git").is_dir():
         try:

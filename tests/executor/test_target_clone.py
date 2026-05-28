@@ -19,7 +19,7 @@ from ralph_executor.url_utils import parse_target_repo
 def test_ensure_clone_runs_git_clone_on_first_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """First time a target is seen: git clone into workspace_root/clones/<slug>/."""
+    """First time a target is seen: git clone into workspace_root/clones/<owner>/<name>/."""
     calls: list[tuple[str, str]] = []
 
     def fake_clone(url: str, dest: Path, **kwargs: Any) -> None:
@@ -31,7 +31,7 @@ def test_ensure_clone_runs_git_clone_on_first_call(
     info = parse_target_repo("https://github.com/emp3thy/ralph")
     clone = ensure_clone(info, workspace_root=tmp_path)
 
-    expected_dir = tmp_path / "clones" / "emp3thy-ralph"
+    expected_dir = tmp_path / "clones" / "emp3thy" / "ralph"
     assert isinstance(clone, TargetClone)
     assert clone.info == info
     assert clone.clone_root == expected_dir
@@ -42,7 +42,7 @@ def test_ensure_clone_runs_git_fetch_when_clone_already_present(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Second call (or subsequent iteration): git fetch origin, no clone."""
-    clone_dir = tmp_path / "clones" / "emp3thy-ralph"
+    clone_dir = tmp_path / "clones" / "emp3thy" / "ralph"
     clone_dir.mkdir(parents=True)
     (clone_dir / ".git").mkdir()
 
@@ -82,7 +82,7 @@ def test_ensure_clone_raises_target_unreachable_on_clone_failure(
 def test_ensure_clone_raises_target_unreachable_on_fetch_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clone_dir = tmp_path / "clones" / "emp3thy-ralph"
+    clone_dir = tmp_path / "clones" / "emp3thy" / "ralph"
     clone_dir.mkdir(parents=True)
     (clone_dir / ".git").mkdir()
 
