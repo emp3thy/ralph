@@ -109,7 +109,15 @@ def _violations_in(path: Path) -> list[tuple[int, str]]:
         if not text_on:
             continue
         if "encoding" in kwargs:
-            continue
+            # An explicit ``encoding=None`` makes Python fall back to
+            # ``locale.getpreferredencoding()`` (cp1252 on stock Windows)
+            # — exactly the vulnerability this audit exists to prevent.
+            # Only treat the keyword as "present" when its value is NOT
+            # the literal ``None`` constant.
+            enc_value = kwargs["encoding"].value
+            is_none_literal = isinstance(enc_value, ast.Constant) and enc_value.value is None
+            if not is_none_literal:
+                continue
         snippet = src_lines[node.lineno - 1].strip() if 0 < node.lineno <= len(src_lines) else ""
         bad.append((node.lineno, snippet))
     return bad

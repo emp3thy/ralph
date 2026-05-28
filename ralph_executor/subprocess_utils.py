@@ -37,8 +37,15 @@ def run_text(
     caller; everything else passes through unchanged.
     """
     kwargs.setdefault("text", True)
-    kwargs.setdefault("encoding", "utf-8")
-    kwargs.setdefault("errors", "replace")
+    # Only inject UTF-8 defaults when text mode is actually on. A caller
+    # that explicitly passes ``text=False`` wants binary streams;
+    # injecting ``encoding=`` / ``errors=`` on top would either silently
+    # flip the child back to text mode (Python ≤ 3.11) or raise
+    # ``ValueError`` (Python ≥ 3.12). Same guard applies to
+    # ``universal_newlines=False``.
+    if kwargs.get("text", True) and kwargs.get("universal_newlines", True):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
     return cast(
         "subprocess.CompletedProcess[str]",
         subprocess.run(argv, **kwargs),  # noqa: S603
@@ -54,8 +61,15 @@ def popen_text(
     Same default-injection contract as :func:`run_text`.
     """
     kwargs.setdefault("text", True)
-    kwargs.setdefault("encoding", "utf-8")
-    kwargs.setdefault("errors", "replace")
+    # Only inject UTF-8 defaults when text mode is actually on. A caller
+    # that explicitly passes ``text=False`` wants binary streams;
+    # injecting ``encoding=`` / ``errors=`` on top would either silently
+    # flip the child back to text mode (Python ≤ 3.11) or raise
+    # ``ValueError`` (Python ≥ 3.12). Same guard applies to
+    # ``universal_newlines=False``.
+    if kwargs.get("text", True) and kwargs.get("universal_newlines", True):
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
     return cast(
         "subprocess.Popen[str]",
         subprocess.Popen(argv, **kwargs),  # noqa: S603
