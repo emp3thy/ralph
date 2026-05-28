@@ -1,20 +1,20 @@
-"""migrate-queue subcommand: bootstrap emp3thy/ralph-queue from an existing
-.ralph/ tree. One-shot. Refuses a non-empty target.
+"""migrate-queue subcommand: bootstrap ``emp3thy/ralph-queue`` from an
+existing ``.ralph/`` tree. One-shot. Refuses a non-empty target.
 
 Exclusions per spec section 3:
-  - .ralph/done/      (whole dir)
-  - .ralph/blocked/META-cycle-*.md
-  - .ralph/state/     (gitignored, local-only)
-
-This module currently exposes only the file-filter helper. The CLI
-``main`` entry point and the ``_target_is_empty`` git-probe land with
-Task 7b.
+  - ``.ralph/done/``      (whole dir)
+  - ``.ralph/blocked/META-cycle-*.md``
+  - ``.ralph/state/``     (gitignored, local-only)
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,13 @@ _STATE_DIRS = ("inbox", "current", "pending-pr", "blocked", "archive")
 
 class MigrateQueueError(RuntimeError):
     """Raised on any migration failure."""
+
+
+def _run_git(
+    repo: Path | None, *args: str, timeout: float = 120.0
+) -> subprocess.CompletedProcess[str]:
+    argv = ["git", *(["-C", str(repo)] if repo is not None else []), *args]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
 def copy_queue_tree_filtered(source: Path, dest: Path) -> dict[str, int]:
@@ -76,3 +83,98 @@ def copy_queue_tree_filtered(source: Path, dest: Path) -> dict[str, int]:
     (dest / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
 
     return counts
+
+
+def _target_is_empty(target_url: str) -> bool:
+    """Return True if the target repo has zero refs (empty repo)."""
+    result = _run_git(None, "ls-remote", "--heads", target_url)
+    if result.returncode != 0:
+        raise MigrateQueueError(
+            f"could not list refs on target {target_url!r} "
+            f"(exit {result.returncode}): {result.stderr.strip()}\n"
+            f"If this is an auth problem, run `gh auth login`."
+        )
+    return not result.stdout.strip()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ralph-executor migrate-queue")
+    parser.add_argument(
+        "--source",
+        required=True,
+        type=Path,
+        help="Path to the existing queue worktree (parent of .ralph/).",
+    )
+    parser.add_argument(
+        "--target",
+        required=True,
+        help="HTTPS (or file://) URL of the empty new queue repo.",
+    )
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    """Entry point for the ``migrate-queue`` subcommand.
+
+    Validates the source has ``.ralph/inbox/``, probes the target with
+    ``git ls-remote --heads`` (must be empty), stages a temp dir via
+    :func:`copy_queue_tree_filtered`, then ``git init / add / commit /
+    push origin main``. Raises :class:`MigrateQueueError` on any failure
+    so the caller can surface a clean error message.
+    """
+    args = _build_parser().parse_args(argv)
+    src: Path = args.source.resolve()
+    target: str = args.target
+
+    if not (src / ".ralph" / "inbox").is_dir():
+        raise MigrateQueueError(f"source {src} does not contain .ralph/inbox/ -- wrong path?")
+    if not _target_is_empty(target):
+        raise MigrateQueueError(
+            f"target {target!r} is not empty (has existing refs); refusing to overwrite"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="ralph-migrate-queue-") as stage_str:
+        stage = Path(stage_str)
+        counts = copy_queue_tree_filtered(src, stage)
+
+        author = ("-c", "user.email=ralph@local", "-c", "user.name=ralph")
+        steps: tuple[tuple[str, ...], ...] = (
+            ("init", "--initial-branch=main"),
+            (*author, "add", "."),
+            (
+                *author,
+                "commit",
+                "-m",
+                "chore: bootstrap ralph-queue from existing state",
+            ),
+            ("remote", "add", "origin", target),
+            ("push", "origin", "main"),
+        )
+        for cmd in steps:
+            result = _run_git(stage, *cmd)
+            if result.returncode != 0:
+                raise MigrateQueueError(
+                    f"git {' '.join(cmd)} failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()}"
+                )
+
+    print("migrate-queue: success.")
+    print()
+    print("PBI counts pushed:")
+    for state in _STATE_DIRS:
+        print(f"  {state:11s} {counts[state]}")
+    print()
+    print("Next steps (operator runs manually):")
+    print("  1. Add to ~/.ralph/config.toml:")
+    print(f'         queue_repo = "{target}"')
+    print("  2. Delete the old ralph-queue branch (GitHub):")
+    print("         gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/ralph-queue")
+    print("  3. Remove the stale local queue worktree if any:")
+    print("         git worktree remove <repo>/.ralph-work/queue")
+    print()
+    print("Cycle-detector state is local-only; the new queue clone starts blind.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

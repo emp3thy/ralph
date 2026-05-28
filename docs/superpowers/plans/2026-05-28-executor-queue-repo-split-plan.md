@@ -631,7 +631,7 @@ git commit -m "fix(movements): push moves to main, not queue_branch"
 - Modify: `ralph_executor/cli.py`
 - Test: `tests/executor/test_migrate_queue.py`
 
-- [ ] **Step 1: Write the failing test for the file-filter helper**
+- [x] **Step 1: Write the failing test for the file-filter helper**
 
 `tests/executor/test_migrate_queue.py`:
 
@@ -729,9 +729,9 @@ def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
     assert "not empty" in str(exc.value).lower()
 ```
 
-- [ ] **Step 2: Run; expect FAIL (module missing)**
+- [x] **Step 2: Run; expect FAIL (module missing)**
 
-- [ ] **Step 3: Implement `ralph_executor/migrate_queue.py`**
+- [x] **Step 3: Implement `ralph_executor/migrate_queue.py`**
 
 ```python
 """migrate-queue subcommand: bootstrap emp3thy/ralph-queue from an existing
@@ -883,13 +883,13 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 4: Run the helper test; expect PASS**
+- [x] **Step 4: Run the helper test; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_migrate_queue.py::test_copy_filtered_excludes_done -v
 ```
 
-- [ ] **Step 5: Commit (helper only — CLI wiring follows in 7b)**
+- [x] **Step 5: Commit (helper only — CLI wiring follows in 7b)**
 
 ```bash
 git add ralph_executor/migrate_queue.py tests/executor/test_migrate_queue.py
@@ -905,7 +905,7 @@ git commit -m "feat(migrate-queue): copy_queue_tree_filtered helper"
 **Files:**
 - Modify: `ralph_executor/migrate_queue.py` (add `main` and `_target_is_empty`), `ralph_executor/cli.py`
 
-- [ ] **Step 1: Add the remaining tests**
+- [x] **Step 1: Add the remaining tests**
 
 `tests/executor/test_migrate_queue.py`:
 
@@ -946,9 +946,9 @@ def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
     assert "not empty" in str(exc.value).lower()
 ```
 
-- [ ] **Step 2: Run; expect FAIL** (only `copy_queue_tree_filtered` exists from 7a)
+- [x] **Step 2: Run; expect FAIL** (only `copy_queue_tree_filtered` exists from 7a)
 
-- [ ] **Step 3: Add `_target_is_empty` and `main` to `migrate_queue.py`**
+- [x] **Step 3: Add `_target_is_empty` and `main` to `migrate_queue.py`**
 
 Use the exact bodies from Task 7a's earlier `migrate_queue.py` draft (they were already paired in the original 7). The `main` function:
 1. Parses `--source` and `--target`.
@@ -959,18 +959,18 @@ Use the exact bodies from Task 7a's earlier `migrate_queue.py` draft (they were 
 6. `git init --initial-branch=main`, `git add .`, `git commit`, `git remote add origin`, `git push origin main`.
 7. Prints summary and follow-up TOML / branch-deletion commands.
 
-- [ ] **Step 4: Wire into `ralph_executor/cli.py`**
+- [x] **Step 4: Wire into `ralph_executor/cli.py`**
 
 Add an `argparse` subcommand `migrate-queue` whose handler imports and calls `ralph_executor.migrate_queue.main(remaining_argv)`. Add a top-level `--queue-repo` flag (one-shot override of TOML) handled in the same `_apply_overrides` machinery as other flags. The migrate subcommand uses its own `--target`; the top-level flag does not pass through.
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_migrate_queue.py -v
 uv run ralph-executor migrate-queue --help
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ralph_executor/migrate_queue.py ralph_executor/cli.py tests/executor/test_migrate_queue.py

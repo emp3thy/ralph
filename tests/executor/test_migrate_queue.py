@@ -1,13 +1,27 @@
-"""Tests for ralph_executor.migrate_queue (Task 7a — helper only).
+"""Tests for ralph_executor.migrate_queue.
 
-Task 7b adds ``main`` + ``_target_is_empty`` and their integration tests.
+Task 7a covered the file-filter helper. Task 7b adds ``main`` +
+``_target_is_empty`` and their integration tests.
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
-from ralph_executor.migrate_queue import copy_queue_tree_filtered
+import pytest
+
+from ralph_executor.migrate_queue import (
+    MigrateQueueError,
+    copy_queue_tree_filtered,
+)
+from ralph_executor.migrate_queue import (
+    main as migrate_main,
+)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
 def _seed_source(tmp_path: Path) -> Path:
@@ -55,3 +69,55 @@ def test_copy_filtered_excludes_done(tmp_path: Path) -> None:
         "blocked": 1,
         "archive": 0,
     }
+
+
+def test_migrate_main_pushes_to_empty_target(tmp_path: Path) -> None:
+    """Full migration smoke: source -> bare remote -> clone-and-verify."""
+    src = _seed_source(tmp_path)
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "--initial-branch=main")
+
+    rc = migrate_main(["--source", str(src), "--target", f"file://{bare}"])
+    assert rc == 0
+
+    clone = tmp_path / "verify"
+    subprocess.run(["git", "clone", str(bare), str(clone)], check=True, capture_output=True)
+    assert (clone / ".ralph" / "inbox" / "WI-1" / "PBI.md").exists()
+    assert (clone / ".ralph" / "blocked" / "WI-9" / "PBI.md").exists()
+    assert (clone / ".gitignore").read_text(encoding="utf-8") == ".ralph/state/\n"
+    assert not (clone / ".ralph" / "done").exists()
+    assert not (clone / ".ralph" / "blocked" / "META-cycle-20260101T000000Z.md").exists()
+
+
+def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
+    src = _seed_source(tmp_path)
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "--initial-branch=main")
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch=main")
+    (seed / "x").write_text("x", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    with pytest.raises(MigrateQueueError) as exc:
+        migrate_main(["--source", str(src), "--target", f"file://{bare}"])
+    assert "not empty" in str(exc.value).lower()
+
+
+def test_migrate_rejects_missing_source_inbox(tmp_path: Path) -> None:
+    """A source path without ``.ralph/inbox/`` is a configuration mistake."""
+    src = tmp_path / "src"
+    src.mkdir()
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "--initial-branch=main")
+
+    with pytest.raises(MigrateQueueError) as exc:
+        migrate_main(["--source", str(src), "--target", f"file://{bare}"])
+    assert "inbox" in str(exc.value).lower()
