@@ -263,6 +263,56 @@ def test_iterate_once_recovers_from_push_conflict_in_claim_pbi(
     assert result.pbi_id == "WI-1234"
 
 
+def test_iterate_once_skips_uncommitted_inbox_dir_then_claims_after_commit(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: BUG-CLAIM-RACE-UNCOMMITTED-INBOX-DIR.
+
+    An external writer (operator running ``ralph-add``, a second ralph
+    session) wrote a new inbox PBI dir into the queue clone's working
+    tree but has not yet committed it on the queue branch when the
+    executor's next sweep tick fires. ``_list_pbis`` picks the dir up
+    from the filesystem (no git-tracked filter), ``movements._move``
+    calls ``git mv``, and ``git`` fails with
+    ``fatal: source directory is empty``. Without the guard, the
+    ``GitCommandError`` kills the loop.
+
+    With the guard, ``iterate_once`` returns
+    ``outcome="uncommitted_source"`` for the first tick. Once the
+    writer's commit lands on origin, the next iteration claims the PBI
+    cleanly.
+    """
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+
+    # Simulate the external writer mid-add: directory + entry file are on
+    # disk inside the queue clone but NOT staged or committed yet.
+    write_sample_pbi(fake_repo, pbi_id="WI-RACE")
+
+    first = iterate_once(cfg_for_repo)
+    assert first.outcome == "uncommitted_source"
+    assert first.pbi_id == "WI-RACE"
+    # The loop must not crash and must not have moved the dir.
+    assert (fake_repo / ".ralph" / "inbox" / "WI-RACE").is_dir()
+    assert not (fake_repo / ".ralph" / "current" / "WI-RACE").exists()
+
+    # External writer finally commits + pushes their PBI.
+    _git(fake_repo, "add", ".ralph/inbox/WI-RACE")
+    _git(fake_repo, "commit", "-m", "inbox: WI-RACE")
+    _git(fake_repo, "push", "origin", "main")
+
+    # Next iteration sees the now-tracked dir and claims cleanly.
+    second = iterate_once(cfg_for_repo)
+    assert second.outcome == "claimed"
+    assert second.pbi_id == "WI-RACE"
+    assert (fake_repo / ".ralph" / "current" / "WI-RACE").is_dir()
+    assert not (fake_repo / ".ralph" / "inbox" / "WI-RACE").exists()
+
+
 def test_partial_outcome_does_not_increment_attempts(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,

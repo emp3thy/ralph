@@ -46,6 +46,7 @@ from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
+    UncommittedSource,
     move_current_to_pending_pr,
     move_inbox_to_blocked,
     move_inbox_to_current,
@@ -99,6 +100,7 @@ IterationOutcome = Literal[
     "ran_stuck",
     "halted",
     "push_conflict",
+    "uncommitted_source",
 ]
 
 
@@ -901,6 +903,19 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             ", ".join(exc.conflict_paths) or "<unknown>",
         )
         return IterationResult(outcome="push_conflict", pbi_id=picked.id)
+    except UncommittedSource:
+        # External writer (operator, second ralph session) wrote the
+        # inbox PBI dir on disk but has not yet committed it on the
+        # queue branch. ``_list_pbis`` selects the dir from the
+        # filesystem, ``git mv`` then errors ``fatal: source directory
+        # is empty``. Treat it as a recoverable transient: next
+        # iteration re-scans inbox and succeeds once the writer commits.
+        log.warning(
+            "iterate_once: inbox dir for %s not yet committed by external "
+            "writer; skipping claim, loop will retry next round",
+            picked.id,
+        )
+        return IterationResult(outcome="uncommitted_source", pbi_id=picked.id)
     except _ClaimError as exc:
         # Multi-target prelude failure (missing/invalid target_repo,
         # unsupported host, ``TargetUnreachable``). The PBI is still in

@@ -12,6 +12,7 @@ from ralph_executor.config import ExecutorConfig
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     QueueMovementError,
+    UncommittedSource,
     move_current_to_blocked,
     move_current_to_pending_pr,
     move_inbox_to_current,
@@ -191,6 +192,37 @@ def test_same_file_thrashing_trips_after_ten_distinct_prs_touching_one_file(
     assert signal is not None
     assert signal.kind == SignalKind.SAME_FILE_THRASHING
     assert target_file in signal.description
+
+
+def test_move_raises_uncommitted_source_when_dir_not_in_index(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """Regression: BUG-CLAIM-RACE-UNCOMMITTED-INBOX-DIR.
+
+    An external writer can create the inbox dir + entry file on disk but
+    have not yet run ``git commit`` on the queue branch by the time the
+    executor's next sweep picks the dir up. Without the guard, ``git mv``
+    fails with ``fatal: source directory is empty`` and ``GitCommandError``
+    propagates out of ``_claim_pbi`` and crashes the loop.
+
+    With the guard, ``_move`` raises ``UncommittedSource(pbi_id)`` so
+    ``iterate_once`` can convert it to a recoverable iteration outcome.
+    """
+    # Write the inbox dir + entry file on disk but DO NOT git add / commit.
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-RACE")
+    assert pbi_dir.is_dir()
+    # Parse it directly through the queue source so we get a real PBI
+    # dataclass (the source walks the filesystem without a tracked-status
+    # filter, exactly as production does).
+    source = FilesystemQueueSource(cfg_for_repo)
+    candidates = [p for p in source.inbox_pbis() if p.id == "WI-RACE"]
+    assert candidates, "uncommitted dir must still be visible to the queue source"
+    with pytest.raises(UncommittedSource) as excinfo:
+        move_inbox_to_current(cfg_for_repo, candidates[0])
+    assert excinfo.value.pbi_id == "WI-RACE"
+    # The dir is left in place so the next iteration can retry after the
+    # external writer's commit lands.
+    assert pbi_dir.is_dir()
 
 
 def test_move_inbox_to_current_survives_concurrent_remote_advance(
