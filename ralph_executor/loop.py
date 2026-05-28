@@ -47,6 +47,7 @@ from ralph_executor.git_ops import PushRebaseConflict
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     move_current_to_pending_pr,
+    move_inbox_to_blocked,
     move_inbox_to_current,
 )
 from ralph_executor.safety import (
@@ -94,6 +95,7 @@ def _queue_repo_root(cfg: ExecutorConfig) -> Path:
 IterationOutcome = Literal[
     "idle",
     "claimed",
+    "claim_failed",
     "ran_partial",
     "ran_error",
     "ran_pr_created",
@@ -433,6 +435,26 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi_id: str) -> None:
             work_wt,
             exc_info=True,
         )
+
+
+def _move_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reason: str) -> None:
+    """Append the reason to the PBI's HISTORY.md, then move it inbox -> blocked.
+
+    Used by ``iterate_once`` when ``_claim_pbi`` raises ``_ClaimError``.
+    The HISTORY.md append happens BEFORE ``git mv`` so the move's single
+    commit captures both the relocation and the failure record. HISTORY.md
+    is created when missing — the PBI directory schema requires it, but
+    being defensive here keeps a malformed inbox PBI from masking the
+    real claim failure with a write error.
+    """
+    queue_repo = _queue_repo_root(cfg)
+    inbox_dir = queue_repo / ".ralph" / "inbox" / pbi.id
+    history = inbox_dir / "HISTORY.md"
+    now = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    entry = f"\n## Claim failed — {now}\n\n{reason}\n"
+    existing = history.read_text(encoding="utf-8") if history.is_file() else ""
+    history.write_text(existing + entry, encoding="utf-8")
+    move_inbox_to_blocked(cfg, pbi)
 
 
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
@@ -831,6 +853,15 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             ", ".join(exc.conflict_paths) or "<unknown>",
         )
         return IterationResult(outcome="push_conflict", pbi_id=picked.id)
+    except _ClaimError as exc:
+        # Multi-target prelude failure (missing/invalid target_repo,
+        # unsupported host, ``TargetUnreachable``). The PBI is still in
+        # inbox/; demote it to blocked/ with the reason in HISTORY.md so
+        # the operator can triage. Skip the cycle detector — the move is
+        # final and the failure is not a retry signal.
+        log.warning("claim failed for PBI %s: %s; moving to blocked/", picked.id, exc)
+        _move_to_blocked_with_reason(cfg, picked, reason=str(exc))
+        return IterationResult(outcome="claim_failed", pbi_id=picked.id)
     # _claim_pbi already returns to queue branch; re-assert for clarity.
     _ensure_on_queue_branch(cfg)
     if _check_cycle_detector(cfg, source):

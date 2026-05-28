@@ -1326,3 +1326,75 @@ def test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable(
 
     with pytest.raises(_ClaimError, match=r"target unreachable: network unreachable"):
         _claim_pbi(cfg_for_repo_worktree, picked)
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7.8: iterate_once catches _ClaimError -> blocked/
+# ----------------------------------------------------------------------
+
+
+def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim that hits a non-github host raises _ClaimError; iterate_once
+    catches it, moves the PBI from inbox/ to blocked/<id>/, appends the
+    failure reason to HISTORY.md, and returns ``claim_failed``."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    pbi_dir = write_sample_pbi(
+        fake_repo,
+        pbi_id="WI-ADO",
+        target_repo="https://dev.azure.com/myorg/myproj/_git/myrepo",
+    )
+    _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
+    _git(fake_repo, "commit", "-m", "inbox: WI-ADO")
+    _git(fake_repo, "push", "origin", "ralph-queue")
+    _git(fake_repo, "checkout", "main")
+
+    result = iterate_once(cfg_for_repo)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-ADO"
+
+    _git(fake_repo, "checkout", "ralph-queue")
+    _git(fake_repo, "pull", "origin", "ralph-queue")
+    assert (fake_repo / ".ralph" / "blocked" / "WI-ADO").is_dir()
+    assert not (fake_repo / ".ralph" / "inbox" / "WI-ADO").exists()
+    history = (fake_repo / ".ralph" / "blocked" / "WI-ADO" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "unsupported host" in history
+
+
+def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable_in_worktree_mode(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worktree-mode: ensure_clone raises TargetUnreachable -> _ClaimError
+    -> iterate_once moves PBI to blocked/<id>/ with reason in HISTORY.md."""
+    from ralph_executor.target_clone import TargetUnreachable
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    _populate_inbox(fake_repo, pbi_id="WI-NET2")
+
+    def _raise_unreachable(info: TargetRepoInfo, workspace_root: Path) -> None:
+        raise TargetUnreachable("network unreachable")
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
+
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-NET2"
+
+    queue_wt = queue_worktree_path(fake_repo)
+    assert (queue_wt / ".ralph" / "blocked" / "WI-NET2").is_dir()
+    assert not (queue_wt / ".ralph" / "inbox" / "WI-NET2").exists()
+    history = (queue_wt / ".ralph" / "blocked" / "WI-NET2" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "target unreachable: network unreachable" in history
