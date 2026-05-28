@@ -158,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"({SOURCE_FOLDER} -> {args.destination})'.",
                 file=sys.stderr,
             )
+            # archive_created cannot be known in dry-run: the non-dry-run path
+            # computes it from `is_path_in_head(clone, ".ralph/archive")`,
+            # which requires a clone. Report the conservative value (False)
+            # rather than the unconditional `destination == "archive"` that
+            # would lie when the archive folder already exists in HEAD.
             result = TriageResult(
                 pbi_id=args.pbi_id,
                 destination=args.destination,
@@ -165,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
                 old_path=rel_from,
                 new_path=rel_to,
                 attempts_reset_to_zero=(args.destination == "inbox"),
-                archive_created=(args.destination == "archive"),
+                archive_created=False,
                 queue_clone=str(clone),
                 commit_sha="",
                 pushed=False,

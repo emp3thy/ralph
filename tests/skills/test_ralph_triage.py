@@ -473,6 +473,37 @@ def test_triage_dry_run_writes_nothing(
     assert before == after
 
 
+def test_triage_dry_run_archive_reports_conservative_archive_created(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Dry-run never clones, so it cannot tell whether .ralph/archive is
+    already in HEAD. The previous implementation set archive_created to
+    `destination == "archive"` unconditionally, which lied when the
+    folder already existed. The conservative report is False."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-1250")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-1250",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="archive",
+            note="closing out (dry-run)",
+            extra=["--dry-run"],
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["destination"] == "archive"
+    assert payload["archive_created"] is False
+    assert not (workspace / "queue").exists()
+
+
 def test_triage_no_push_keeps_remote_unchanged(
     tmp_path: Path,
     queue_env: tuple[Path, str],
