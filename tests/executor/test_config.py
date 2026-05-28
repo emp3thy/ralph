@@ -361,3 +361,30 @@ def test_queue_branch_rejects_invalid(tmp_path, monkeypatch, bad_value):
 
     with pytest.raises(ConfigError, match="queue_branch"):
         load_config()
+
+
+def test_queue_branch_user_config_fallback(tmp_path, monkeypatch):
+    """When project TOML and env are silent, user TOML supplies queue_branch."""
+    from ralph_executor.config import load_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n'
+        'queue_branch = "user-config-branch"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".ralph").mkdir()
+    (repo / ".ralph" / "config.toml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
+    monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
+
+    cfg = load_config()
+    assert cfg.queue_branch == "user-config-branch"

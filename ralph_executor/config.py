@@ -559,25 +559,34 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_MAIN_BRANCH,
         source_label=source_label,
     )
+    queue_branch_value = toml_overrides.get("queue_branch")
+    queue_branch_source = source_label
+    if queue_branch_value is None:
+        from ralph_executor.user_config import read_queue_branch, user_config_path
+
+        user_queue_branch = read_queue_branch()
+        if user_queue_branch is not None:
+            queue_branch_value = user_queue_branch
+            queue_branch_source = str(user_config_path())
     queue_branch = _resolve_str(
         name="queue_branch",
         env_name="RALPH_QUEUE_BRANCH",
-        toml_value=toml_overrides.get("queue_branch"),
+        toml_value=queue_branch_value,
         default=DEFAULT_QUEUE_BRANCH,
-        source_label=source_label,
+        source_label=queue_branch_source,
     )
     queue_branch = queue_branch.strip()
     if not queue_branch:
         raise ConfigError(
-            f"{source_label}: queue_branch must be a non-empty branch name"
+            f"{queue_branch_source}: queue_branch must be a non-empty branch name"
         )
     if queue_branch == "HEAD":
         raise ConfigError(
-            f"{source_label}: queue_branch must be a branch name, not 'HEAD'"
+            f"{queue_branch_source}: queue_branch must be a branch name, not 'HEAD'"
         )
     if queue_branch.startswith("refs/heads/"):
         raise ConfigError(
-            f"{source_label}: queue_branch must not include the 'refs/heads/' "
+            f"{queue_branch_source}: queue_branch must not include the 'refs/heads/' "
             f"prefix (got {queue_branch!r})"
         )
     max_attempts = _resolve_int(
