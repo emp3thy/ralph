@@ -29,3 +29,15 @@
 - Lint: `uv run ruff check ralph_executor/loop.py tests/executor/test_loop.py` → All checks passed. `ruff format` → no changes.
 - mypy / pyright: many existing `cfg.queue_branch` attr-defined errors persist in `loop.py` — intentional; Tasks 4–7 sweep them.
 - Next iteration: Task 4 — replace `cfg.queue_branch` references with `"main"` in `_persist_iteration_writes` push site (line ~305) plus the remaining `_pull_queue`-legacy lines and `queue/movements.py`.
+
+## Iteration 4 — 2026-05-28T12:30:00+00:00
+
+- Task 4: stripped every `cfg.queue_branch` reference inside the `_persist_iteration_writes` / `_run_ralph` push paths and the `queue/movements.py` mover.
+  - `loop.py:_persist_iteration_writes` — docstring rewritten (no more worktree-vs-legacy fork), `queue_repo = _queue_repo_root(cfg)`, push to `branch="main"`, comment refreshed to point at `origin/main`.
+  - `loop.py:iterate_once` — push-conflict catch block comment + log.warning purged of `cfg.queue_branch`, now references the queue repo's `main`.
+  - `queue/movements.py` — module docstring rewritten (no branch-switch step), `_queue_repo` simplified to `cfg.workspace_root / "queue"` (dropped `queue_worktree_path` import), legacy `if not cfg.use_worktrees: git_ops.checkout(...)` block deleted, push to `branch="main"`, comments updated.
+- Lines 565 + 588 in `_claim_pbi` / `_claim_pbi_worktree` still hold `cfg.queue_branch` — intentional, Task 5 owns those (legacy claim path deletion + worktree-branch arg removal).
+- Tests: `uv run pytest tests/executor/test_loop.py::test_pull_queue_calls_ensure_queue_clone tests/executor/test_queue_clone.py tests/executor/test_config.py tests/executor/test_config_toml.py -q` → 87 passed. `tests/executor/test_movements.py` fails because `cfg_for_repo` fixture still points `workspace_root` at the real `~/ralph-workspaces` instead of a tmp dir (and the legacy `cfg.repo_path` queue-on-branch model). Per plan Task 4 Step 2, those failures are explicitly deferred to Task 9 (conftest fixture sweep) — not a regression of this commit.
+- Lint: `uv run ruff check ralph_executor/loop.py ralph_executor/queue/movements.py` → clean. `ruff format` → no changes.
+- mypy / pyright on touched files: only the Task-5-scoped `cfg.queue_branch` attr-defined errors at L565/L588 remain; all `_persist`/`_move`/`iterate_once` references are gone.
+- Next iteration: Task 5 — drop the legacy `use_worktrees=False` branch out of `_claim_pbi` and the queue-worktree `ensure_worktree` call in `_claim_pbi_worktree`; add the `use_worktrees=False` rejection to `load_config`.
