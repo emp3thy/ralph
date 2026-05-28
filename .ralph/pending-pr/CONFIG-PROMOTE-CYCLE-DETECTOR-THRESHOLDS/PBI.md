@@ -1,11 +1,11 @@
 ---
 id: CONFIG-PROMOTE-CYCLE-DETECTOR-THRESHOLDS
 type: feature
-status: current
+status: pending-pr
 severity: normal
 attempts: 0
 created_at: 2026-05-27T23:20:00+00:00
-updated_at: 2026-05-28T01:07:37+00:00
+updated_at: 2026-05-28T01:23:42+00:00
 depends_on: []
 target_repo: https://github.com/emp3thy/ralph
 ---
