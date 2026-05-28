@@ -123,6 +123,38 @@ def test_acquire_queue_clone_wraps_queue_clone_error(
     assert isinstance(excinfo.value.__cause__, QueueCloneError)
 
 
+def test_resolve_workspace_root_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ConfigError from read_workspace_root (malformed config.toml) must
+    be re-raised as QueueWriterError so skills only see one type."""
+    from ralph_executor.config import ConfigError
+
+    def fake_read() -> Path | None:
+        raise ConfigError("/fake/.ralph/config.toml: invalid TOML: unexpected '='")
+
+    monkeypatch.setattr("ralph_executor.user_config.read_workspace_root", fake_read)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        qw.resolve_workspace_root(None)
+    assert "invalid TOML" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
+def test_resolve_queue_repo_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ConfigError from read_queue_repo (malformed config.toml) must be
+    re-raised as QueueWriterError so skills only see one type."""
+    from ralph_executor.config import ConfigError
+
+    def fake_read() -> str | None:
+        raise ConfigError("/fake/.ralph/config.toml: cannot read file: permission denied")
+
+    monkeypatch.setattr("ralph_executor.user_config.read_queue_repo", fake_read)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        qw.resolve_queue_repo(None)
+    assert "permission denied" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
 def test_checkout_queue_branch_is_removed() -> None:
     """No compat shim: the old branch-checkout helper must not exist."""
     assert not hasattr(qw, "checkout_queue_branch")

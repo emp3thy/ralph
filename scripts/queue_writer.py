@@ -101,12 +101,20 @@ def resolve_workspace_root(cli_value: Path | None = None) -> Path:
     (``RALPH_WORKSPACE``) directly — that knob is intentional executor-
     only territory; skill paths are an operator-facing surface and stay
     on the TOML / CLI rails.
+
+    ``ConfigError`` from a malformed / unreadable / wrong-type
+    ``~/.ralph/config.toml`` is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type from this module.
     """
     if cli_value is not None:
         return cli_value.expanduser().resolve()
+    from ralph_executor.config import ConfigError
     from ralph_executor.user_config import read_workspace_root
 
-    from_toml = read_workspace_root()
+    try:
+        from_toml = read_workspace_root()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
     if from_toml is not None:
         return from_toml.expanduser().resolve()
     return _DEFAULT_WORKSPACE_ROOT.resolve()
@@ -119,15 +127,23 @@ def resolve_queue_repo(cli_value: str | None = None) -> str:
     ``~/.ralph/config.toml``. No silent default — without a queue URL the
     skill cannot do anything meaningful, so raise ``QueueWriterError``
     pointing the operator at the init command.
+
+    ``ConfigError`` from a malformed / unreadable / wrong-type
+    ``~/.ralph/config.toml`` is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type from this module.
     """
     if cli_value is not None:
         value = cli_value.strip()
         if not value:
             raise QueueWriterError("--queue-repo must be a non-empty string")
         return value
+    from ralph_executor.config import ConfigError
     from ralph_executor.user_config import read_queue_repo
 
-    from_toml = read_queue_repo()
+    try:
+        from_toml = read_queue_repo()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
     if from_toml is None:
         raise QueueWriterError(
             "queue_repo not configured: pass --queue-repo or set "
