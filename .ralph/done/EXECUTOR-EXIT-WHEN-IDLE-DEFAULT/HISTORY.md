@@ -13,3 +13,4 @@
 - Branch: ralph/EXECUTOR-EXIT-WHEN-IDLE-DEFAULT
 - Title: `EXECUTOR-EXIT-WHEN-IDLE-DEFAULT: drain to idle by default; --watch opts in to daemon mode`
 - URL: https://github.com/emp3thy/ralph/pull/47
+- 2026-05-28T11:46:25.248916+00:00 sweep: PR merged (completed)
