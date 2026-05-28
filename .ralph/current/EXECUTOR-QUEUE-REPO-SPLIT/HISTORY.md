@@ -119,3 +119,16 @@
 - Lint: `uv run ruff check tests/executor/test_filesystem_queue.py` clean; `ruff format --check` → already formatted.
 - Commit: forthcoming (`test(queue): EXECUTOR-QUEUE-REPO-SPLIT — drop ralph-queue checkouts from test_filesystem_queue.py`).
 - Next iteration: Task 9 slice 3 — sweep `tests/executor/test_movements.py` (the `cfg_for_repo` fixture there still mirrors the legacy `~/ralph-workspaces` workspace_root pattern; rebuild against the new queue-clone fixture or delete + recreate as queue-clone-model tests).
+
+## Iteration 11 — 2026-05-28T17:45:00+00:00
+
+- Task 9 slice 3: swept `tests/executor/test_movements.py` for the queue-clone model.
+  - `_populate_inbox` — dropped `_git(fake_repo, "checkout", "ralph-queue")` and switched the push from `origin ralph-queue` → `origin main`. The new `conftest.fake_repo` is already a clone on `main` with the `.ralph/` skeleton seeded; the legacy branch-dance is a no-op (and would fail because `ralph-queue` does not exist).
+  - `test_move_inbox_to_current_pushes_commit` — `ls-remote origin ralph-queue` → `ls-remote origin main` (twice, before and after the move).
+  - `test_same_file_thrashing_trips_after_ten_distinct_prs_touching_one_file` — dropped the leading `checkout ralph-queue` and changed the final push from `ralph-queue` → `main`.
+  - `test_move_inbox_to_current_survives_concurrent_remote_advance` — docstring + comments updated to reference `main` (not `ralph-queue`); `bare_remote = fake_repo.parent / "remote.git"` → `tmp_path / "queue.git"` per the new conftest layout (bare lives at `tmp_path/queue.git`, clone at `tmp_path/ws/queue`); racer clone uses `--branch main`, pushes to `origin main`; log assertion reads from `main`.
+  - Deleted `test_move_uses_branch_from_config` — the move helper no longer swaps branches (queue clone IS the working tree; always on `main`). Per plan Task 9 Step 2: "Any test that explicitly tested branch-swapping logic on the queue should be deleted (the logic is gone)."
+- Tests: `uv run pytest tests/executor/test_movements.py -q` → 10 passed (was 11; the deleted branch-swap test accounts for the difference).
+- Lint: `uv run ruff check tests/executor/test_movements.py` → All checks passed. `ruff format --check` → 1 file already formatted.
+- Commit: forthcoming (`test(queue): EXECUTOR-QUEUE-REPO-SPLIT — sweep test_movements.py for queue-clone model`).
+- Next iteration: Task 9 slice 4 — sweep `tests/executor/test_loop_integration.py` + `tests/executor/test_worktree.py` if they still reference the legacy branch-dance; then attack the cross-tree files (`tests/safety/test_integration_loop.py`, `tests/safety/test_cycle_detector.py`, `tests/test_queue_writer.py`, `tests/test_setup_ralph_queue_github.py`, `tests/skills/test_ralph_promote.py`) plus the `load_config → user_config.read_queue_repo` bridge flagged in iter 8.
