@@ -25,7 +25,8 @@ REPO_URL = f"{BASE}/repos/{OWNER}/{REPO}"
 MAIN_REF_URL = f"{REPO_URL}/git/ref/heads/main"
 QUEUE_REF_URL = f"{REPO_URL}/git/ref/heads/ralph-queue"
 REFS_CREATE_URL = f"{REPO_URL}/git/refs"
-PROTECTION_URL = f"{REPO_URL}/branches/ralph-queue/protection"
+MAIN_PROTECTION_URL = f"{REPO_URL}/branches/main/protection"
+QUEUE_PROTECTION_URL = f"{REPO_URL}/branches/ralph-queue/protection"
 
 
 @pytest.fixture
@@ -96,8 +97,14 @@ def _register_queue_branch_create(sha: str = MAIN_SHA) -> None:
 def _register_protection_put() -> None:
     responses.add(
         responses.PUT,
-        PROTECTION_URL,
-        json={"url": PROTECTION_URL, "enabled": True},
+        MAIN_PROTECTION_URL,
+        json={"url": MAIN_PROTECTION_URL, "enabled": True},
+        status=200,
+    )
+    responses.add(
+        responses.PUT,
+        QUEUE_PROTECTION_URL,
+        json={"url": QUEUE_PROTECTION_URL, "enabled": True},
         status=200,
     )
 
@@ -274,7 +281,7 @@ def test_dry_run_makes_no_mutations(env: None, capsys: pytest.CaptureFixture[str
 
 @responses.activate
 def test_protection_payload_shape(env: None, capsys: pytest.CaptureFixture[str]) -> None:
-    """The PUT to /branches/ralph-queue/protection sends the documented shape."""
+    """The PUTs to /branches/{main,ralph-queue}/protection send the documented shape."""
     _register_repo_lookup()
     _register_main_tip()
     _register_queue_branch_absent()
@@ -285,25 +292,38 @@ def test_protection_payload_shape(env: None, capsys: pytest.CaptureFixture[str])
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
     assert exit_code == 0
 
-    # Find the protection PUT (the seed step also issues PUTs to /contents/...).
+    # Find protection PUTs (the seed step also issues PUTs to /contents/...).
     put_calls = [
         c
         for c in responses.calls
         if c.request.method == "PUT" and c.request.url.endswith("/protection")
     ]
-    assert len(put_calls) == 1
-    raw_body = put_calls[0].request.body
-    assert raw_body is not None
-    body = json.loads(raw_body)
-    assert body["enforce_admins"] is True
-    assert body["allow_force_pushes"] is False
-    assert body["allow_deletions"] is False
+    # Two protection PUTs: one on main, one on ralph-queue.
+    assert len(put_calls) == 2
+
+    # ralph-queue payload: no PR requirement, no force-push, no deletion.
+    queue_calls = [c for c in put_calls if c.request.url.endswith("/branches/ralph-queue/protection")]
+    assert len(queue_calls) == 1
+    queue_body = json.loads(queue_calls[0].request.body)
+    assert queue_body["enforce_admins"] is True
+    assert queue_body["allow_force_pushes"] is False
+    assert queue_body["allow_deletions"] is False
+    assert queue_body["required_pull_request_reviews"] is None
     # Required-status-checks and restrictions may be null OR an object;
     # both are documented as accepted by the GitHub API. The script
     # MUST include each top-level key (even if value is null) per the docs.
-    assert "required_status_checks" in body
-    assert "required_pull_request_reviews" in body
-    assert "restrictions" in body
+    assert "required_status_checks" in queue_body
+    assert "required_pull_request_reviews" in queue_body
+    assert "restrictions" in queue_body
+
+    # main payload: PR required (1 approval), no force-push, no deletion.
+    main_calls = [c for c in put_calls if c.request.url.endswith("/branches/main/protection")]
+    assert len(main_calls) == 1
+    main_body = json.loads(main_calls[0].request.body)
+    assert main_body["enforce_admins"] is True
+    assert main_body["allow_force_pushes"] is False
+    assert main_body["allow_deletions"] is False
+    assert main_body["required_pull_request_reviews"]["required_approving_review_count"] == 1
 
 
 @responses.activate
@@ -354,15 +374,19 @@ def test_concurrent_create_422_still_applies_protection(
     assert payload["branch_created"] is False
     assert payload["branch_existed"] is True
     assert payload["protection_applied"] is True
-    # Confirm the protection PUT actually fired (would be skipped if the 422
+    # Confirm the protection PUTs actually fired (would be skipped if the 422
     # had escaped to the outer GhError handler). The seed step also issues
-    # PUTs to /contents/..., so filter to the protection URL specifically.
+    # PUTs to /contents/..., so filter to the protection URLs specifically.
+    # Dual-branch protection: PUT on both main and ralph-queue.
     put_calls = [
         c
         for c in responses.calls
         if c.request.method == "PUT" and c.request.url.endswith("/protection")
     ]
-    assert len(put_calls) == 1
+    assert len(put_calls) == 2
+    urls = {c.request.url for c in put_calls}
+    assert any(u.endswith("/branches/main/protection") for u in urls)
+    assert any(u.endswith("/branches/ralph-queue/protection") for u in urls)
 
 
 def test_creates_repo_when_absent_for_real(
@@ -514,6 +538,33 @@ def test_seeds_readme_and_skeleton(monkeypatch: pytest.MonkeyPatch) -> None:
     # Skeleton PUTs on ralph-queue, one per state folder
     for folder in ("inbox", "current", "pending-pr", "blocked", "archive", "done"):
         assert any(path.endswith(f"/contents/.ralph/{folder}/.gitkeep") for path, _ in puts)
+
+
+def test_protection_applied_to_main_and_ralph_queue(monkeypatch):
+    """Protection step applies rules to both main and ralph-queue."""
+    from scripts import setup_ralph_queue_github as setup
+
+    protected: list[str] = []
+
+    class FakeClient:
+        def get(self, path):
+            # All GETs succeed (repo, refs, contents) — protection-only happy path.
+            return {"object": {"sha": "abc"}}
+        def post(self, path, json_body=None):
+            return {}
+        def put(self, path, json_body=None):
+            if "/protection" in path:
+                protected.append(path)
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue"])
+    assert rc == 0
+    assert any(p.endswith("/branches/main/protection") for p in protected)
+    assert any(p.endswith("/branches/ralph-queue/protection") for p in protected)
 
 
 def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:

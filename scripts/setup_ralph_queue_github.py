@@ -130,32 +130,28 @@ def _create_branch(client: GhClient, owner: str, repo: str, branch: str, base_sh
     client.post(f"/repos/{owner}/{repo}/git/refs", json_body=payload)
 
 
-def _apply_protection(client: GhClient, owner: str, repo: str, branch: str) -> None:
-    """PUT branch protection on ``refs/heads/{branch}``.
+def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
+    """main: require PR (1 approval), no force-push, no deletion."""
+    payload = {
+        "required_status_checks": None,
+        "enforce_admins": True,
+        "required_pull_request_reviews": {
+            "dismiss_stale_reviews": False,
+            "require_code_owner_reviews": False,
+            "required_approving_review_count": 1,
+        },
+        "restrictions": None,
+        "allow_force_pushes": False,
+        "allow_deletions": False,
+    }
+    client.put(
+        f"/repos/{owner}/{repo}/branches/main/protection",
+        json_body=payload,
+    )
 
-    The payload follows the documented shape at
-    https://docs.github.com/en/rest/branches/branch-protection#update-branch-protection.
 
-    Intent:
-      - ``enforce_admins=True``: admins can't bypass the rules. Note that on
-        some GitHub plans (personal repos, lower org tiers) the API accepts
-        this flag but the actual enforcement depends on the plan; the
-        runbook documents the plan-level caveat.
-      - ``allow_force_pushes=False`` and ``allow_deletions=False``: nothing
-        rewrites or removes the queue branch.
-      - ``required_status_checks=None``: no CI checks are required at
-        bootstrap time. Per-repo overrides can layer them in later.
-      - ``required_pull_request_reviews=None``: the queue branch is
-        mutated directly by the executor; PR review is not part of the
-        queue's lifecycle.
-      - ``restrictions=None``: no push-actor restrictions at this layer.
-        Push restrictions are enforced via a separate org/repo-level
-        policy (documented in the runbook) because the
-        ``restrictions`` object is only honoured on organisation-owned
-        repos and requires team/app/user lists, which are out of scope
-        for the bootstrap script. The runbook covers how to layer
-        restrictions in for org repos.
-    """
+def _apply_queue_branch_protection(client: GhClient, owner: str, repo: str, branch: str) -> None:
+    """ralph-queue: no force-push, no deletion. No PR requirement (executor pushes directly)."""
     payload = {
         "required_status_checks": None,
         "enforce_admins": True,
@@ -400,21 +396,20 @@ def main(argv: list[str] | None = None) -> int:
         # flag suppressed the PUT.
         protection_applied = False
         if args.no_protection:
-            print(
-                f"skipping branch protection (--no-protection) on {args.branch}",
-                file=sys.stderr,
-            )
+            print("skipping branch protection (--no-protection)", file=sys.stderr)
         elif args.dry_run:
             print(
-                f"DRY-RUN would PUT protection on refs/heads/{args.branch}",
+                f"DRY-RUN would PUT protection on main and {args.branch}",
                 file=sys.stderr,
             )
         else:
+            print("applying branch protection on main...", file=sys.stderr)
+            _apply_main_protection(client, owner, args.repo)
             print(
                 f"applying branch protection on {args.branch}...",
                 file=sys.stderr,
             )
-            _apply_protection(client, owner, args.repo, args.branch)
+            _apply_queue_branch_protection(client, owner, args.repo, args.branch)
             protection_applied = True
 
         result = SetupResult(
