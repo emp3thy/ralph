@@ -43,21 +43,34 @@ class _RunOutput:
     returncode: int
 
 
-def fetch(*, pr_id: int, skill_scripts_path: Path, repo_name: str) -> PrSnapshot:
+def fetch(
+    *,
+    pr_id: int,
+    skill_scripts_path: Path,
+    repo_name: str,
+    env: dict[str, str] | None = None,
+) -> PrSnapshot:
     """Invoke ``show.py`` and ``read_threads.py`` for ``pr_id``; build PrSnapshot.
 
     The skill scripts (``show.py``, ``read_threads.py``) require ``--repo``
     and ``--pr-id`` flags (argparse ``required=True``); positional invocation
     fails with exit 2. ``repo_name`` must be non-empty for the same reason.
+
+    ``env`` (when provided) REPLACES the subprocess environment — pass a
+    superset of ``os.environ`` overlaid with per-PBI overrides
+    (e.g. ``GH_OWNER`` from the PBI's ``target_repo``). When ``None``, the
+    subprocess inherits the parent process env (legacy single-target).
     """
     args = ["--repo", repo_name, "--pr-id", str(pr_id)]
     show_payload = _invoke_skill(
         skill_scripts_path / "show.py",
         args,
+        env=env,
     )
     threads_payload = _invoke_skill(
         skill_scripts_path / "read_threads.py",
         args,
+        env=env,
     )
     threads = _parse_threads(threads_payload)
     last_activity_at = _compute_last_activity_at(show_payload, threads)
@@ -86,7 +99,12 @@ def fetch(*, pr_id: int, skill_scripts_path: Path, repo_name: str) -> PrSnapshot
 # ----------------------------------------------------------------------
 
 
-def _invoke_skill(script_path: Path, args: list[str]) -> dict[str, Any] | list[Any]:
+def _invoke_skill(
+    script_path: Path,
+    args: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any] | list[Any]:
     if not script_path.is_file():
         raise AdoSkillError(f"skill script not found: {script_path}")
     cmd = [sys.executable, str(script_path), *args]
@@ -95,6 +113,7 @@ def _invoke_skill(script_path: Path, args: list[str]) -> dict[str, Any] | list[A
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
     output = _RunOutput(
         stdout=result.stdout,

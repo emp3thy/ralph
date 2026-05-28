@@ -77,6 +77,7 @@ def write_sample_pbi(
     severity: str = "normal",
     created_at: str = "2026-05-24T09:15:00+00:00",
     where: str = "inbox",
+    target_repo: str = "https://github.com/test/repo",
 ) -> Path:
     """Write a minimal feature PBI directory into ``.ralph/<where>/<pbi_id>``.
 
@@ -106,6 +107,7 @@ def write_sample_pbi(
         attempts: 0
         created_at: {created_at}
         updated_at: {created_at}
+        target_repo: {target_repo}
         ---
 
         # {pbi_id} sample body
@@ -211,6 +213,7 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         bot_author_email="",
         stale_days=3,
         bash_max_timeout_ms=900_000,
+        workspace_root=Path.home() / "ralph-workspaces",
         claude_session_timeout_seconds=1200,
         same_file_min_prs=10,
         same_file_window_hours=24.0,

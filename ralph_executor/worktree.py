@@ -35,14 +35,14 @@ def queue_worktree_path(repo_root: Path) -> Path:
     return Path(repo_root) / WORKTREE_ROOT_DIR / "queue"
 
 
-def work_worktree_path(repo_root: Path, pbi_id: str) -> Path:
+def work_worktree_path(clone_root: Path, pbi_id: str) -> Path:
     """Canonical filesystem path of the per-PBI work worktree.
 
-    Each in-flight PBI gets its own worktree at
-    ``<repo>/.ralph-work/repo-<PBI-id>/`` so concurrent or sequential
-    PBIs do not clobber each other's working tree state.
+    Lives INSIDE the target's clone (not inside ralph's checkout). The
+    queue worktree (``queue_worktree_path``) stays in ralph's checkout.
+    Returns ``<clone_root>/.ralph-work/<pbi_id>``.
     """
-    return Path(repo_root) / WORKTREE_ROOT_DIR / f"repo-{pbi_id}"
+    return Path(clone_root) / WORKTREE_ROOT_DIR / pbi_id
 
 
 def _local_branch_exists(git_root: Path, branch: str) -> bool:

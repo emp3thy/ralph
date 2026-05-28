@@ -31,7 +31,7 @@ import logging
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -151,6 +151,11 @@ _TOML_KNOWN_KEYS = frozenset(
         # TOML or RALPH_AUTO_MERGE_CLEAN_PRS=1. See
         # DEFAULT_AUTO_MERGE_CLEAN_PRS for the semantics.
         "auto_merge_clean_prs",
+        # Target-repo clones live under this root: each PBI's
+        # target_repo gets a subdir
+        # ``<workspace_root>/clones/<owner>/<name>/``. Default
+        # ``$HOME/ralph-workspaces``. Env override: RALPH_WORKSPACE.
+        "workspace_root",
         # Cycle-detector same_file_thrashing thresholds — see
         # DEFAULT_SAME_FILE_MIN_PRS / DEFAULT_SAME_FILE_WINDOW_HOURS.
         "same_file_min_prs",
@@ -245,6 +250,10 @@ class ExecutorConfig:
     # (``RALPH_AUTO_MERGE_CLEAN_PRS=1``). Merging a PR a human still
     # wanted to review is unrecoverable; opt in carefully.
     auto_merge_clean_prs: bool = DEFAULT_AUTO_MERGE_CLEAN_PRS
+    # Where target-repo clones live. Default: $HOME/ralph-workspaces.
+    # Each target gets a subdir: <workspace_root>/clones/<owner>/<name>/.
+    # Override via TOML key `workspace_root` or env `RALPH_WORKSPACE`.
+    workspace_root: Path = field(default_factory=lambda: Path.home() / "ralph-workspaces")
     # Cycle-detector same_file_thrashing thresholds (Layer 3 safety).
     # ``same_file_min_prs`` is the distinct-PBI floor that trips the
     # rule; ``same_file_window_hours`` is the rolling window over which
@@ -373,6 +382,27 @@ def _resolve_float(
             f"{source_label}: {name} must be a number, got {type(toml_value).__name__}"
         )
     return float(toml_value)
+
+
+def _resolve_path(
+    *, name: str, env_name: str, toml_value: Any, default: Path, source_label: str
+) -> Path:
+    """env > toml > default for a Path-valued knob.
+
+    Both env and TOML values are strings; ``~`` is expanded via
+    ``Path.expanduser()``. TOML must be a string; bools, ints, etc.
+    raise ConfigError.
+    """
+    raw_env = os.environ.get(env_name)
+    if raw_env is not None and raw_env.strip() != "":
+        return Path(raw_env.strip()).expanduser()
+    if toml_value is None:
+        return default
+    if not isinstance(toml_value, str):
+        raise ConfigError(
+            f"{source_label}: {name} must be a string path, got {type(toml_value).__name__}"
+        )
+    return Path(toml_value).expanduser()
 
 
 def _resolve_bool(
@@ -598,6 +628,13 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_AUTO_MERGE_CLEAN_PRS,
         source_label=source_label,
     )
+    workspace_root = _resolve_path(
+        name="workspace_root",
+        env_name="RALPH_WORKSPACE",
+        toml_value=toml_overrides.get("workspace_root"),
+        default=Path.home() / "ralph-workspaces",
+        source_label=source_label,
+    )
     same_file_min_prs = _resolve_int(
         name="same_file_min_prs",
         env_name="RALPH_SAME_FILE_MIN_PRS",
@@ -645,6 +682,7 @@ def load_config() -> ExecutorConfig:
         bash_max_timeout_ms=bash_max_timeout_ms,
         claude_session_timeout_seconds=claude_session_timeout_seconds,
         auto_merge_clean_prs=auto_merge_clean_prs,
+        workspace_root=workspace_root,
         same_file_min_prs=same_file_min_prs,
         same_file_window_hours=same_file_window_hours,
     )

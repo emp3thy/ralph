@@ -45,6 +45,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "BASH_MAX_TIMEOUT_MS",
         "RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
+        "RALPH_WORKSPACE",
         "RALPH_SAME_FILE_MIN_PRS",
         "RALPH_SAME_FILE_WINDOW_HOURS",
     ):
@@ -467,6 +468,45 @@ def test_auto_merge_clean_prs_env_wins_over_toml(
 def test_auto_merge_clean_prs_toml_wrong_type_raises(clean_env: Path) -> None:
     _write_toml(clean_env, 'auto_merge_clean_prs = "yes"\n')
     with pytest.raises(ConfigError, match="auto_merge_clean_prs must be a boolean"):
+        load_config()
+
+
+def test_workspace_root_defaults_to_home_ralph_workspaces(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.workspace_root == Path.home() / "ralph-workspaces"
+
+
+def test_workspace_root_from_toml(clean_env: Path, tmp_path: Path) -> None:
+    target = tmp_path / "my-workspaces"
+    # Use forward-slash form so a Windows backslash isn't interpreted as a
+    # TOML escape sequence (e.g. ``\U``). ``Path`` round-trips identically.
+    _write_toml(clean_env, f'workspace_root = "{target.as_posix()}"\n')
+    cfg = load_config()
+    assert cfg.workspace_root == target
+
+
+def test_workspace_root_env_wins_over_toml(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_toml(
+        clean_env,
+        f'workspace_root = "{(tmp_path / "from-toml").as_posix()}"\n',
+    )
+    monkeypatch.setenv("RALPH_WORKSPACE", str(tmp_path / "from-env"))
+    cfg = load_config()
+    assert cfg.workspace_root == tmp_path / "from-env"
+
+
+def test_workspace_root_tilde_expansion(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """~/ in TOML or env must be expanded relative to the home dir."""
+    monkeypatch.setenv("RALPH_WORKSPACE", "~/my-ralph-stuff")
+    cfg = load_config()
+    assert cfg.workspace_root == Path.home() / "my-ralph-stuff"
+
+
+def test_workspace_root_non_string_toml_rejected(clean_env: Path) -> None:
+    _write_toml(clean_env, "workspace_root = 42\n")
+    with pytest.raises(ConfigError, match="workspace_root"):
         load_config()
 
 

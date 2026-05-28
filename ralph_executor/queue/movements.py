@@ -212,3 +212,20 @@ def move_current_to_blocked(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         target_state="blocked",
         commit_prefix="chore(ralph-queue)",
     )
+
+
+def move_inbox_to_blocked(cfg: ExecutorConfig, pbi: PBI) -> PBI:
+    """Demote an unclaimable inbox PBI directly to blocked.
+
+    Used by ``iterate_once`` when ``_claim_pbi`` raises ``_ClaimError``
+    before the PBI has made it into ``current/`` (target_repo missing,
+    parse failure, unsupported host, ``TargetUnreachable``). The PBI
+    never holds the single-focus slot, so the move is inbox -> blocked.
+    """
+    return _move(
+        cfg,
+        pbi,
+        expected_state="inbox",
+        target_state="blocked",
+        commit_prefix="chore(ralph-queue)",
+    )

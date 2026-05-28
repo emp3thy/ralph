@@ -493,10 +493,11 @@ def spawn_claude_p(
     accumulating the streams into ``outcome.stdout`` / ``outcome.stderr``
     for the classifier and downstream diagnostics.
 
-    ``cwd`` overrides the subprocess working directory; defaults to
-    ``cfg.repo_path`` for legacy single-checkout setups. In worktree
-    mode the loop passes the per-PBI work worktree path so Claude's
-    relative paths resolve against the code tree.
+    ``cwd`` overrides the subprocess working directory. When omitted,
+    falls back to ``pbi.work_worktree`` (set by ``_claim_pbi`` in
+    multi-target mode so Claude runs inside the target's per-PBI
+    worktree), then to ``cfg.repo_path`` for legacy single-checkout
+    setups.
 
     ``pbi_dir`` overrides the on-disk PBI directory the spawned Claude
     reads/writes; defaults to ``pbi.path`` for legacy mode. In worktree
@@ -516,7 +517,12 @@ def spawn_claude_p(
     can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
     effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
-    effective_cwd = Path(cwd) if cwd is not None else cfg.repo_path
+    if cwd is not None:
+        effective_cwd = Path(cwd)
+    elif pbi.work_worktree is not None:
+        effective_cwd = pbi.work_worktree
+    else:
+        effective_cwd = cfg.repo_path
     if not effective_pbi_dir.is_dir():
         raise FileNotFoundError(
             f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
@@ -537,6 +543,12 @@ def spawn_claude_p(
     # env. Setting on ``env`` (not os.environ) keeps the override scoped
     # to this child — ralph's parent env stays untouched.
     env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
+    # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
+    # ``gh`` invocation that reads GH_OWNER) writes to the target repo
+    # owner from ``pbi.target_repo``, not whatever owner the operator
+    # configured for ralph itself. None in legacy single-target mode.
+    if pbi.target_info is not None:
+        env["GH_OWNER"] = pbi.target_info.owner
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout

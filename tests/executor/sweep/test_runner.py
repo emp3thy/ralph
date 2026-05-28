@@ -13,6 +13,7 @@ The tests assert the on-disk effects:
 
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -846,3 +847,168 @@ def test_auto_merge_github_error_keeps_pbi_in_pending(
     assert any(
         "merge_pr GitHub error" in rec.message and "WI-AM3" in rec.message for rec in caplog.records
     )
+
+
+def _inject_target_repo(pbi_dir: Path, url: str) -> None:
+    """Append ``target_repo: <url>`` to a PBI's PBI.md frontmatter in-place."""
+    entry = pbi_dir / "PBI.md"
+    text = entry.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    close_idx = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    assert close_idx is not None, "make_pending_pbi must produce frontmatter"
+    lines.insert(close_idx, f"target_repo: {url}")
+    entry.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _capturing_pr_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """Build a shim that records argv + GH_OWNER to ``<log_dir>/<script>.json``.
+
+    Returns ``(skill_dir, log_dir)``. Each invocation appends a JSON line
+    ``{"argv": [...], "gh_owner": "..."}`` to the script's log file. Show /
+    read_threads scripts also print a minimal canned payload so
+    ``pr_state.fetch`` parses successfully; merge_pr exits 0.
+    """
+    skill_dir = tmp_path / "capturing-skill" / "scripts"
+    skill_dir.mkdir(parents=True)
+    log_dir = tmp_path / "capture-logs"
+    log_dir.mkdir()
+
+    show_body = textwrap.dedent(
+        f"""\
+        import json, os, sys
+        from pathlib import Path
+        log = Path({str(log_dir)!r}) / "show.jsonl"
+        rec = {{"argv": sys.argv[1:], "gh_owner": os.environ.get("GH_OWNER", "")}}
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\\n")
+        pr_id = sys.argv[sys.argv.index("--pr-id") + 1]
+        payload = {{
+            "pr_id": int(pr_id),
+            "title": "t",
+            "status": "active",
+            "ci_status": "succeeded",
+            "source_branch": "ralph/x",
+            "target_branch": "main",
+            "reviewers": [],
+            "url": "u",
+            "last_activity_at": "2026-05-23T08:00:00+00:00",
+            "mergeable_state": "clean",
+        }}
+        print(json.dumps(payload))
+        """
+    )
+    threads_body = textwrap.dedent(
+        f"""\
+        import json, os, sys
+        from pathlib import Path
+        log = Path({str(log_dir)!r}) / "read_threads.jsonl"
+        rec = {{"argv": sys.argv[1:], "gh_owner": os.environ.get("GH_OWNER", "")}}
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\\n")
+        print("[]")
+        """
+    )
+    merge_body = textwrap.dedent(
+        f"""\
+        import json, os, sys
+        from pathlib import Path
+        log = Path({str(log_dir)!r}) / "merge_pr.jsonl"
+        rec = {{"argv": sys.argv[1:], "gh_owner": os.environ.get("GH_OWNER", "")}}
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\\n")
+        pr_id = sys.argv[sys.argv.index("--pr-id") + 1]
+        print(json.dumps({{"pr_id": int(pr_id), "merged": True, "sha": "deadbeef"}}))
+        sys.exit(0)
+        """
+    )
+    (skill_dir / "show.py").write_text(show_body)
+    (skill_dir / "read_threads.py").write_text(threads_body)
+    (skill_dir / "merge_pr.py").write_text(merge_body)
+    return skill_dir, log_dir
+
+
+def test_sweep_sets_gh_owner_and_repo_arg_from_pbi_target_repo(
+    queue_root: Path,
+    make_pending_pbi: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Per-PBI target_repo overrides ``GH_OWNER`` + ``--repo`` on show /
+    read_threads subprocess invocations."""
+    import json
+
+    pbi = make_pending_pbi("WI-T1", pr_id=7100)
+    _inject_target_repo(pbi, "https://github.com/orgX/repoY")
+    skill_dir, log_dir = _capturing_pr_skill(tmp_path)
+
+    ctx = SweepContext(
+        queue_root=queue_root,
+        ado_pr_scripts_path=skill_dir,
+        config=_config(),
+    )
+    result = run(ctx=ctx)
+
+    assert result.errors == (), result.errors
+    show_records = [json.loads(line) for line in (log_dir / "show.jsonl").read_text().splitlines()]
+    threads_records = [
+        json.loads(line) for line in (log_dir / "read_threads.jsonl").read_text().splitlines()
+    ]
+    assert any(r["gh_owner"] == "orgX" for r in show_records), show_records
+    assert any("repoY" in r["argv"] for r in show_records), show_records
+    assert any(r["gh_owner"] == "orgX" for r in threads_records), threads_records
+    assert any("repoY" in r["argv"] for r in threads_records), threads_records
+
+
+def test_sweep_passes_per_pbi_repo_arg_to_merge_pr(
+    queue_root: Path,
+    make_pending_pbi: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Auto-merge path — merge_pr.py receives per-PBI ``--repo`` + GH_OWNER."""
+    import json
+
+    pbi = make_pending_pbi("WI-T2", pr_id=7200)
+    _inject_target_repo(pbi, "https://github.com/orgZ/repoW")
+    skill_dir, log_dir = _capturing_pr_skill(tmp_path)
+
+    ctx = SweepContext(
+        queue_root=queue_root,
+        ado_pr_scripts_path=skill_dir,
+        config=SweepConfig(
+            ralph_author_email="ralph-bot@example.com",
+            max_attempts=3,
+            stale_threshold=timedelta(days=3),
+            now=NOW,
+            auto_merge_clean_prs=True,
+        ),
+    )
+    result = run(ctx=ctx)
+
+    assert result.errors == (), result.errors
+    assert not pbi.exists()
+    assert (queue_root / "done" / "WI-T2").is_dir()
+    merge_records = [
+        json.loads(line) for line in (log_dir / "merge_pr.jsonl").read_text().splitlines()
+    ]
+    assert any(r["gh_owner"] == "orgZ" for r in merge_records), merge_records
+    assert any("repoW" in r["argv"] for r in merge_records), merge_records
+
+
+def test_sweep_reports_invalid_target_repo_url_as_error(
+    queue_root: Path,
+    fake_ado_pr_skill: Path,
+    make_pending_pbi: Callable[..., Path],
+) -> None:
+    """A malformed ``target_repo`` URL surfaces as a per-PBI error and the
+    rest of the sweep continues."""
+    pbi = make_pending_pbi("WI-T3", pr_id=7300)
+    _inject_target_repo(pbi, "not-a-url")
+
+    ctx = SweepContext(
+        queue_root=queue_root,
+        ado_pr_scripts_path=fake_ado_pr_skill,
+        config=_config(),
+    )
+    result = run(ctx=ctx)
+
+    assert pbi.exists()
+    assert any("invalid target_repo" in err for err in result.errors), result.errors

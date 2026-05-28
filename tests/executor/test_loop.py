@@ -18,6 +18,7 @@ from ralph_executor.loop import (
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.safety.events import EventType, open_log
+from ralph_executor.types import PBI
 from ralph_executor.worktree import (
     list_worktrees,
     queue_worktree_path,
@@ -784,14 +785,34 @@ def test_file_touched_skipped_on_empty_commit(
 def cfg_for_repo_worktree(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[ExecutorConfig]:
     """Worktree-mode variant of ``cfg_for_repo`` with best-effort cleanup.
 
     Pytest's ``tmp_path`` cleanup trips on Windows when ``.ralph-work/``
     still holds git-registered worktrees; force-remove them on teardown
     so the next test (and the harness) start clean.
+
+    Task 7 sub-step 7C wires ``_claim_pbi`` to call ``target_clone.ensure_clone``
+    before creating the work worktree. To keep the existing worktree-mode
+    tests (which never set up a real clone) working unchanged, this fixture
+    monkeypatches ``ensure_clone`` to return a ``TargetClone`` whose
+    ``clone_root`` IS ``fake_repo``. Tests that need a distinct clone root
+    can override the monkeypatch.
     """
     cfg = dataclasses.replace(cfg_for_repo, use_worktrees=True)
+
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    def _fake_ensure_clone_to_fake_repo(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=fake_repo)
+
+    monkeypatch.setattr(
+        "ralph_executor.target_clone.ensure_clone",
+        _fake_ensure_clone_to_fake_repo,
+    )
+
     try:
         yield cfg
     finally:
@@ -1045,3 +1066,335 @@ def test_max_attempts_blocked_move_targets_queue_worktree(
     assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists(), (
         "primary checkout must never receive blocked PBI dirs in worktree mode"
     )
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7A: _ClaimError + _read_target_repo_from_pbi
+# ----------------------------------------------------------------------
+
+
+def _build_pbi(pbi_dir: Path, pbi_id: str) -> PBI:
+    return PBI(
+        id=pbi_id,
+        type="feature",
+        status="current",
+        severity="normal",
+        attempts=0,
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+        path=pbi_dir,
+    )
+
+
+def test_read_target_repo_from_pbi_reads_frontmatter(tmp_path: Path) -> None:
+    """Helper reads target_repo field from PBI.md frontmatter."""
+    from ralph_executor.loop import _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-1"
+    pbi_dir.mkdir()
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        "id: WI-1\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "target_repo: https://github.com/emp3thy/ralph\n"
+        "---\n"
+        "# Title\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-1")
+    assert _read_target_repo_from_pbi(pbi) == "https://github.com/emp3thy/ralph"
+
+
+def test_read_target_repo_from_pbi_raises_when_missing(tmp_path: Path) -> None:
+    """Missing target_repo field raises _ClaimError."""
+    from ralph_executor.loop import _ClaimError, _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-2"
+    pbi_dir.mkdir()
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        "id: WI-2\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        "---\n"
+        "# Title (no target_repo)\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-2")
+    with pytest.raises(_ClaimError, match="missing target_repo"):
+        _read_target_repo_from_pbi(pbi)
+
+
+def test_read_target_repo_from_pbi_raises_when_no_entry_file(tmp_path: Path) -> None:
+    """Missing entry file (no PBI.md/BUG.md/FEEDBACK.md) raises _ClaimError."""
+    from ralph_executor.loop import _ClaimError, _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-3"
+    pbi_dir.mkdir()
+    pbi = _build_pbi(pbi_dir, "WI-3")
+    with pytest.raises(_ClaimError, match="no entry file"):
+        _read_target_repo_from_pbi(pbi)
+
+
+def test_read_target_repo_from_pbi_uses_bug_md_for_bug_type(tmp_path: Path) -> None:
+    """Bug PBIs (no PBI.md, but BUG.md present) get target_repo from BUG.md."""
+    from ralph_executor.loop import _read_target_repo_from_pbi
+
+    pbi_dir = tmp_path / "WI-4"
+    pbi_dir.mkdir()
+    (pbi_dir / "BUG.md").write_text(
+        "---\n"
+        "id: WI-4\n"
+        "type: bug\n"
+        "status: current\n"
+        "severity: high\n"
+        "attempts: 0\n"
+        "target_repo: https://github.com/acme/svc\n"
+        "---\n"
+        "# Bug\n",
+        encoding="utf-8",
+    )
+    pbi = _build_pbi(pbi_dir, "WI-4")
+    assert _read_target_repo_from_pbi(pbi) == "https://github.com/acme/svc"
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7B: parse + host check inside _claim_pbi
+# ----------------------------------------------------------------------
+
+
+def _write_pbi_with_target(pbi_dir: Path, pbi_id: str, target_repo: str) -> None:
+    """Write a minimal PBI.md with a custom ``target_repo`` value."""
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        "---\n"
+        f"id: {pbi_id}\n"
+        "type: feature\n"
+        "status: current\n"
+        "severity: normal\n"
+        "attempts: 0\n"
+        f'target_repo: "{target_repo}"\n'
+        "---\n"
+        f"# {pbi_id}\n",
+        encoding="utf-8",
+    )
+
+
+def test_claim_raises_claim_error_for_non_github_host(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """A PBI with target_repo on a non-github host raises _ClaimError 'unsupported host'."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+
+    pbi_dir = tmp_path / "WI-ADO"
+    _write_pbi_with_target(pbi_dir, "WI-ADO", "https://dev.azure.com/myorg/myproj/_git/myrepo")
+    pbi = _build_pbi(pbi_dir, "WI-ADO")
+    with pytest.raises(_ClaimError, match="unsupported host"):
+        _claim_pbi(cfg_for_repo, pbi)
+
+
+def test_claim_raises_claim_error_for_invalid_url(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """A PBI with a malformed target_repo raises _ClaimError 'invalid target_repo URL'."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+
+    pbi_dir = tmp_path / "WI-BAD"
+    _write_pbi_with_target(pbi_dir, "WI-BAD", "not a url")
+    pbi = _build_pbi(pbi_dir, "WI-BAD")
+    with pytest.raises(_ClaimError, match="invalid target_repo URL"):
+        _claim_pbi(cfg_for_repo, pbi)
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7C: ensure_clone + worktree creation inside clone
+# ----------------------------------------------------------------------
+
+
+def test_claim_in_worktree_mode_clones_target_and_creates_worktree_in_clone(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Happy path: worktree-mode claim runs ensure_clone, creates the per-PBI
+    worktree INSIDE the clone, and returns a PBI with target_info +
+    work_worktree populated."""
+    from dataclasses import replace as dc_replace
+
+    from ralph_executor.loop import _claim_pbi
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    custom_ws = tmp_path / "ws"
+    clone_root = custom_ws / "clones" / "test-repo"
+    cfg = dc_replace(cfg_for_repo_worktree, workspace_root=custom_ws)
+
+    ensure_clone_calls: list[tuple[TargetRepoInfo, Path]] = []
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        ensure_clone_calls.append((info, workspace_root))
+        clone_root.mkdir(parents=True, exist_ok=True)
+        return TargetClone(info=info, clone_root=clone_root)
+
+    ensure_wt_calls: list[dict[str, object]] = []
+
+    def _fake_ensure_worktree(
+        git_root: Path,
+        *,
+        worktree_path: Path,
+        branch: str,
+        create_branch_from: str | None = None,
+    ) -> None:
+        ensure_wt_calls.append(
+            {
+                "git_root": Path(git_root),
+                "worktree_path": Path(worktree_path),
+                "branch": branch,
+                "create_branch_from": create_branch_from,
+            }
+        )
+
+    _populate_inbox(fake_repo, pbi_id="WI-CLONE")
+
+    # Prime the queue worktree and pick the PBI BEFORE installing the
+    # ensure_worktree stub — otherwise _pull_queue's real ensure_worktree
+    # call gets replaced with the no-op stub and git pull errors on a
+    # non-existent directory.
+    from ralph_executor.loop import _pull_queue
+
+    _pull_queue(cfg)
+    source = FilesystemQueueSource(cfg)
+    picked = source.pick_next()
+    assert picked is not None and picked.id == "WI-CLONE"
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
+    monkeypatch.setattr("ralph_executor.loop.ensure_worktree", _fake_ensure_worktree)
+
+    claimed = _claim_pbi(cfg, picked)
+
+    # ensure_clone was called with the parsed info + custom workspace.
+    assert len(ensure_clone_calls) == 1
+    called_info, called_ws = ensure_clone_calls[0]
+    assert called_info.host == "github.com"
+    assert called_info.owner == "test"
+    assert called_info.name == "repo"
+    assert called_ws == custom_ws
+
+    # The per-PBI worktree was materialised against the CLONE, not ralph's repo.
+    work_wt_calls = [c for c in ensure_wt_calls if c["branch"] == "ralph/WI-CLONE"]
+    assert len(work_wt_calls) == 1
+    assert work_wt_calls[0]["git_root"] == clone_root
+    assert work_wt_calls[0]["worktree_path"] == clone_root / ".ralph-work" / "WI-CLONE"
+    assert work_wt_calls[0]["create_branch_from"] == "origin/main"
+
+    # Returned PBI carries the multi-target fields.
+    assert claimed.target_repo == "https://github.com/test/repo"
+    assert claimed.target_info is not None
+    assert claimed.target_info.owner == "test"
+    assert claimed.target_info.name == "repo"
+    assert claimed.work_worktree == clone_root / ".ralph-work" / "WI-CLONE"
+
+
+def test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ensure_clone -> TargetUnreachable maps to _ClaimError("target unreachable: ...")."""
+    from ralph_executor.loop import _claim_pbi, _ClaimError
+    from ralph_executor.target_clone import TargetUnreachable
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    _populate_inbox(fake_repo, pbi_id="WI-NET")
+    from ralph_executor.loop import _pull_queue
+
+    _pull_queue(cfg_for_repo_worktree)
+    source = FilesystemQueueSource(cfg_for_repo_worktree)
+    picked = source.pick_next()
+    assert picked is not None
+
+    def _raise_unreachable(info: TargetRepoInfo, workspace_root: Path) -> None:
+        raise TargetUnreachable("network unreachable")
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
+
+    with pytest.raises(_ClaimError, match=r"target unreachable: network unreachable"):
+        _claim_pbi(cfg_for_repo_worktree, picked)
+
+
+# ----------------------------------------------------------------------
+# Task 7 sub-step 7.8: iterate_once catches _ClaimError -> blocked/
+# ----------------------------------------------------------------------
+
+
+def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim that hits a non-github host raises _ClaimError; iterate_once
+    catches it, moves the PBI from inbox/ to blocked/<id>/, appends the
+    failure reason to HISTORY.md, and returns ``claim_failed``."""
+    _git(fake_repo, "checkout", "ralph-queue")
+    pbi_dir = write_sample_pbi(
+        fake_repo,
+        pbi_id="WI-ADO",
+        target_repo="https://dev.azure.com/myorg/myproj/_git/myrepo",
+    )
+    _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
+    _git(fake_repo, "commit", "-m", "inbox: WI-ADO")
+    _git(fake_repo, "push", "origin", "ralph-queue")
+    _git(fake_repo, "checkout", "main")
+
+    result = iterate_once(cfg_for_repo)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-ADO"
+
+    _git(fake_repo, "checkout", "ralph-queue")
+    _git(fake_repo, "pull", "origin", "ralph-queue")
+    assert (fake_repo / ".ralph" / "blocked" / "WI-ADO").is_dir()
+    assert not (fake_repo / ".ralph" / "inbox" / "WI-ADO").exists()
+    history = (fake_repo / ".ralph" / "blocked" / "WI-ADO" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "unsupported host" in history
+
+
+def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable_in_worktree_mode(
+    cfg_for_repo_worktree: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worktree-mode: ensure_clone raises TargetUnreachable -> _ClaimError
+    -> iterate_once moves PBI to blocked/<id>/ with reason in HISTORY.md."""
+    from ralph_executor.target_clone import TargetUnreachable
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    _populate_inbox(fake_repo, pbi_id="WI-NET2")
+
+    def _raise_unreachable(info: TargetRepoInfo, workspace_root: Path) -> None:
+        raise TargetUnreachable("network unreachable")
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
+
+    result = iterate_once(cfg_for_repo_worktree)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-NET2"
+
+    queue_wt = queue_worktree_path(fake_repo)
+    assert (queue_wt / ".ralph" / "blocked" / "WI-NET2").is_dir()
+    assert not (queue_wt / ".ralph" / "inbox" / "WI-NET2").exists()
+    history = (queue_wt / ".ralph" / "blocked" / "WI-NET2" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "target unreachable: network unreachable" in history
