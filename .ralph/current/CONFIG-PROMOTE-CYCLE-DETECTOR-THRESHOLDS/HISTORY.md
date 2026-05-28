@@ -8,3 +8,9 @@
 - Documented new TOML keys in `setup_cmds.CONFIG_TOML_STUB`.
 - Tests: `uv run pytest tests/safety/test_cycle_detector.py tests/executor/test_config_toml.py tests/executor/test_movements.py` green (82 passed). Full `uv run pytest` green (800 passed, 4 skipped). `uv run ruff check .` clean. `uv run ruff format --check .` clean. `uv run mypy ralph_executor scripts skills tests` clean.
 - Notes: added 3 same_file override tests (lower / raise / window narrow) + 1 aggregator test asserting `evaluate_all` forwards `cfg.same_file_min_prs` through; 5 new `test_config_toml.py` cases cover defaults, TOML pickup, env override, and positive-validation rejection.
+
+## Iteration 2 — 2026-05-28T01:21:37Z — PR created
+
+- PR: #45 (https://github.com/emp3thy/ralph/pull/45)
+- Branch: ralph/CONFIG-PROMOTE-CYCLE-DETECTOR-THRESHOLDS
+- Title: CONFIG-PROMOTE-CYCLE-DETECTOR-THRESHOLDS: promote same_file_thrashing thresholds to TOML
