@@ -322,20 +322,20 @@ git commit -m "feat(ralph-promote): operate on queue clone"
 - Modify: `skills/ralph-triage/scripts/triage.py`, `skills/ralph-triage/SKILL.md`
 - Test: `tests/skills/test_ralph_triage.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_triage.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote) seeded with a PBI in `.ralph/blocked/<id>/`.
 - An empty workspace dir.
 - Test: after running `ralph-triage --pbi-id <id> --to inbox`, the fake bare remote has a commit moving the PBI dir from `.ralph/blocked/<id>/` to `.ralph/inbox/<id>/`, with `attempts: 0` rewritten in the entry-file frontmatter.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/skills/test_ralph_triage.py -v
 ```
 
-- [ ] **Step 3: Edit `skills/ralph-triage/scripts/triage.py`**
+- [x] **Step 3: Edit `skills/ralph-triage/scripts/triage.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers.
 - Keep `--pbi-id` and the `--to {inbox,archive}` routing argument.
@@ -343,15 +343,15 @@ uv run pytest tests/skills/test_ralph_triage.py -v
 - Call `acquire_queue_clone(workspace_root, queue_repo)`.
 - `git mv` the PBI dir from `<clone>/.ralph/blocked/<id>/` to either `<clone>/.ralph/inbox/<id>/` (with `attempts: 0` rewrite in the entry file) or `<clone>/.ralph/archive/<id>/` (creating the archive folder on demand). Commit and push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-triage/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--to`).
+- [x] **Step 4: Update `skills/ralph-triage/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--to`).
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_triage.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-triage/ tests/skills/test_ralph_triage.py

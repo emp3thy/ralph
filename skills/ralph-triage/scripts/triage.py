@@ -1,18 +1,17 @@
 """``ralph-triage`` skill entry point.
 
-Walks the ``.ralph/blocked/`` queue. Routes a blocked PBI either back
-to ``.ralph/inbox/`` (with attempts reset to 0) or out to
-``.ralph/archive/`` (creating the folder on demand). The operator's
-reasoning is captured in HISTORY.md so every triage decision leaves an
-audit trail.
+Walks ``.ralph/blocked/`` in the queue clone. Routes a blocked PBI
+either back to ``.ralph/inbox/`` (with ``attempts`` reset to 0) or out
+to ``.ralph/archive/`` (creating the archive folder on demand). The
+operator's reasoning is captured in HISTORY.md so every triage decision
+leaves an audit trail.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import shutil
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -24,20 +23,19 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
+    acquire_queue_clone,
     append_history,
-    checkout_queue_branch,
     commit_paths,
-    ensure_git_repo,
-    flatten_history_field,
     is_path_in_head,
     push,
     read_frontmatter,
-    read_path_from_head,
+    resolve_queue_repo,
+    resolve_workspace_root,
     write_frontmatter,
 )
 
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
 ALLOWED_DESTINATIONS = ("inbox", "archive")
+SOURCE_FOLDER = "blocked"
 ENTRY_FILE_BY_TYPE = {
     "feature": "PBI.md",
     "bug": "BUG.md",
@@ -54,20 +52,22 @@ class TriageResult:
     new_path: str
     attempts_reset_to_zero: bool
     archive_created: bool
-    repo_path: str
-    branch: str
+    queue_clone: str
     commit_sha: str
     pushed: bool
     dry_run: bool
+    already_triaged: bool
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ralph-triage",
         description=(
-            "Triage a PBI in .ralph/blocked/. Routes the PBI either back "
-            "to inbox/ (for retry, attempts reset to 0) or to archive/ "
-            "(closed out). A note explaining the decision is required."
+            "Triage a PBI in .ralph/blocked/ inside the queue clone "
+            "(<workspace_root>/queue on main). Routes the PBI either "
+            "back to inbox/ (for retry, attempts reset to 0) or to "
+            "archive/ (closed out). A note explaining the decision is "
+            "required and is appended to HISTORY.md."
         ),
     )
     parser.add_argument(
@@ -88,19 +88,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Operator's reasoning, appended to HISTORY.md.",
     )
     parser.add_argument(
-        "--repo",
-        required=True,
-        help="Absolute path to the target service repo checkout.",
+        "--workspace",
+        type=Path,
+        help="Override workspace_root from ~/.ralph/config.toml.",
     )
     parser.add_argument(
-        "--branch",
-        default=os.environ.get("RALPH_QUEUE_BRANCH", DEFAULT_QUEUE_BRANCH),
-        help=f"Queue branch name (default: {DEFAULT_QUEUE_BRANCH}).",
+        "--queue-repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
     )
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="Commit locally but do not push.",
+        help="Commit the move locally but do not push.",
     )
     parser.add_argument(
         "--dry-run",
@@ -114,38 +113,6 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
-def _resolve_blocked_pbi(repo: Path, pbi_id: str, destination: str) -> Path:
-    """Return the on-disk PBI path under ``.ralph/blocked/<pbi_id>``.
-
-    Handles the partial-failure retry case: if the working tree shows
-    the PBI at ``.ralph/<destination>/<pbi_id>`` but HEAD still has it
-    in ``.ralph/blocked/``, return the blocked path anyway so the
-    caller can finish the commit. The blocked path will not exist on
-    disk in that case — ``main`` detects this and skips the move +
-    history-append, going straight to ``commit_paths``.
-    """
-    blocked = repo / ".ralph" / "blocked" / pbi_id
-    if blocked.is_dir():
-        return blocked
-    # Retry-after-failed-commit: working tree shows the move already
-    # happened, HEAD does not. Return blocked even though it's missing.
-    if is_path_in_head(repo, f".ralph/blocked/{pbi_id}"):
-        destination_dir = repo / ".ralph" / destination / pbi_id
-        if destination_dir.is_dir():
-            return blocked
-    base = repo / ".ralph"
-    for folder in ("current", "inbox", "pending-pr", "done", "archive"):
-        if (base / folder / pbi_id).is_dir():
-            raise QueueWriterError(
-                f"PBI {pbi_id!r} is in .ralph/{folder}/, not in "
-                f".ralph/blocked/. ralph-triage only operates on the "
-                f"blocked queue."
-            )
-    raise QueueWriterError(
-        f"PBI {pbi_id!r} not found under .ralph/blocked/ (or any other state folder)"
-    )
-
-
 def _resolve_entry_file(pbi_dir: Path) -> Path:
     for candidate in ENTRY_FILE_BY_TYPE.values():
         path = pbi_dir / candidate
@@ -154,154 +121,168 @@ def _resolve_entry_file(pbi_dir: Path) -> Path:
     raise QueueWriterError(f"no entry file (PBI.md, BUG.md, or FEEDBACK.md) found in {pbi_dir}")
 
 
-def _move_directory(src: Path, dest: Path) -> None:
-    """Move ``src`` to ``dest``. Creates ``dest.parent`` on demand.
-
-    Uses ``shutil.move`` so it works whether ``src`` and ``dest`` are
-    on the same filesystem or not.
-    """
-    if dest.exists():
-        raise QueueWriterError(f"destination already exists: {dest}; refusing to overwrite")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dest))
+def _git(repo: Path, *args: str) -> None:
+    try:
+        subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise QueueWriterError(f"git {' '.join(args)} failed ({exc.returncode}): {stderr}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
     try:
-        repo = Path(args.repo).resolve()
-        ensure_git_repo(repo)
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
 
-        print(f"switching to {args.branch}...", file=sys.stderr)
-        checkout_queue_branch(repo, args.branch)
-
-        old_path = _resolve_blocked_pbi(repo, args.pbi_id, args.destination)
-        # ``archive_created`` reports whether THIS commit produces the
-        # ``.ralph/archive/`` directory. Filesystem state is unreliable
-        # in the partial-failure retry case (a previous incomplete run
-        # already created the dir on disk via ``_move_directory`` but
-        # never committed it). Check HEAD instead: the dir is "newly
-        # created by this commit" iff HEAD does not yet have it.
-        archive_existed_before = is_path_in_head(repo, ".ralph/archive")
-        new_path = repo / ".ralph" / args.destination / args.pbi_id
-        # Detect the partial-failure retry: HEAD still has the PBI in
-        # blocked/, but the working tree already moved it to
-        # ``new_path`` (frontmatter + HISTORY already updated). Skip
-        # write_frontmatter / append_history / _move_directory and go
-        # straight to commit so the audit isn't duplicated and the
-        # commit lands.
-        is_retry = (
-            not old_path.is_dir()
-            and new_path.is_dir()
-            and is_path_in_head(repo, f".ralph/blocked/{args.pbi_id}")
-        )
+        action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
+        rel_from = f".ralph/{SOURCE_FOLDER}/{args.pbi_id}"
+        rel_to = f".ralph/{args.destination}/{args.pbi_id}"
 
         if args.dry_run:
+            # Dry-run must NOT touch network or filesystem. Report the
+            # would-be move against the would-be clone location.
+            clone = workspace_root / "queue"
             print(
-                f"dry-run: would move "
-                f"{old_path.relative_to(repo).as_posix()} -> "
-                f"{new_path.relative_to(repo).as_posix()}.",
+                f"dry-run: would move {rel_from} -> {rel_to} and commit "
+                f"'chore(queue): triage {args.pbi_id} "
+                f"({SOURCE_FOLDER} -> {args.destination})'.",
                 file=sys.stderr,
             )
             result = TriageResult(
                 pbi_id=args.pbi_id,
                 destination=args.destination,
-                previous_state_folder="blocked",
-                old_path=old_path.relative_to(repo).as_posix(),
-                new_path=new_path.relative_to(repo).as_posix(),
+                previous_state_folder=SOURCE_FOLDER,
+                old_path=rel_from,
+                new_path=rel_to,
                 attempts_reset_to_zero=(args.destination == "inbox"),
-                archive_created=(args.destination == "archive" and not archive_existed_before),
-                repo_path=str(repo),
-                branch=args.branch,
+                archive_created=(args.destination == "archive"),
+                queue_clone=str(clone),
                 commit_sha="",
                 pushed=False,
                 dry_run=True,
+                already_triaged=False,
             )
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
-        # Gate each side-effect on its own observable state. ``is_retry``
-        # already short-circuits the post-move case (PBI on disk at
-        # ``new_path`` while HEAD still has it in ``blocked/``). Inside
-        # the not-yet-moved branch we still need per-step idempotency:
-        # frontmatter write only when the destination status isn't yet
-        # there, and HISTORY append always EXCEPT when this is the
-        # partial-failure-retry-pre-move shape AND HISTORY already
-        # carries the entry. Outside that retry window we always append,
-        # even if HISTORY happens to contain identical ``--note`` text
-        # from an older blocked→inbox→blocked cycle.
-        if not is_retry:
-            entry_file = _resolve_entry_file(old_path)
-            frontmatter, body = read_frontmatter(entry_file)
-            current_status = frontmatter.get("status")
-            if current_status != args.destination:
-                frontmatter["status"] = args.destination
-                frontmatter["updated_at"] = _now_iso()
-                if args.destination == "inbox":
-                    frontmatter["attempts"] = 0
-                write_frontmatter(entry_file, frontmatter, body)
+        clone = acquire_queue_clone(workspace_root, queue_repo)
 
-            history_file = old_path / "HISTORY.md"
-            # Per-invocation dedup that survives repeated-cycle history.
-            # Compare working tree HISTORY against HEAD's HISTORY: if the
-            # working tree already has MORE occurrences of ``args.note``
-            # than HEAD, the previous (failed) attempt already appended
-            # it — skip to avoid a duplicate. Otherwise always append.
-            # Handles both partial-failure shapes AND fresh repeat-cycles
-            # (blocked→inbox→blocked→inbox) where the same note text
-            # appears in an older committed entry.
-            rel_history = str(history_file.relative_to(repo)).replace("\\", "/")
-            head_history = read_path_from_head(repo, rel_history) or ""
-            working_history = (
-                history_file.read_text(encoding="utf-8") if history_file.is_file() else ""
-            )
-            # ``append_history`` runs ``args.note`` through
-            # ``flatten_history_field`` before writing — comparing the
-            # raw newline-bearing note against the stored flattened text
-            # would always count 0 and bypass the dedup, causing a
-            # duplicate entry on partial-failure retry with a
-            # multi-line ``--note``.
-            flat_note = flatten_history_field(args.note)
-            skip_append = working_history.count(flat_note) > head_history.count(flat_note)
-            if not skip_append:
-                append_history(
-                    old_path,
-                    actor="ralph-triage",
-                    action=action_name,
-                    detail=args.note,
+        from_dir = clone / ".ralph" / SOURCE_FOLDER / args.pbi_id
+        to_dir = clone / ".ralph" / args.destination / args.pbi_id
+
+        # Idempotency check reads the COMMITTED HEAD tree, not disk. If
+        # any of the standard entry files is already at the destination
+        # in HEAD, the move already landed — re-running must not stack
+        # a duplicate commit.
+        for entry_name in ENTRY_FILE_BY_TYPE.values():
+            rel_to_entry = f"{rel_to}/{entry_name}"
+            if is_path_in_head(clone, rel_to_entry):
+                print(
+                    f"PBI {args.pbi_id} already at .ralph/{args.destination}/; nothing to do.",
+                    file=sys.stderr,
                 )
+                result = TriageResult(
+                    pbi_id=args.pbi_id,
+                    destination=args.destination,
+                    previous_state_folder=SOURCE_FOLDER,
+                    old_path=rel_from,
+                    new_path=rel_to,
+                    attempts_reset_to_zero=False,
+                    archive_created=False,
+                    queue_clone=str(clone),
+                    commit_sha="",
+                    pushed=False,
+                    dry_run=False,
+                    already_triaged=True,
+                )
+                print(json.dumps(asdict(result), indent=2, sort_keys=True))
+                return 0
 
-            _move_directory(old_path, new_path)
+        if not from_dir.is_dir():
+            # Not in blocked/ — give the operator a precise reason: PBI
+            # is in another state folder vs. PBI does not exist at all.
+            base = clone / ".ralph"
+            for folder in ("current", "inbox", "pending-pr", "done", "archive"):
+                if (base / folder / args.pbi_id).is_dir():
+                    raise QueueWriterError(
+                        f"PBI {args.pbi_id!r} is in .ralph/{folder}/, not in "
+                        f".ralph/{SOURCE_FOLDER}/. ralph-triage only operates on the "
+                        f"blocked queue."
+                    )
+            raise QueueWriterError(f"PBI {args.pbi_id!r} not found under .ralph/{SOURCE_FOLDER}/")
 
-        commit_message = f"chore(queue): triage {args.pbi_id} (blocked -> {args.destination})"
+        if to_dir.exists():
+            raise QueueWriterError(
+                f".ralph/{args.destination}/{args.pbi_id}/ already exists in the "
+                f"queue clone working tree; refusing to overwrite"
+            )
+
+        # Whether THIS commit produces the ``.ralph/archive/`` directory.
+        # Use HEAD (not disk) so the partial-failure retry case — a prior
+        # incomplete run created the dir on disk but never committed it —
+        # still reports correctly when the retry lands.
+        archive_existed_before = is_path_in_head(clone, ".ralph/archive")
+
+        # Resolve entry file BEFORE the move so we know which one to
+        # rewrite post-rename.
+        entry_before = _resolve_entry_file(from_dir)
+        entry_name = entry_before.name
+
+        to_dir.parent.mkdir(parents=True, exist_ok=True)
+        _git(clone, "mv", rel_from, rel_to)
+
+        entry_after = to_dir / entry_name
+        frontmatter, body = read_frontmatter(entry_after)
+        frontmatter["status"] = args.destination
+        frontmatter["updated_at"] = _now_iso()
+        if args.destination == "inbox":
+            frontmatter["attempts"] = 0
+        write_frontmatter(entry_after, frontmatter, body)
+
+        append_history(
+            to_dir,
+            actor="ralph-triage",
+            action=action_name,
+            detail=args.note,
+        )
+
+        history_file = to_dir / "HISTORY.md"
         commit_sha = commit_paths(
-            repo,
-            [old_path, new_path],
-            commit_message,
+            clone,
+            [entry_after, history_file],
+            f"chore(queue): triage {args.pbi_id} ({SOURCE_FOLDER} -> {args.destination})",
         )
 
         pushed = False
         if not args.no_push:
-            print(f"pushing {args.branch}...", file=sys.stderr)
-            push(repo, args.branch)
+            print("pushing main to origin...", file=sys.stderr)
+            push(clone, "main")
             pushed = True
 
         archive_created = args.destination == "archive" and not archive_existed_before
         result = TriageResult(
             pbi_id=args.pbi_id,
             destination=args.destination,
-            previous_state_folder="blocked",
-            old_path=old_path.relative_to(repo).as_posix(),
-            new_path=new_path.relative_to(repo).as_posix(),
+            previous_state_folder=SOURCE_FOLDER,
+            old_path=rel_from,
+            new_path=rel_to,
             attempts_reset_to_zero=(args.destination == "inbox"),
             archive_created=archive_created,
-            repo_path=str(repo),
-            branch=args.branch,
+            queue_clone=str(clone),
             commit_sha=commit_sha,
             pushed=pushed,
             dry_run=False,
+            already_triaged=False,
         )
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0

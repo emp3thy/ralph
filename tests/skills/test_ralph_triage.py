@@ -1,15 +1,16 @@
 """Tests for the ``ralph-triage`` skill's entry script.
 
-``ralph-triage`` walks the ``.ralph/blocked/`` queue. For each PBI the
-human decides whether to:
+``ralph-triage`` walks ``.ralph/blocked/`` in the queue clone. For each
+PBI the human decides whether to:
 
 - return it to ``.ralph/inbox/`` (with ``attempts`` reset to 0 and a
   triage note appended to HISTORY.md), or
 - close it out by moving it to ``.ralph/archive/`` (the archive folder
   is created on demand) with a final HISTORY.md entry.
 
-Tests cover both destinations, the validation of ``--to``, and the
-resilience to missing inputs.
+Tests build a bare git repo as the queue remote, seed PBIs onto its
+``main`` branch, and verify each behaviour without any network or real
+Git host.
 """
 
 from __future__ import annotations
@@ -53,41 +54,49 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "ralph-triage@example.com")
+    _git(repo, "config", "user.name", "ralph-triage")
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Iterator[Path]:
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-    subprocess.run(["git", "init", str(work)], check=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    yield work
+def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
+    """Build a bare queue remote + an empty workspace dir.
+
+    The bare remote is seeded with an empty ``main`` so
+    ``ensure_queue_clone`` can clone it cleanly. Returns
+    ``(workspace_root, queue_repo_url)`` for the test to pass into
+    ``ralph-triage`` via ``--workspace`` / ``--queue-repo``.
+    """
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    _configure_identity(seed)
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+    yield workspace, str(bare)
 
 
 def _seed_blocked_pbi(
-    repo: Path,
+    bare_url: str,
+    tmp_path: Path,
     pbi_id: str,
+    *,
+    entry_file: str = "PBI.md",
     pbi_type: str = "feature",
     attempts: int = 3,
     with_stuck: bool = True,
-) -> Path:
-    _git(repo, "checkout", "ralph-queue")
-    pbi_dir = repo / ".ralph" / "blocked" / pbi_id
+) -> None:
+    """Clone the bare remote, add a blocked PBI, push back."""
+    work = tmp_path / f"seed-{pbi_id}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / "blocked" / pbi_id
     pbi_dir.mkdir(parents=True)
-    entry_name = {
-        "feature": "PBI.md",
-        "bug": "BUG.md",
-        "pr-feedback": "FEEDBACK.md",
-    }[pbi_type]
-    (pbi_dir / entry_name).write_text(
+    (pbi_dir / entry_file).write_text(
         "---\n"
         f"id: {pbi_id}\n"
         f"type: {pbi_type}\n"
@@ -115,173 +124,28 @@ def _seed_blocked_pbi(
             "what would unblock me: a working repro of the failure.\n",
             encoding="utf-8",
         )
-    _git(repo, "add", f".ralph/blocked/{pbi_id}")
-    _git(repo, "commit", "-m", f"chore(test): seed blocked {pbi_id}")
-    _git(repo, "push", "origin", "ralph-queue")
-    _git(repo, "checkout", "main")
-    return pbi_dir
+    _git(work, "add", f".ralph/blocked/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(test): seed blocked {pbi_id}")
+    _git(work, "push", "origin", "main")
 
 
-def _read_frontmatter(entry_file: Path) -> dict[str, object]:
-    text = entry_file.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    assert lines[0] == "---"
-    end = next(i for i, line in enumerate(lines[1:], start=1) if line == "---")
-    result = yaml.safe_load("\n".join(lines[1:end]))
-    assert isinstance(result, dict)
-    return result
-
-
-def test_triage_to_inbox_resets_attempts_and_moves(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
+def _seed_pbi_at_state(
+    bare_url: str,
+    tmp_path: Path,
+    state_folder: str,
+    pbi_id: str,
 ) -> None:
-    _seed_blocked_pbi(git_repo, "WI-700", attempts=3)
-
-    exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-700",
-            "--to",
-            "inbox",
-            "--note",
-            "tried a fresh REPRODUCE.md from QA; reset and retry",
-            "--repo",
-            str(git_repo),
-        ]
-    )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["pbi_id"] == "WI-700"
-    assert payload["destination"] == "inbox"
-    assert payload["previous_state_folder"] == "blocked"
-    assert payload["pushed"] is True
-    assert payload["commit_sha"]
-
-    _git(git_repo, "checkout", "ralph-queue")
-    old_path = git_repo / ".ralph" / "blocked" / "WI-700"
-    new_path = git_repo / ".ralph" / "inbox" / "WI-700"
-    assert not old_path.exists(), "blocked/ directory should be gone"
-    assert new_path.is_dir()
-
-    fm = _read_frontmatter(new_path / "PBI.md")
-    assert fm["attempts"] == 0
-    assert fm["status"] == "inbox"
-    assert fm["updated_at"] != "2026-05-22T09:30:00+00:00"
-
-    history = (new_path / "HISTORY.md").read_text(encoding="utf-8")
-    assert "ralph-triage" in history
-    assert "return-to-inbox" in history
-    assert "tried a fresh REPRODUCE.md from QA" in history
-
-    latest = _git(git_repo, "log", "-1", "--pretty=%s").strip()
-    assert latest == "chore(queue): triage WI-700 (blocked -> inbox)"
-
-
-def test_triage_to_archive_creates_archive_folder(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _seed_blocked_pbi(git_repo, "WI-800", attempts=4)
-
-    _git(git_repo, "checkout", "ralph-queue")
-    assert not (git_repo / ".ralph" / "archive").exists()
-    _git(git_repo, "checkout", "main")
-
-    exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-800",
-            "--to",
-            "archive",
-            "--note",
-            "ambiguous scope; closing out, BA will re-submit if needed",
-            "--repo",
-            str(git_repo),
-        ]
-    )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["destination"] == "archive"
-    assert payload["archive_created"] is True
-
-    _git(git_repo, "checkout", "ralph-queue")
-    assert (git_repo / ".ralph" / "archive").is_dir()
-    old_path = git_repo / ".ralph" / "blocked" / "WI-800"
-    new_path = git_repo / ".ralph" / "archive" / "WI-800"
-    assert not old_path.exists()
-    assert new_path.is_dir()
-
-    fm = _read_frontmatter(new_path / "PBI.md")
-    assert fm["status"] == "archive"
-    assert fm["attempts"] == 4
-
-    history = (new_path / "HISTORY.md").read_text(encoding="utf-8")
-    assert "ralph-triage" in history
-    assert "archive" in history
-    assert "ambiguous scope" in history
-
-
-def test_triage_rejects_unknown_destination(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _seed_blocked_pbi(git_repo, "WI-900")
-
-    with pytest.raises(SystemExit) as exc:
-        triage_module.main(
-            [
-                "--pbi-id",
-                "WI-900",
-                "--to",
-                "trash",
-                "--note",
-                "no",
-                "--repo",
-                str(git_repo),
-            ]
-        )
-    assert exc.value.code == 2
-
-
-def test_triage_errors_on_missing_pbi(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-NOPE",
-            "--to",
-            "inbox",
-            "--note",
-            "missing",
-            "--repo",
-            str(git_repo),
-        ]
-    )
-    assert exit_code == 2
-    stderr = capsys.readouterr().err.lower()
-    assert "not found" in stderr or "no such" in stderr or "blocked" in stderr
-
-
-def test_triage_rejects_pbi_outside_blocked(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "inbox" / "WI-1000"
+    """Seed a PBI at an arbitrary state folder on the bare remote."""
+    work = tmp_path / f"seed-{pbi_id}-{state_folder}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / state_folder / pbi_id
     pbi_dir.mkdir(parents=True)
     (pbi_dir / "PBI.md").write_text(
         "---\n"
-        "id: WI-1000\n"
+        f"id: {pbi_id}\n"
         "type: feature\n"
-        "status: inbox\n"
+        f"status: {state_folder}\n"
         "severity: normal\n"
         "attempts: 0\n"
         'created_at: "2026-05-24T10:00:00+00:00"\n'
@@ -292,22 +156,249 @@ def test_triage_rejects_pbi_outside_blocked(
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _git(git_repo, "add", ".ralph/inbox/WI-1000")
-    _git(git_repo, "commit", "-m", "chore(test): seed inbox WI-1000")
-    _git(git_repo, "push", "origin", "ralph-queue")
-    _git(git_repo, "checkout", "main")
+    _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
+    _git(work, "push", "origin", "main")
+
+
+def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
+    verify = tmp_path / f"verify-{Path(bare_url).name}"
+    subprocess.run(
+        ["git", "clone", bare_url, str(verify)],
+        check=True,
+        capture_output=True,
+    )
+    return verify
+
+
+def _argv(
+    *,
+    pbi_id: str,
+    workspace: Path,
+    queue_repo: str,
+    destination: str,
+    note: str,
+    extra: list[str] | None = None,
+) -> list[str]:
+    argv = [
+        "--pbi-id",
+        pbi_id,
+        "--to",
+        destination,
+        "--note",
+        note,
+        "--workspace",
+        str(workspace),
+        "--queue-repo",
+        queue_repo,
+    ]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+def _read_frontmatter(entry: Path) -> dict[str, object]:
+    text = entry.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    assert lines[0] == "---"
+    end = next(i for i, line in enumerate(lines[1:], start=1) if line == "---")
+    result = yaml.safe_load("\n".join(lines[1:end]))
+    assert isinstance(result, dict)
+    return result
+
+
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
+
+
+def test_triage_to_inbox_resets_attempts_and_moves(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-700", attempts=3)
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1000",
-            "--to",
-            "inbox",
-            "--note",
-            "won't work",
-            "--repo",
-            str(git_repo),
-        ]
+        _argv(
+            pbi_id="WI-700",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="tried a fresh REPRODUCE.md from QA; reset and retry",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pbi_id"] == "WI-700"
+    assert payload["destination"] == "inbox"
+    assert payload["previous_state_folder"] == "blocked"
+    assert payload["attempts_reset_to_zero"] is True
+    assert payload["pushed"] is True
+    assert payload["commit_sha"]
+    assert payload["already_triaged"] is False
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    assert not (verify / ".ralph" / "blocked" / "WI-700").exists()
+    moved = verify / ".ralph" / "inbox" / "WI-700" / "PBI.md"
+    assert moved.is_file()
+    fm = _read_frontmatter(moved)
+    assert fm["attempts"] == 0
+    assert fm["status"] == "inbox"
+    assert fm["updated_at"] != "2026-05-22T09:30:00+00:00"
+
+    history = (verify / ".ralph" / "inbox" / "WI-700" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "ralph-triage" in history
+    assert "return-to-inbox" in history
+    assert "tried a fresh REPRODUCE.md from QA" in history
+
+    subject = _git(verify, "log", "-1", "--pretty=%s").strip()
+    assert subject == "chore(queue): triage WI-700 (blocked -> inbox)"
+
+
+def test_triage_to_archive_creates_archive_folder(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-800", attempts=4)
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-800",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="archive",
+            note="ambiguous scope; closing out, BA will re-submit if needed",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["destination"] == "archive"
+    assert payload["archive_created"] is True
+    assert payload["attempts_reset_to_zero"] is False
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    assert (verify / ".ralph" / "archive").is_dir()
+    assert not (verify / ".ralph" / "blocked" / "WI-800").exists()
+    moved = verify / ".ralph" / "archive" / "WI-800" / "PBI.md"
+    assert moved.is_file()
+    fm = _read_frontmatter(moved)
+    assert fm["status"] == "archive"
+    assert fm["attempts"] == 4
+
+    history = (verify / ".ralph" / "archive" / "WI-800" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "ralph-triage" in history
+    assert "archive" in history
+    assert "ambiguous scope" in history
+
+
+def test_triage_bug_pbi_uses_bug_md(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(
+        queue_repo,
+        tmp_path,
+        "BUG-1",
+        entry_file="BUG.md",
+        pbi_type="bug",
+    )
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="BUG-1",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="repro now available",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    moved = verify / ".ralph" / "inbox" / "BUG-1" / "BUG.md"
+    assert moved.is_file()
+    fm = _read_frontmatter(moved)
+    assert fm["status"] == "inbox"
+    assert fm["attempts"] == 0
+    assert fm["type"] == "bug"
+
+
+def test_triage_rejects_unknown_destination(
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+) -> None:
+    workspace, queue_repo = queue_env
+
+    with pytest.raises(SystemExit) as exc:
+        triage_module.main(
+            _argv(
+                pbi_id="WI-900",
+                workspace=workspace,
+                queue_repo=queue_repo,
+                destination="trash",
+                note="no",
+            )
+        )
+    assert exc.value.code == 2
+
+
+def test_triage_errors_on_missing_pbi(
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-NOPE",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="missing",
+        )
+    )
+    assert exit_code == 2
+    stderr = capsys.readouterr().err.lower()
+    assert "not found" in stderr or "blocked" in stderr
+
+
+def test_triage_rejects_pbi_outside_blocked(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace, queue_repo = queue_env
+    _seed_pbi_at_state(queue_repo, tmp_path, "inbox", "WI-1000")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-1000",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="archive",
+            note="won't work",
+        )
     )
     assert exit_code == 2
     stderr = capsys.readouterr().err.lower()
@@ -315,11 +406,10 @@ def test_triage_rejects_pbi_outside_blocked(
 
 
 def test_triage_requires_note(
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_blocked_pbi(git_repo, "WI-1100")
+    workspace, queue_repo = queue_env
 
     with pytest.raises(SystemExit) as exc:
         triage_module.main(
@@ -328,320 +418,218 @@ def test_triage_requires_note(
                 "WI-1100",
                 "--to",
                 "inbox",
-                "--repo",
-                str(git_repo),
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
             ]
         )
     assert exc.value.code == 2
 
 
-def test_triage_dry_run_leaves_files_in_place(
-    git_repo: Path,
+def test_triage_dry_run_writes_nothing(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_blocked_pbi(git_repo, "WI-1200")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-1200")
+    before = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1200",
-            "--to",
-            "inbox",
-            "--note",
-            "would-be note",
-            "--repo",
-            str(git_repo),
-            "--dry-run",
-        ]
+        _argv(
+            pbi_id="WI-1200",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="would-be note",
+            extra=["--dry-run"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["pushed"] is False
     assert payload["commit_sha"] == ""
 
-    _git(git_repo, "checkout", "ralph-queue")
-    assert (git_repo / ".ralph" / "blocked" / "WI-1200").is_dir()
-    assert not (git_repo / ".ralph" / "inbox" / "WI-1200").exists()
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    # Dry-run must NOT clone the queue or push.
+    assert not (workspace / "queue").exists()
+    after = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     assert before == after
 
 
 def test_triage_no_push_keeps_remote_unchanged(
-    git_repo: Path,
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_blocked_pbi(git_repo, "WI-1300")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-1300")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    before = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
 
     exit_code = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1300",
-            "--to",
-            "archive",
-            "--note",
-            "closing out",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _argv(
+            pbi_id="WI-1300",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="archive",
+            note="closing out",
+            extra=["--no-push"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
     assert before == after
 
 
-def test_triage_runs_full_path_when_moved_on_disk_but_not_committed(
-    git_repo: Path,
+def test_triage_idempotent_when_already_at_destination(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Regression: BugBot PR #35 flagged that triage had no idempotency
-    for the move + commit pair. If ``_move_directory`` succeeded but
-    ``commit_paths`` failed, retry could not find the PBI in
-    ``blocked/`` (moved to ``inbox/``) and raised "PBI is in
-    .ralph/inbox/, not in .ralph/blocked/". Fix detects the
-    HEAD-still-blocked + working-tree-already-moved state and short-
-    circuits to ``commit_paths`` only. Also asserts HISTORY.md gains
-    no duplicate entry."""
-    _seed_blocked_pbi(git_repo, "WI-1400")
+    """If HEAD already shows the PBI at the destination state, the
+    operation is a no-op — already_triaged=True, no new commit."""
+    workspace, queue_repo = queue_env
+    _seed_pbi_at_state(queue_repo, tmp_path, "inbox", "WI-1400")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
-    # Simulate previously-failed triage: working tree already shows the
-    # PBI in inbox/ with updated frontmatter + a single HISTORY entry,
-    # but HEAD still has it in blocked/.
-    _git(git_repo, "checkout", "ralph-queue")
-    src = git_repo / ".ralph" / "blocked" / "WI-1400"
-    dst = git_repo / ".ralph" / "inbox" / "WI-1400"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    import shutil
-
-    shutil.move(str(src), str(dst))
-    pbi_md = dst / "PBI.md"
-    text = pbi_md.read_text(encoding="utf-8")
-    text = text.replace("status: blocked", "status: inbox")
-    text = text.replace("attempts: 3", "attempts: 0")
-    pbi_md.write_text(text, encoding="utf-8")
-    history_path = dst / "HISTORY.md"
-    history_path.write_text(
-        history_path.read_text(encoding="utf-8")
-        + "## 2026-05-27T10:00:00+00:00 ralph-triage: return-to-inbox\n"
-        "reseed for retry\n",
-        encoding="utf-8",
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-1400",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="already there",
+        )
     )
-    head_before = _git(git_repo, "rev-parse", "ralph-queue")
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["already_triaged"] is True
+    assert payload["commit_sha"] == ""
+    assert payload["pushed"] is False
+
+
+def test_triage_refuses_when_destination_dir_exists(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Destination dir already in the working tree (but not HEAD) is a
+    half-done move from a prior aborted run. Refuse so a human inspects
+    rather than silently overwriting."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-1500")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    stale = workspace / "queue" / ".ralph" / "inbox" / "WI-1500"
+    stale.mkdir(parents=True)
+    (stale / "PBI.md").write_text("stale", encoding="utf-8")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-1500",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="should refuse",
+            extra=["--no-push"],
+        )
+    )
+    assert exit_code == 2
+    stderr = capsys.readouterr().err.lower()
+    assert "already exists" in stderr or "exists" in stderr
+
+
+def test_triage_errors_when_queue_repo_unset(
+    tmp_path: Path,
+    triage_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without --queue-repo and without TOML queue_repo, exit 2 with a clear error."""
+    workspace = tmp_path / "ws"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
 
     exit_code = triage_module.main(
         [
             "--pbi-id",
-            "WI-1400",
+            "WI-1",
             "--to",
             "inbox",
             "--note",
-            "reseed for retry",
-            "--repo",
-            str(git_repo),
-            "--no-push",
+            "x",
+            "--workspace",
+            str(workspace),
         ]
     )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["commit_sha"] != "", (
-        "must re-run commit_paths when the move already landed on disk "
-        "but HEAD still shows the PBI under blocked/"
-    )
-    head_after = _git(git_repo, "rev-parse", "ralph-queue")
-    assert head_after != head_before, "a new commit must land on ralph-queue"
-    history = (git_repo / ".ralph" / "inbox" / "WI-1400" / "HISTORY.md").read_text(encoding="utf-8")
-    assert history.count("return-to-inbox") == 1, (
-        f"HISTORY must not gain a duplicate entry on retry; got:\n{history}"
-    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "queue_repo" in err.lower()
 
 
-def test_triage_records_audit_when_note_text_was_used_in_earlier_cycle(
-    git_repo: Path,
+def test_triage_queue_repo_resolved_from_toml(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Regression: BugBot PR #35 round-5 flagged that scoping the HISTORY
-    dedup to the entire file suppresses legitimate audit entries when the
-    operator reuses note text in a later blocked→inbox cycle. The dedup
-    must only fire during the partial-failure retry window."""
-    note = "reset and retry the build"
-    _seed_blocked_pbi(git_repo, "WI-1500")
+    """When --queue-repo is omitted, the TOML value is used."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-1600")
 
-    # Cycle 1: blocked → inbox with the note.
-    rc = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1500",
-            "--to",
-            "inbox",
-            "--note",
-            note,
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
-    )
-    assert rc == 0
-    capsys.readouterr()
-
-    # Re-block the PBI on ralph-queue (simulate a later failure that
-    # moved it back to blocked/) so we can triage it again with the same
-    # note.
-    _git(git_repo, "checkout", "ralph-queue")
-    import shutil
-
-    src = git_repo / ".ralph" / "inbox" / "WI-1500"
-    dst = git_repo / ".ralph" / "blocked" / "WI-1500"
-    shutil.move(str(src), str(dst))
-    # Update frontmatter back to blocked status.
-    entry = dst / "PBI.md"
-    text = entry.read_text(encoding="utf-8")
-    text = text.replace("status: inbox", "status: blocked")
-    text = text.replace("attempts: 0", "attempts: 3")
-    entry.write_text(text, encoding="utf-8")
-    _git(git_repo, "add", ".ralph")
-    _git(git_repo, "commit", "-m", "chore(test): re-block WI-1500")
-    _git(git_repo, "push", "origin", "ralph-queue")
-    _git(git_repo, "checkout", "main")
-
-    # Cycle 2: blocked → inbox with the SAME note. Must produce a fresh
-    # HISTORY entry even though the note text matches the cycle-1 entry.
-    rc = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1500",
-            "--to",
-            "inbox",
-            "--note",
-            note,
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
-    )
-    assert rc == 0
-
-    history = (git_repo / ".ralph" / "inbox" / "WI-1500" / "HISTORY.md").read_text(encoding="utf-8")
-    assert history.count(note) == 2, (
-        f"cycle 2 must record a fresh audit entry even though the note "
-        f"text was reused from cycle 1; got:\n{history}"
-    )
-
-
-def test_triage_archive_created_true_on_partial_failure_retry(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-7 (LOW). Previous round used
-    ``(repo / '.ralph/archive').is_dir()`` for ``archive_existed_before``.
-    In the partial-failure retry case the previous incomplete run
-    already created ``.ralph/archive/`` on disk via ``_move_directory``
-    but never committed it. The retry then reported
-    ``archive_created=False`` even though THIS commit is the first time
-    the archive dir lands on HEAD. Fix uses ``is_path_in_head`` instead."""
-    _seed_blocked_pbi(git_repo, "WI-1600")
-
-    # Simulate the partial-failure retry shape: working tree already has
-    # the PBI in .ralph/archive/<id>/ (move happened) and the new
-    # archive directory exists on disk; HEAD still has it in blocked/.
-    _git(git_repo, "checkout", "ralph-queue")
-    import shutil
-
-    src = git_repo / ".ralph" / "blocked" / "WI-1600"
-    dst = git_repo / ".ralph" / "archive" / "WI-1600"
-    shutil.move(str(src), str(dst))
-    entry = dst / "PBI.md"
-    text = entry.read_text(encoding="utf-8")
-    text = text.replace("status: blocked", "status: archive")
-    entry.write_text(text, encoding="utf-8")
-    history_path = dst / "HISTORY.md"
-    history_path.write_text(
-        history_path.read_text(encoding="utf-8")
-        + "## ralph-triage: archive\n"
-        + "ambiguous scope, archiving\n",
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    (fake_home / ".ralph").mkdir()
+    # file:// URL with forward slashes survives TOML basic-string escaping on Windows.
+    queue_url = "file:///" + Path(queue_repo).as_posix().lstrip("/")
+    (fake_home / ".ralph" / "config.toml").write_text(
+        f'queue_repo = "{queue_url}"\n',
         encoding="utf-8",
     )
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
 
     exit_code = triage_module.main(
         [
             "--pbi-id",
             "WI-1600",
             "--to",
-            "archive",
-            "--note",
-            "ambiguous scope, archiving",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
-    )
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["archive_created"] is True, (
-        "archive_created must be True when THIS commit first lands "
-        ".ralph/archive/ in HEAD, even if the dir already exists on "
-        "disk from a prior incomplete attempt"
-    )
-
-
-def test_triage_dedup_handles_multi_line_note(
-    git_repo: Path,
-    triage_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Regression: BugBot PR #35 round-7. ``append_history`` flattens
-    embedded newlines via ``flatten_history_field``, but the dedup
-    check compared the raw ``args.note`` against the flattened stored
-    text — counts always 0, dedup never fires, partial-failure retry
-    duplicated the entry. Fix flattens both sides."""
-    note = "first line\nsecond line"
-    flat = "first line second line"
-    _seed_blocked_pbi(git_repo, "WI-1700")
-
-    # Simulate partial-failure retry pre-move: working tree shows the
-    # PBI moved + frontmatter updated + HISTORY already carrying the
-    # FLATTENED entry from the prior attempt, HEAD still in blocked.
-    _git(git_repo, "checkout", "ralph-queue")
-    import shutil
-
-    src = git_repo / ".ralph" / "blocked" / "WI-1700"
-    dst = git_repo / ".ralph" / "inbox" / "WI-1700"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dst))
-    pbi_md = dst / "PBI.md"
-    text = pbi_md.read_text(encoding="utf-8")
-    text = text.replace("status: blocked", "status: inbox")
-    text = text.replace("attempts: 3", "attempts: 0")
-    pbi_md.write_text(text, encoding="utf-8")
-    history_path = dst / "HISTORY.md"
-    history_path.write_text(
-        history_path.read_text(encoding="utf-8") + f"## ralph-triage: return-to-inbox\n{flat}\n",
-        encoding="utf-8",
-    )
-
-    rc = triage_module.main(
-        [
-            "--pbi-id",
-            "WI-1700",
-            "--to",
             "inbox",
             "--note",
-            note,
-            "--repo",
-            str(git_repo),
+            "from TOML",
+            "--workspace",
+            str(workspace),
             "--no-push",
         ]
     )
-    assert rc == 0
-    history = (git_repo / ".ralph" / "inbox" / "WI-1700" / "HISTORY.md").read_text(encoding="utf-8")
-    assert history.count(flat) == 1, f"dedup must compare flattened forms; got:\n{history}"
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pbi_id"] == "WI-1600"
+    assert payload["commit_sha"] != ""
