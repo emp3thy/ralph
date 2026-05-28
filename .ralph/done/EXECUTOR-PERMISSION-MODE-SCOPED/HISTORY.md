@@ -16,3 +16,4 @@
 - Branch: ralph/EXECUTOR-PERMISSION-MODE-SCOPED
 - Title: EXECUTOR-PERMISSION-MODE-SCOPED: scope claude permission-mode to executor subprocess
 - 2026-05-27T23:06:05.022043+00:00 sweep: PR stale: no activity for >= 3 days, 0:00:00 (last activity 0001-01-01T00:00:00+00:00)
+- 2026-05-28T01:07:31.570223+00:00 sweep: PR merged (completed)
