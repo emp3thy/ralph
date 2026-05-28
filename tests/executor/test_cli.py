@@ -721,3 +721,88 @@ def test_public_reexports_are_stable() -> None:
     assert callable(run_loop)
     assert callable(main)
     assert callable(prepare_host_environment)
+
+
+def test_init_prompts_for_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ralph-executor init` prompts for queue_branch (default ralph-queue)
+    after queue_repo. Blank input → default persisted to ``~/.ralph/config.toml``.
+    """
+    import builtins
+
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    # Stub the network smoke-check so the test doesn't hit the wire.
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: True,
+    )
+
+    # The interactive flow calls input() three times in order:
+    #   1. ralph_home prompt (blank → OS default)
+    #   2. queue_repo prompt (valid URL accepted)
+    #   3. queue_branch prompt (blank → default "ralph-queue")
+    answers = iter(
+        [
+            "",
+            "https://github.com/test/queue",
+            "",
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    rc = cli.main(["init"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "ralph-queue"
+
+
+def test_init_persists_non_default_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-blank answer at the queue_branch prompt is persisted verbatim."""
+    import builtins
+
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: True,
+    )
+
+    answers = iter(
+        [
+            "",
+            "https://github.com/test/queue",
+            "custom-queue-branch",
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    rc = cli.main(["init"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "custom-queue-branch"
+
+
+def test_init_assume_yes_writes_default_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--yes` skips the prompt and writes the default ``ralph-queue``."""
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    target = tmp_path / "dev" / "ralph"
+
+    rc = cli.main(["init", "--ralph-home", str(target), "--yes"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "ralph-queue"

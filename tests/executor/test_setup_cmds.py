@@ -18,6 +18,7 @@ from ralph_executor.user_config import (
     read_queue_repo,
     read_ralph_home,
     user_config_path,
+    write_queue_branch,
     write_queue_repo,
 )
 
@@ -205,7 +206,12 @@ def test_init_prompts_for_queue_repo_and_writes_user_config(
     to ``~/.ralph/config.toml`` alongside ralph_home."""
     import builtins
 
-    answers = iter(["https://github.com/example/ralph-queue"])
+    answers = iter(
+        [
+            "https://github.com/example/ralph-queue",
+            "",  # queue_branch — accept default
+        ]
+    )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
 
     exit_code = cmd_init(ralph_home=fake_home / "ralph", assume_yes=False)
@@ -228,6 +234,7 @@ def test_init_reprompts_on_invalid_queue_repo(
             "",  # empty → reprompt
             "ftp://nope.example.com/q",  # bad scheme → reprompt
             "https://github.com/example/queue",  # accepted
+            "",  # queue_branch — accept default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -247,7 +254,12 @@ def test_init_smoke_clone_failure_warns_but_writes(
     valid for clone but reject ls-remote."""
     import builtins
 
-    answers = iter(["https://github.com/example/queue"])
+    answers = iter(
+        [
+            "https://github.com/example/queue",
+            "",  # queue_branch — accept default
+        ]
+    )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
     monkeypatch.setattr(
         "ralph_executor.setup_cmds._smoke_clone_queue_repo",
@@ -282,6 +294,9 @@ def test_init_skips_queue_repo_prompt_if_already_set(
     """A second `init` with queue_repo already in user_config must NOT
     reprompt — the function is idempotent for that knob."""
     write_queue_repo("https://github.com/already/set")
+    # queue_branch (Task 10) has the same idempotence contract; seed it
+    # too so the "must not prompt" guard covers both knobs.
+    write_queue_branch("custom-branch")
 
     import builtins
 
