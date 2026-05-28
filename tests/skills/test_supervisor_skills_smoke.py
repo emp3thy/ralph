@@ -1,10 +1,12 @@
 """End-to-end-ish smoke test threading three supervisor skills together.
 
-The test seeds a PBI in ``.ralph/blocked/``, invokes ``ralph-promote``
-to escalate its severity (which leaves it in blocked/), then invokes
-``ralph-triage --to inbox`` to return it for retry. The resulting
-``ralph-queue`` state is asserted in one place to confirm the skills
-agree on the on-disk schema produced by the shared queue-writer.
+Builds a bare git repo as the queue remote (single ``main`` branch, no
+``ralph-queue`` branch), seeds a PBI directly onto ``main`` via a
+helper clone, then drives ``ralph-triage`` / ``ralph-promote`` /
+``ralph-cancel`` against the new queue-clone model. The point of the
+test is to confirm the three skills agree on the on-disk schema
+produced by ``scripts.queue_writer`` — a single PBI flowing through
+multiple skills must arrive at a consistent end state.
 """
 
 from __future__ import annotations
@@ -70,36 +72,63 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "supervisor-smoke@example.com")
+    _git(repo, "config", "user.name", "supervisor-smoke")
+
+
 @pytest.fixture
-def git_repo(tmp_path: Path) -> Iterator[Path]:
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-    subprocess.run(["git", "init", str(work)], check=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    yield work
+def queue_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, str]]:
+    """Bare queue remote with an empty seeded ``main`` + tmp workspace dir.
+
+    Also sets GIT_AUTHOR_* / GIT_COMMITTER_* env vars so commits made
+    inside the queue clone created by the skill (under ``<workspace>/queue``)
+    succeed on a CI runner that has no global git identity. The clone
+    is created by the script under test, not the fixture, so we cannot
+    ``git config`` it in advance — the env vars are the only seam that
+    covers both paths.
+    """
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "supervisor-smoke")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "supervisor-smoke@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "supervisor-smoke")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "supervisor-smoke@example.com")
+
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    _configure_identity(seed)
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+    yield workspace, str(bare)
 
 
-def _seed_blocked(repo: Path, pbi_id: str) -> Path:
-    _git(repo, "checkout", "ralph-queue")
-    pbi_dir = repo / ".ralph" / "blocked" / pbi_id
+def _seed_pbi(
+    bare_url: str,
+    tmp_path: Path,
+    state_folder: str,
+    pbi_id: str,
+    *,
+    attempts: int = 0,
+    entry_file: str = "PBI.md",
+    pbi_type: str = "feature",
+    severity: str = "normal",
+) -> None:
+    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push."""
+    work = tmp_path / f"seed-{pbi_id}-{state_folder}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / state_folder / pbi_id
     pbi_dir.mkdir(parents=True)
-    (pbi_dir / "PBI.md").write_text(
+    (pbi_dir / entry_file).write_text(
         "---\n"
         f"id: {pbi_id}\n"
-        "type: feature\n"
-        "status: blocked\n"
-        "severity: normal\n"
-        "attempts: 3\n"
+        f"type: {pbi_type}\n"
+        f"status: {state_folder}\n"
+        f"severity: {severity}\n"
+        f"attempts: {attempts}\n"
         'created_at: "2026-05-18T08:00:00+00:00"\n'
         'updated_at: "2026-05-22T09:30:00+00:00"\n'
         "---\n"
@@ -108,11 +137,19 @@ def _seed_blocked(repo: Path, pbi_id: str) -> Path:
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _git(repo, "add", f".ralph/blocked/{pbi_id}")
-    _git(repo, "commit", "-m", "chore(test): seed")
-    _git(repo, "push", "origin", "ralph-queue")
-    _git(repo, "checkout", "main")
-    return pbi_dir
+    _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
+    _git(work, "push", "origin", "main")
+
+
+def _verify_clone(tmp_path: Path, bare_url: str, suffix: str) -> Path:
+    verify = tmp_path / f"verify-{suffix}"
+    subprocess.run(
+        ["git", "clone", bare_url, str(verify)],
+        check=True,
+        capture_output=True,
+    )
+    return verify
 
 
 def _read_frontmatter(entry_file: Path) -> dict[str, object]:
@@ -125,28 +162,18 @@ def _read_frontmatter(entry_file: Path) -> dict[str, object]:
     return result
 
 
-def test_promote_then_triage_round_trip(
-    git_repo: Path,
-    promote_module: ModuleType,
+def test_triage_then_promote_round_trip(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
     triage_module: ModuleType,
+    promote_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _seed_blocked(git_repo, "WI-9000")
-
-    assert (
-        promote_module.main(
-            [
-                "--pbi-id",
-                "WI-9000",
-                "--severity",
-                "high",
-                "--repo",
-                str(git_repo),
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
+    """A blocked PBI triaged back to inbox then promoted to current ends
+    up in current/ with attempts=0 (from triage) and status=current
+    (from promote), and the HISTORY.md carries entries from both skills."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "blocked", "WI-9000", attempts=3)
 
     assert (
         triage_module.main(
@@ -156,91 +183,108 @@ def test_promote_then_triage_round_trip(
                 "--to",
                 "inbox",
                 "--note",
-                "reset after severity bump",
-                "--repo",
-                str(git_repo),
+                "reset after smoke test",
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
             ]
         )
         == 0
-    )
-    capsys.readouterr()
-
-    _git(git_repo, "checkout", "ralph-queue")
-    assert not (git_repo / ".ralph" / "blocked" / "WI-9000").exists()
-    new_pbi = git_repo / ".ralph" / "inbox" / "WI-9000"
-    assert new_pbi.is_dir()
-    fm = _read_frontmatter(new_pbi / "PBI.md")
-    assert fm["severity"] == "high"
-    assert fm["status"] == "inbox"
-    assert fm["attempts"] == 0
-
-    history = (new_pbi / "HISTORY.md").read_text(encoding="utf-8")
-    assert "ralph-promote" in history
-    assert "ralph-triage" in history
-    assert "normal -> high" in history
-    assert "reset after severity bump" in history
-
-
-def test_cancel_then_promote_is_independent(
-    git_repo: Path,
-    cancel_module: ModuleType,
-    promote_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "current" / "WI-9100"
-    pbi_dir.mkdir(parents=True)
-    (pbi_dir / "PBI.md").write_text(
-        "---\n"
-        "id: WI-9100\n"
-        "type: feature\n"
-        "status: current\n"
-        "severity: normal\n"
-        "attempts: 1\n"
-        'created_at: "2026-05-24T10:00:00+00:00"\n'
-        'updated_at: "2026-05-24T10:00:00+00:00"\n'
-        "---\n"
-        "\n"
-        "# body\n",
-        encoding="utf-8",
-    )
-    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _git(git_repo, "add", ".ralph/current/WI-9100")
-    _git(git_repo, "commit", "-m", "chore(test): seed current WI-9100")
-    _git(git_repo, "push", "origin", "ralph-queue")
-    _git(git_repo, "checkout", "main")
-
-    assert (
-        cancel_module.main(
-            [
-                "--pbi-id",
-                "WI-9100",
-                "--repo",
-                str(git_repo),
-            ]
-        )
-        == 0
-    )
+    ), capsys.readouterr().err
     capsys.readouterr()
 
     assert (
         promote_module.main(
             [
                 "--pbi-id",
-                "WI-9100",
-                "--severity",
-                "critical",
-                "--repo",
-                str(git_repo),
+                "WI-9000",
+                "--from",
+                "inbox",
+                "--to",
+                "current",
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
             ]
         )
         == 0
-    )
+    ), capsys.readouterr().err
     capsys.readouterr()
 
-    _git(git_repo, "checkout", "ralph-queue")
-    cancel_file = git_repo / ".ralph" / "current" / "WI-9100" / "CANCEL"
+    verify = _verify_clone(tmp_path, queue_repo, "round-trip")
+    assert not (verify / ".ralph" / "blocked" / "WI-9000").exists()
+    assert not (verify / ".ralph" / "inbox" / "WI-9000").exists()
+    new_pbi = verify / ".ralph" / "current" / "WI-9000"
+    assert new_pbi.is_dir()
+
+    fm = _read_frontmatter(new_pbi / "PBI.md")
+    assert fm["status"] == "current"
+    assert fm["attempts"] == 0
+
+    history = (new_pbi / "HISTORY.md").read_text(encoding="utf-8")
+    assert "ralph-triage" in history
+    assert "ralph-promote" in history
+    assert "reset after smoke test" in history
+    assert "inbox -> current" in history
+
+
+def test_cancel_and_promote_are_independent(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    cancel_module: ModuleType,
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Cancelling one PBI and promoting another in the same queue clone
+    both succeed and produce the expected on-disk state — the skills
+    do not stomp on each other."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-9100")
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-9101")
+
+    assert (
+        cancel_module.main(
+            [
+                "--pbi-id",
+                "WI-9100",
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
+            ]
+        )
+        == 0
+    ), capsys.readouterr().err
+    capsys.readouterr()
+
+    assert (
+        promote_module.main(
+            [
+                "--pbi-id",
+                "WI-9101",
+                "--from",
+                "inbox",
+                "--to",
+                "current",
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
+            ]
+        )
+        == 0
+    ), capsys.readouterr().err
+    capsys.readouterr()
+
+    verify = _verify_clone(tmp_path, queue_repo, "independent")
+    cancel_file = verify / ".ralph" / "current" / "WI-9100" / "CANCEL"
     assert cancel_file.is_file()
     assert cancel_file.read_bytes() == b""
-    fm = _read_frontmatter(git_repo / ".ralph" / "current" / "WI-9100" / "PBI.md")
-    assert fm["severity"] == "critical"
+
+    promoted = verify / ".ralph" / "current" / "WI-9101"
+    assert promoted.is_dir()
+    fm = _read_frontmatter(promoted / "PBI.md")
+    assert fm["status"] == "current"
+    assert not (verify / ".ralph" / "inbox" / "WI-9101").exists()

@@ -19,6 +19,10 @@ Design and plans:
 
 ## Install
 
+You have two options.
+
+### Workstation (recommended for development)
+
 ```bash
 git clone https://github.com/emp3thy/ralph.git
 cd ralph
@@ -32,30 +36,113 @@ through `uv run`:
 uv run ralph-executor --help
 ```
 
+### Container (recommended for unattended pod deployment)
+
+Pull the ROSA image (Phase 1 — GitHub variant):
+
+```bash
+docker pull <registry>/ralph-executor:<tag>
+```
+
+See `docs/superpowers/ops/2026-05-28-pod-deployment.md` for the full
+pod runbook.
+
 ## One-time setup
 
-Tell ralph where to keep its per-repo workspaces:
+Ralph reads its config from `~/.ralph/config.toml`. The `init`
+subcommand creates it interactively:
 
 ```bash
 uv run ralph-executor init
 ```
 
-You'll be prompted for `ralph_home` (a directory under which every
-ralph-managed repo checkout will live). The default is
-`C:\dev\ralph` on Windows / `~/dev/ralph` on POSIX. The choice is
-written to `~/.ralph/config.toml`:
+You will be prompted for three values:
 
-```toml
-ralph_home = "C:/dev/ralph"
-```
+| Key | What it is | Example |
+|---|---|---|
+| `ralph_home` | Root for legacy single-checkout state (kept for compatibility) | `~/dev/ralph` |
+| `workspace_root` | Where ralph clones the queue and target repos | `~/ralph-workspaces` |
+| `queue_repo` | HTTPS URL of the queue repo holding `.ralph/` state | `https://github.com/emp3thy/ralph-queue` |
 
-`init` also checks that `gh` and `claude` are on PATH and that `gh` is
-logged in. Missing tools are warnings, not blockers.
-
-For scripting, skip the prompt:
+For scripted setup:
 
 ```bash
-uv run ralph-executor init --ralph-home /opt/ralph --yes
+uv run ralph-executor init \
+  --ralph-home /opt/ralph \
+  --workspace-root /opt/ralph/workspaces \
+  --queue-repo https://github.com/emp3thy/ralph-queue \
+  --yes
+```
+
+`init` smoke-tests the queue URL by attempting a clone. If your network
+or auth is flaky it will print a warning but still write the config —
+the executor will retry on its next iteration.
+
+## Working the queue
+
+Five skills cover the operator workflow. All read or write
+`<workspace_root>/queue/.ralph/` (the queue clone) and never touch the
+target repos themselves.
+
+### See what's in flight: `ralph-status`
+
+```bash
+uv run python skills/ralph-status/scripts/status.py
+```
+
+Output (grouped by target repo):
+
+```
+TARGET                                  STATE       ID        TYPE     SEVERITY  AGE   TITLE
+https://github.com/emp3thy/svc-auth     inbox       WI-1234   feature  normal    2h    Add /healthz
+https://github.com/emp3thy/svc-auth     current     WI-1235   bug      critical  1h    Pod crashloops
+https://github.com/emp3thy/svc-billing  pending-pr  WI-980    feature  high      6h    Migrate invoices
+```
+
+Filters:
+- `--state {inbox,current,pending-pr,done,blocked}` — narrow to one state.
+- `--target-repo <url>` — narrow to one target.
+- `--json` — machine-readable.
+
+### Add a PBI: `ralph-add`
+
+```bash
+uv run python skills/ralph-add/scripts/add.py \
+  --target-repo https://github.com/emp3thy/svc-auth \
+  --pbi-id WI-1234 \
+  --title "Add /healthz endpoint" \
+  --type feature \
+  --severity normal
+```
+
+The skill writes the PBI to the queue clone's `inbox/` and pushes.
+
+### Cancel a PBI: `ralph-cancel`
+
+Writes a CANCEL sentinel into `current/<id>/`. The executor picks it up
+on the next iteration and moves the PBI out.
+
+```bash
+uv run python skills/ralph-cancel/scripts/cancel.py --pbi-id WI-1234
+```
+
+### Promote a PBI: `ralph-promote`
+
+Move a PBI between state folders (e.g. from `inbox/` to `current/` to
+manually queue it for the next iteration).
+
+```bash
+uv run python skills/ralph-promote/scripts/promote.py \
+  --pbi-id WI-1234 --from inbox --to current
+```
+
+### Triage a blocked PBI: `ralph-triage`
+
+Route a `blocked/` PBI either back to `inbox/` (with attempts reset) or
+out to `archive/`.
+
+```bash
+uv run python skills/ralph-triage/scripts/triage.py --pbi-id WI-1234 --to inbox
 ```
 
 ## Per-repo setup

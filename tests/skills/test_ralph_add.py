@@ -5,6 +5,10 @@ The orchestrator delegates the work-item fetch step to a sibling
 fetcher with a tiny Python script written into ``tmp_path`` and point
 ``RALPH_WORKITEM_FETCH_SCRIPT`` at it, so the orchestrator's behaviour
 can be verified end-to-end without invoking GitHub or ADO.
+
+Queue side: each test builds a bare git repo as the "queue remote" and
+points ``--queue-repo`` at it. ``ralph-add`` clones it into ``--workspace``,
+mutates ``.ralph/inbox/<id>/`` on ``main``, and pushes back.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ PARENT_ID = 9000
 CHILD_A_ID = 9001
 CHILD_B_ID = 9002
 
+TARGET_REPO_URL = "https://github.com/emp3thy/svc-auth"
+
 
 @pytest.fixture(scope="module")
 def add_module() -> ModuleType:
@@ -38,36 +44,6 @@ def add_module() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Iterator[Path]:
-    """Build a local bare repo + a working clone with a ralph-queue branch.
-
-    Origin's fetch URL is rewritten to an HTTPS placeholder after the
-    initial push so ralph-add's ``_derive_target_repo`` has a parseable
-    HTTPS URL. The bare remote is retained as ``pushurl`` so subsequent
-    pushes still work against the local-filesystem bare repo.
-    """
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-    subprocess.run(["git", "init", str(work)], check=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap ralph-queue")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
-    # Keep pushurl pointing at the bare repo; switch fetch URL to HTTPS
-    # so ralph-add can auto-derive target_repo from origin.
-    _git(work, "remote", "set-url", "--push", "origin", str(bare))
-    _git(work, "remote", "set-url", "origin", "https://github.com/emp3thy/ralph.git")
-    yield work
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -83,16 +59,45 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout
 
 
+@pytest.fixture
+def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
+    """Build a bare queue remote + an empty workspace dir.
+
+    The bare remote is seeded with an empty ``main`` so
+    ``ensure_queue_clone`` can clone it cleanly. Returns
+    ``(workspace_root, queue_repo_url)`` for the test to pass into
+    ``ralph-add`` via ``--workspace`` / ``--queue-repo``.
+    """
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    _git(seed, "config", "user.email", "seed@example.com")
+    _git(seed, "config", "user.name", "Seed")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+    yield workspace, str(bare)
+
+
+def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
+    """Clone the bare queue remote into a fresh verify path to inspect pushes."""
+    verify = tmp_path / f"verify-{Path(bare_url).name}"
+    subprocess.run(
+        ["git", "clone", bare_url, str(verify)],
+        check=True,
+        capture_output=True,
+    )
+    return verify
+
+
 def _write_mock_fetcher(
     tmp_path: Path,
     *,
     documents_by_id: dict[int, dict[str, object]],
 ) -> Path:
-    """Write a mock fetcher script that emits canned JSON for given ids.
-
-    The script reads ``--work-item`` and returns the matching document from
-    a JSON map written next to it. Unknown ids exit non-zero.
-    """
+    """Write a mock fetcher script that emits canned JSON for given ids."""
     script = tmp_path / "mock_fetch.py"
     map_path = tmp_path / "mock_docs.json"
     map_path.write_text(
@@ -139,7 +144,7 @@ def _doc(
     attachments: list[dict[str, str]] | None = None,
     child_ids: list[str] | None = None,
     source_host: str = "github",
-    target_repo: str = "https://github.com/emp3thy/ralph",
+    target_repo: str = TARGET_REPO_URL,
 ) -> dict[str, object]:
     return {
         "id": f"WI-{number}",
@@ -159,6 +164,37 @@ def _doc(
     }
 
 
+def _common_argv(
+    *,
+    work_item: str | int,
+    workspace: Path,
+    queue_repo: str,
+    target_repo: str = TARGET_REPO_URL,
+    extra: list[str] | None = None,
+) -> list[str]:
+    argv = [
+        "--work-item",
+        str(work_item),
+        "--target-repo",
+        target_repo,
+        "--workspace",
+        str(workspace),
+        "--queue-repo",
+        queue_repo,
+    ]
+    if extra:
+        argv.extend(extra)
+    return argv
+
+
+def _configure_clone_identity(workspace: Path) -> None:
+    """Set committer identity on the clone so commits succeed in CI envs
+    where no global git user.email is configured."""
+    clone = workspace / "queue"
+    _git(clone, "config", "user.email", "ralph-add@example.com")
+    _git(clone, "config", "user.name", "ralph-add")
+
+
 # ----------------------------------------------------------------------
 # Tests
 # ----------------------------------------------------------------------
@@ -166,13 +202,14 @@ def _doc(
 
 def test_feature_work_item_writes_feature_pbi(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     import base64
 
+    workspace, queue_repo = queue_env
     png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-png-bytes").decode("ascii")
     pdf = base64.b64encode(b"%PDF-1.4 fake-pdf-bytes").decode("ascii")
     doc = _doc(
@@ -189,29 +226,30 @@ def test_feature_work_item_writes_feature_pbi(
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
 
+    # Pre-clone so we can install committer identity before ralph-add runs.
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
+
     exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_id"] == f"WI-{WORK_ITEM_ID}"
     assert payload["pbi_type"] == "feature"
+    assert payload["target_repo"] == TARGET_REPO_URL
     assert payload["attachments_downloaded"] == 2
     assert payload["pushed"] is True
     assert payload["dry_run"] is False
     assert payload["source_host"] == "github"
 
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
+    verify = _verify_clone(tmp_path, queue_repo)
+    pbi_dir = verify / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
     assert pbi_dir.is_dir()
     pbi_md = (pbi_dir / "PBI.md").read_text(encoding="utf-8")
     assert pbi_md.startswith("---\n")
     assert "type: feature" in pbi_md
+    assert f"target_repo: {TARGET_REPO_URL}" in pbi_md
     assert "/healthz" in pbi_md
     assert "GET /healthz returns 200" in pbi_md
     assert "design.png" in pbi_md
@@ -223,17 +261,18 @@ def test_feature_work_item_writes_feature_pbi(
 
 def test_attachment_with_path_traversal_name_is_stripped_to_basename(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Regression for BugBot finding on PR #25: a hostile / buggy
-    fetcher emitting `\"name\": \"../../sensitive\"` must NOT escape the
+    fetcher emitting ``\"name\": \"../../sensitive\"`` must NOT escape the
     attachments/ directory. add.py strips directory components via
     Path(name).name before writing."""
     import base64
 
+    workspace, queue_repo = queue_env
     payload_bytes = base64.b64encode(b"escaped").decode("ascii")
     doc = _doc(
         number=WORK_ITEM_ID,
@@ -251,36 +290,34 @@ def test_attachment_with_path_traversal_name_is_stripped_to_basename(
     )
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
-    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
-    assert exit_code == 0
+    exit_code = add_module.main(
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
+    )
+    assert exit_code == 0, capsys.readouterr().err
     capsys.readouterr()  # drain
 
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
-    # The file is written under attachments/<basename> — NOT escaped up.
+    verify = _verify_clone(tmp_path, queue_repo)
+    pbi_dir = verify / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
     assert (pbi_dir / "attachments" / "escape-attempt.bin").read_bytes() == b"escaped"
-    # Critical: the parent directories did NOT get a file written by
-    # the traversal — the working tree above attachments/ is clean.
-    inbox_dir = git_repo / ".ralph" / "inbox"
-    # The PBI dir is one level under inbox; nothing else should appear
-    # adjacent to it.
+    inbox_dir = verify / ".ralph" / "inbox"
     siblings = {p.name for p in inbox_dir.iterdir() if p.is_file()}
     assert "escape-attempt.bin" not in siblings
 
 
 def test_work_item_id_with_path_traversal_is_rejected(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Regression for second BugBot finding on PR #25: a hostile / buggy
     fetcher emitting ``{\"id\": \"../../evil\"}`` must NOT escape the
-    .ralph/inbox/ directory. Same defence applied to attachment names
-    earlier in this PR — extended to the work-item id."""
-    # Fetcher document with a traversing id.
+    .ralph/inbox/ directory."""
+    workspace, queue_repo = queue_env
     doc: dict[str, object] = {
         "id": "../../escape-attempt",
         "type": "feature",
@@ -295,41 +332,37 @@ def test_work_item_id_with_path_traversal_is_rejected(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
-        "target_repo": "https://github.com/emp3thy/ralph",
+        "target_repo": TARGET_REPO_URL,
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
-    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
-    assert exit_code == 0  # sanitizer reduces to plain basename
+    exit_code = add_module.main(
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
+    )
+    assert exit_code == 0, capsys.readouterr().err  # sanitizer reduces to plain basename
     capsys.readouterr()
 
-    _git(git_repo, "checkout", "ralph-queue")
-    # Basename "escape-attempt" lands under .ralph/inbox/, NOT in repo root.
-    assert (git_repo / ".ralph" / "inbox" / "escape-attempt").is_dir()
-    # No file/dir named "evil" or "escape-attempt" appears outside inbox.
-    repo_root_names = {p.name for p in git_repo.iterdir()}
+    verify = _verify_clone(tmp_path, queue_repo)
+    assert (verify / ".ralph" / "inbox" / "escape-attempt").is_dir()
+    repo_root_names = {p.name for p in verify.iterdir()}
     assert "escape-attempt" not in repo_root_names
     assert "evil" not in repo_root_names
 
 
 def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Regression for fourth BugBot finding on PR #25: Path(...).name
-    does NOT strip newlines on POSIX. A fetcher emitting
-    ``{\"id\": \"WI-1234\\nstatus: complete\"}`` would inject an extra
-    YAML key into the PBI's frontmatter, flipping
-    ``status: inbox`` to ``status: complete`` and causing the
-    executor to skip the PBI as if it were already done.
-
-    The sanitizer now enforces a strict ``[A-Za-z0-9._-]+`` whitelist
-    on top of ``Path(...).name`` so any control character / shell
-    metacharacter / whitespace causes a clean rejection."""
+    """Regression for fourth BugBot finding on PR #25: a newline-laced id
+    must be cleanly rejected (exit 2), not silently injected as an extra
+    YAML key flipping ``status: inbox`` to ``status: complete``."""
+    workspace, queue_repo = queue_env
     doc: dict[str, object] = {
         "id": "WI-1234\nstatus: complete",
         "type": "feature",
@@ -344,20 +377,21 @@ def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
         "source_url": "https://example.invalid/issues/x",
         "source_host": "github",
         "raw": {},
-        "target_repo": "https://github.com/emp3thy/ralph",
+        "target_repo": TARGET_REPO_URL,
     }
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
-    exit_code = add_module.main(["--work-item", f"WI-{WORK_ITEM_ID}", "--repo", str(git_repo)])
-    # Clean rejection (exit 2), not silent acceptance with a polluted frontmatter.
+    exit_code = add_module.main(
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
+    )
     assert exit_code == 2
     err = capsys.readouterr().err
     assert "safe id alphabet" in err or "id=" in err
-    # Critical: NO PBI directory was written under either the intended
-    # WI-1234 OR the polluted "WI-1234\nstatus: complete" name.
-    _git(git_repo, "checkout", "ralph-queue")
-    inbox = git_repo / ".ralph" / "inbox"
+    verify = _verify_clone(tmp_path, queue_repo)
+    inbox = verify / ".ralph" / "inbox"
     if inbox.exists():
         present = {p.name for p in inbox.iterdir()}
         for entry in present:
@@ -366,17 +400,16 @@ def test_work_item_id_with_newline_is_rejected_to_prevent_yaml_injection(
 
 def test_dry_run_with_expand_children_reports_zero_attachments(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Regression for BugBot LOW on PR #25: with --expand-children +
-    --dry-run, the JSON report's attachments_downloaded must be 0
-    (mirroring the non-expand dry-run path). Counting attachments that
-    were never written would make the dry-run output lie."""
+    --dry-run, the JSON report's attachments_downloaded must be 0."""
     import base64
 
+    workspace, queue_repo = queue_env
     payload_bytes = base64.b64encode(b"would-be-written").decode("ascii")
     child_id = WORK_ITEM_ID + 1
     parent_doc = _doc(
@@ -404,16 +437,14 @@ def test_dry_run_with_expand_children_reports_zero_attachments(
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-            "--expand-children",
-            "--dry-run",
-        ]
+        _common_argv(
+            work_item=f"WI-{WORK_ITEM_ID}",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--expand-children", "--dry-run"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["attachments_downloaded"] == 0
@@ -421,11 +452,12 @@ def test_dry_run_with_expand_children_reports_zero_attachments(
 
 def test_bug_work_item_writes_bug_pbi(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     doc = _doc(
         number=WORK_ITEM_ID,
         pbi_type="bug",
@@ -436,22 +468,19 @@ def test_bug_work_item_writes_bug_pbi(
     )
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=str(WORK_ITEM_ID), workspace=workspace, queue_repo=queue_repo)
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_type"] == "bug"
     assert payload["pbi_id"] == f"WI-{WORK_ITEM_ID}"
 
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
+    verify = _verify_clone(tmp_path, queue_repo)
+    pbi_dir = verify / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
     bug_md = (pbi_dir / "BUG.md").read_text(encoding="utf-8")
     assert "type: bug" in bug_md
     assert "severity: critical" in bug_md
@@ -462,11 +491,12 @@ def test_bug_work_item_writes_bug_pbi(
 
 def test_expand_children_writes_one_pbi_per_child(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     parent = _doc(
         number=PARENT_ID,
         title="Onboarding flow rewrite",
@@ -483,22 +513,23 @@ def test_expand_children_writes_one_pbi_per_child(
         },
     )
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(PARENT_ID),
-            "--repo",
-            str(git_repo),
-            "--expand-children",
-        ]
+        _common_argv(
+            work_item=str(PARENT_ID),
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--expand-children"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["children_expanded"] == 2
 
-    _git(git_repo, "checkout", "ralph-queue")
-    inbox = git_repo / ".ralph" / "inbox"
+    verify = _verify_clone(tmp_path, queue_repo)
+    inbox = verify / ".ralph" / "inbox"
     child_a_pbi = inbox / f"WI-{CHILD_A_ID}" / "PBI.md"
     child_b_pbi = inbox / f"WI-{CHILD_B_ID}" / "PBI.md"
     assert child_a_pbi.is_file()
@@ -510,105 +541,85 @@ def test_expand_children_writes_one_pbi_per_child(
 
 def test_via_mcp_raises_not_implemented(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-            "--via-mcp",
-        ]
+        _common_argv(
+            work_item=str(WORK_ITEM_ID),
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--via-mcp"],
+        )
     )
     assert exit_code == 2
     assert "NotImplemented" in capsys.readouterr().err
 
 
-def test_repo_path_must_be_git_repo(
-    tmp_path: Path,
-    add_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    not_a_repo = tmp_path / "not_a_repo"
-    not_a_repo.mkdir()
-    fetcher = _write_mock_fetcher(
-        tmp_path, documents_by_id={WORK_ITEM_ID: _doc(number=WORK_ITEM_ID)}
-    )
-    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
-
-    exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(not_a_repo),
-        ]
-    )
-    assert exit_code == 2
-    assert "not a git repository" in capsys.readouterr().err.lower()
-
-
 def test_dry_run_makes_no_writes_or_pushes(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     doc = _doc(number=WORK_ITEM_ID)
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-            "--dry-run",
-        ]
+        _common_argv(
+            work_item=f"WI-{WORK_ITEM_ID}",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--dry-run"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["pushed"] is False
     assert payload["commit_sha"] == ""
 
-    _git(git_repo, "checkout", "ralph-queue")
-    assert not (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}").exists()
+    # Dry-run must NOT have cloned the queue or written anything under workspace.
+    assert not (workspace / "queue").exists()
+    # Bare remote is empty of any inbox changes.
+    verify = _verify_clone(tmp_path, queue_repo)
+    assert not (verify / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}").exists()
 
 
 def test_severity_override(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     doc = _doc(number=WORK_ITEM_ID, severity="normal")
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-            "--severity",
-            "critical",
-        ]
+        _common_argv(
+            work_item=str(WORK_ITEM_ID),
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--severity", "critical"],
+        )
     )
-    assert exit_code == 0
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_md = (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
+    assert exit_code == 0, capsys.readouterr().err
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    pbi_md = (verify / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
         encoding="utf-8"
     )
     assert "severity: critical" in pbi_md
@@ -616,50 +627,66 @@ def test_severity_override(
 
 def test_no_push_commits_but_does_not_push(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    workspace, queue_repo = queue_env
     doc = _doc(number=WORK_ITEM_ID)
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
-    remote_sha_before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    remote_sha_before = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout.strip()
+
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _common_argv(
+            work_item=str(WORK_ITEM_ID),
+            workspace=workspace,
+            queue_repo=queue_repo,
+            extra=["--no-push"],
+        )
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"] != ""
-    remote_sha_after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+
+    remote_sha_after = subprocess.run(
+        ["git", "ls-remote", queue_repo, "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout.strip()
     assert remote_sha_before == remote_sha_after
 
 
 def test_fetcher_failure_propagates(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """If the fetcher exits non-zero, ``ralph-add`` surfaces the error."""
+    workspace, queue_repo = queue_env
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=str(WORK_ITEM_ID), workspace=workspace, queue_repo=queue_repo)
     )
     assert exit_code == 2
     err = capsys.readouterr().err
@@ -668,25 +695,23 @@ def test_fetcher_failure_propagates(
 
 def test_fetcher_invalid_json_rejected(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A fetcher emitting malformed JSON must trigger a clean failure."""
+    workspace, queue_repo = queue_env
     script = tmp_path / "broken_fetcher.py"
     script.write_text(
         "import sys\nprint('this is not json')\nsys.exit(0)\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(script))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=str(WORK_ITEM_ID), workspace=workspace, queue_repo=queue_repo)
     )
     assert exit_code == 2
     err = capsys.readouterr().err
@@ -695,22 +720,20 @@ def test_fetcher_invalid_json_rejected(
 
 def test_fetcher_invalid_schema_rejected(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A fetcher emitting JSON missing required keys must trigger a clean failure."""
+    workspace, queue_repo = queue_env
     bad_doc: dict[str, object] = {"id": "WI-9", "title": "missing the rest"}
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: bad_doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
     exit_code = add_module.main(
-        [
-            "--work-item",
-            str(WORK_ITEM_ID),
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=str(WORK_ITEM_ID), workspace=workspace, queue_repo=queue_repo)
     )
     assert exit_code == 2
     err = capsys.readouterr().err.lower()
@@ -719,23 +742,18 @@ def test_fetcher_invalid_schema_rejected(
 
 def test_generated_pbi_passes_plan1_validator(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """PBI directories produced by ``ralph-add`` must satisfy the canonical
-    PBI schema enforced by ``scripts.validate_samples``.
-
-    The validator derives PBI type from the frontmatter ``type`` field
-    (reconciliation #3) rather than the directory name, so the directory
-    ``WI-<n>`` produced by ``ralph-add`` is acceptable as-is. We mirror it
-    into a typed-name sibling here only to keep the assertion robust if a
-    future tightening reintroduces a prefix expectation.
-    """
+    PBI schema enforced by ``scripts.validate_samples``."""
     import base64
 
     from scripts.validate_samples import validate_sample
 
+    workspace, queue_repo = queue_env
     png = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode("ascii")
     doc = _doc(
         number=WORK_ITEM_ID,
@@ -746,22 +764,18 @@ def test_generated_pbi_passes_plan1_validator(
     )
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-        ]
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
     )
-    assert exit_code == 0
+    assert exit_code == 0, capsys.readouterr().err
 
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_dir = git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
+    pbi_dir = workspace / "queue" / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}"
 
     # Mirror into a feature-prefixed sibling for the validator's check.
-    mirror = git_repo / "validator-mirror" / f"feature-WI-{WORK_ITEM_ID}"
+    mirror = tmp_path / "validator-mirror" / f"feature-WI-{WORK_ITEM_ID}"
     mirror.mkdir(parents=True)
     for child in pbi_dir.iterdir():
         if child.is_file():
@@ -779,132 +793,120 @@ def test_generated_pbi_passes_plan1_validator(
 
 
 # ----------------------------------------------------------------------
-# target_repo tests (RALPH-PBI-TARGET-REPO-FIELD — Task 6)
+# target_repo / config-resolution tests
 # ----------------------------------------------------------------------
 
 
-def _init_repo_with_origin(repo: Path, origin: str) -> None:
-    """Initialise an empty git repo with a single origin remote."""
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    _git(repo, "remote", "add", "origin", origin)
-
-
-def test_derive_target_repo_from_https_origin(
+def test_target_repo_required(
     tmp_path: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HTTPS origin (with .git suffix) -> HTTPS URL without .git suffix."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo_with_origin(repo, "https://github.com/emp3thy/ralph.git")
+    """Argparse fails (SystemExit) when --target-repo is omitted."""
+    workspace, queue_repo = queue_env
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    with pytest.raises(SystemExit):
+        add_module.main(
+            [
+                "--work-item",
+                f"WI-{WORK_ITEM_ID}",
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
+            ]
+        )
 
-    assert add_module._derive_target_repo(repo) == "https://github.com/emp3thy/ralph"
 
-
-def test_derive_target_repo_from_ssh_origin(
+def test_ralph_add_writes_target_repo_to_pbi(
     tmp_path: Path,
-    add_module: ModuleType,
-) -> None:
-    """SSH origin git@host:owner/name(.git)? -> https://host/owner/name."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo_with_origin(repo, "git@github.com:emp3thy/ralph.git")
-
-    assert add_module._derive_target_repo(repo) == "https://github.com/emp3thy/ralph"
-
-
-def test_derive_target_repo_raises_on_unparseable_origin(
-    tmp_path: Path,
-    add_module: ModuleType,
-) -> None:
-    """Local-file-path origin cannot map to an HTTPS URL; raise pointing
-    at the --target-repo escape hatch."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo_with_origin(repo, "/some/local/path")
-
-    with pytest.raises(add_module._FatalError, match="--target-repo"):
-        add_module._derive_target_repo(repo)
-
-
-def test_ralph_add_writes_derived_target_repo_to_new_pbi(
-    tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """No --target-repo flag: origin is auto-derived into PBI frontmatter."""
-    # Repoint origin to an HTTPS URL so auto-derive yields a real value.
-    # Run with --no-push since the bare remote is no longer reachable.
-    _git(git_repo, "remote", "set-url", "origin", "https://github.com/emp3thy/ralph.git")
-    doc = _doc(number=WORK_ITEM_ID, title="auto-derive test")
+    """The --target-repo flag value lands verbatim in PBI frontmatter."""
+    workspace, queue_repo = queue_env
+    doc = _doc(number=WORK_ITEM_ID, title="target-repo test")
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
 
     exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-        ]
+        _common_argv(
+            work_item=f"WI-{WORK_ITEM_ID}",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            target_repo="https://github.com/emp3thy/svc-billing",
+            extra=["--no-push"],
+        )
     )
     assert exit_code == 0, capsys.readouterr().err
-    capsys.readouterr()
 
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_md = (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
+    pbi_md = (workspace / "queue" / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
         encoding="utf-8"
     )
-    assert "target_repo: https://github.com/emp3thy/ralph" in pbi_md
-
-
-def test_ralph_add_flag_overrides_origin(
-    tmp_path: Path,
-    git_repo: Path,
-    add_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """--target-repo wins over auto-derive."""
-    _git(git_repo, "remote", "set-url", "origin", "https://github.com/A/B.git")
-    doc = _doc(number=WORK_ITEM_ID, title="flag override")
-    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
-    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
-
-    exit_code = add_module.main(
-        [
-            "--work-item",
-            f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-            "--no-push",
-            "--target-repo",
-            "https://github.com/C/D",
-        ]
-    )
-    assert exit_code == 0, capsys.readouterr().err
-    capsys.readouterr()
-
-    _git(git_repo, "checkout", "ralph-queue")
-    pbi_md = (git_repo / ".ralph" / "inbox" / f"WI-{WORK_ITEM_ID}" / "PBI.md").read_text(
-        encoding="utf-8"
-    )
-    assert "target_repo: https://github.com/C/D" in pbi_md
-    assert "target_repo: https://github.com/A/B" not in pbi_md
+    assert "target_repo: https://github.com/emp3thy/svc-billing" in pbi_md
 
 
 def test_ralph_add_rejects_invalid_target_repo_flag(
     tmp_path: Path,
-    git_repo: Path,
+    queue_env: tuple[Path, str],
     add_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """http:// (not https://) --target-repo exits 2 with HTTPS-mentioning stderr."""
+    workspace, queue_repo = queue_env
     doc = _doc(number=WORK_ITEM_ID)
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        _common_argv(
+            work_item=f"WI-{WORK_ITEM_ID}",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            target_repo="http://github.com/x/y",
+            extra=["--no-push"],
+        )
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "HTTPS" in err
+
+
+def test_ralph_add_queue_repo_resolved_from_toml(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When --queue-repo is omitted, the TOML value is used."""
+    workspace, queue_repo = queue_env
+    # Point ``~`` at a tmp HOME so the TOML write doesn't smear real config.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    (fake_home / ".ralph").mkdir()
+    # TOML basic strings interpret backslash as an escape (``\U`` is a
+    # parser error). Use a file:// URL whose path is forward-slash-only
+    # so the value survives round-tripping on Windows.
+    queue_url = "file:///" + Path(queue_repo).as_posix().lstrip("/")
+    (fake_home / ".ralph" / "config.toml").write_text(
+        f'queue_repo = "{queue_url}"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
+
+    doc = _doc(number=WORK_ITEM_ID, title="toml-resolved queue")
     fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
     monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
 
@@ -912,13 +914,43 @@ def test_ralph_add_rejects_invalid_target_repo_flag(
         [
             "--work-item",
             f"WI-{WORK_ITEM_ID}",
-            "--repo",
-            str(git_repo),
-            "--no-push",
             "--target-repo",
-            "http://github.com/x/y",
+            TARGET_REPO_URL,
+            "--workspace",
+            str(workspace),
+            "--no-push",
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pbi_id"] == f"WI-{WORK_ITEM_ID}"
+
+
+def test_ralph_add_errors_when_queue_repo_unset(
+    tmp_path: Path,
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without --queue-repo and without TOML queue_repo, exit 2 with a clear error."""
+    workspace = tmp_path / "ws"
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+
+    exit_code = add_module.main(
+        [
+            "--work-item",
+            f"WI-{WORK_ITEM_ID}",
+            "--target-repo",
+            TARGET_REPO_URL,
+            "--workspace",
+            str(workspace),
         ]
     )
     assert exit_code == 2
     err = capsys.readouterr().err
-    assert "HTTPS" in err
+    assert "queue_repo" in err.lower()

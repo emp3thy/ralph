@@ -4,7 +4,8 @@ Delegates the work-item fetch to a sibling ``workitem-fetch/`` skill
 (either ``workitem-fetch-github`` in Phase 1 or ``workitem-fetch-ado`` in
 Phase 2). Knows nothing about GitHub or Azure DevOps APIs. Reads the
 fetcher's normalised JSON output, packages it into a PBI directory, and
-commits + pushes to ``ralph-queue``.
+commits + pushes to the queue clone (``<workspace_root>/queue`` on
+``main``).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
 ATTACHMENT_SUBDIR = "attachments"
 ALLOWED_SEVERITIES = ("critical", "high", "normal", "low")
 
@@ -34,10 +34,11 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
-    checkout_queue_branch,
+    acquire_queue_clone,
     commit_paths,
-    ensure_git_repo,
     push,
+    resolve_queue_repo,
+    resolve_workspace_root,
 )
 
 _SCHEMA_PATH = _REPO_ROOT / "skills" / "workitem-fetch-github" / "scripts" / "schema.py"
@@ -84,8 +85,8 @@ class AddResult:
     pbi_id: str
     pbi_type: str
     pbi_path: str
-    repo_path: str
-    branch: str
+    queue_clone: str
+    target_repo: str
     attachments_downloaded: int
     children_expanded: int
     commit_sha: str
@@ -103,16 +104,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         prog="ralph-add",
         description=(
             "Host-agnostic orchestrator. Fetches a work item via the staged "
-            "workitem-fetch/ skill and submits it as a PBI to the ralph-queue "
-            "branch of a target service repo."
+            "workitem-fetch/ skill and submits it as a PBI to the queue clone "
+            "(<workspace_root>/queue on main)."
         ),
     )
     parser.add_argument("--work-item", required=True, help="Work item id.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--repo", help="Path to an existing checkout of the target repo.")
-    group.add_argument(
-        "--repo-url",
-        help="Git URL of the target repo. Reserved — not implemented in v1.",
+    parser.add_argument(
+        "--target-repo",
+        required=True,
+        help=(
+            "HTTPS URL of the repo this PBI applies to. Written to the PBI's "
+            "target_repo frontmatter field. Must be https://<host>/<owner>/<name>."
+        ),
     )
     parser.add_argument(
         "--severity",
@@ -129,19 +132,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Reserved for v2. Raises NotImplementedError in v1.",
     )
-    parser.add_argument(
-        "--branch",
-        default=os.environ.get("RALPH_QUEUE_BRANCH", DEFAULT_QUEUE_BRANCH),
-        help=f"Queue branch name (default: {DEFAULT_QUEUE_BRANCH}).",
-    )
     parser.add_argument("--no-push", action="store_true", help="Commit but do not push.")
     parser.add_argument("--dry-run", action="store_true", help="Compute without mutating.")
     parser.add_argument(
-        "--target-repo",
-        help=(
-            "HTTPS URL of the repo this PBI applies to. If omitted, derive "
-            "from --repo's git origin remote (SSH form converted to HTTPS)."
-        ),
+        "--workspace",
+        type=Path,
+        help="Override workspace_root from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
     )
     return parser.parse_args(argv)
 
@@ -169,48 +169,6 @@ def _validate_target_repo_value(value: str) -> str | None:
     if len(path_segments) < 2:
         return f"target_repo URL must include owner + name path: {value!r}"
     return None
-
-
-_SSH_ORIGIN_RE = re.compile(r"^git@([^:]+):(.+?)(?:\.git)?$")
-
-
-def _derive_target_repo(repo: Path) -> str:
-    """Read git origin URL and reshape to canonical HTTPS form.
-
-    Examples:
-        git@github.com:emp3thy/ralph.git     -> https://github.com/emp3thy/ralph
-        https://github.com/emp3thy/ralph     -> https://github.com/emp3thy/ralph
-        https://github.com/emp3thy/ralph.git -> https://github.com/emp3thy/ralph
-
-    Raises ``_FatalError`` if origin is missing or unparseable; the
-    message points at the ``--target-repo`` escape hatch.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=str(repo),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise _FatalError(
-            "git binary not found on PATH; install git or pass --target-repo explicitly"
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise _FatalError(
-            "no git remote 'origin' configured; pass --target-repo explicitly"
-        ) from exc
-    url = result.stdout.strip()
-    ssh_match = _SSH_ORIGIN_RE.match(url)
-    if ssh_match:
-        host, path = ssh_match.group(1), ssh_match.group(2)
-        return f"https://{host}/{path}"
-    if url.startswith("https://"):
-        return url.removesuffix(".git")
-    raise _FatalError(
-        f"cannot derive target_repo from origin URL {url!r}; pass --target-repo explicitly"
-    )
 
 
 def _resolve_fetcher() -> Path:
@@ -487,33 +445,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.via_mcp:
             raise _FatalError("NotImplemented: --via-mcp is reserved for v2; remove the flag.")
-        if args.repo_url:
-            raise _FatalError(
-                "--repo-url is documented but not yet implemented in v1; "
-                "clone the repo manually and pass --repo <path>"
-            )
 
-        repo = Path(args.repo).resolve()
-        if not repo.is_dir():
-            raise _FatalError(f"--repo path does not exist: {repo}")
-        ensure_git_repo(repo)
-
-        # Resolve target_repo: explicit flag wins over auto-derive.
-        if args.target_repo is not None:
-            target_repo = args.target_repo.strip()
-            if not target_repo:
-                raise _FatalError("--target-repo must be non-empty")
-        else:
-            target_repo = _derive_target_repo(repo)
+        target_repo = args.target_repo.strip()
+        if not target_repo:
+            raise _FatalError("--target-repo must be non-empty")
         target_repo_err = _validate_target_repo_value(target_repo)
         if target_repo_err is not None:
             raise _FatalError(target_repo_err)
 
-        fetcher = _resolve_fetcher()
-        work_item_arg = _normalise_work_item_arg(args.work_item)
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
 
         if not args.dry_run:
-            checkout_queue_branch(repo, args.branch)
+            queue_clone = acquire_queue_clone(workspace_root, queue_repo)
+        else:
+            # Dry-run still needs a path to anchor reported pbi_path against,
+            # but must NOT touch the network or filesystem. Use a synthetic
+            # placeholder pointing at the would-be clone location.
+            queue_clone = workspace_root / "queue"
+
+        fetcher = _resolve_fetcher()
+        work_item_arg = _normalise_work_item_arg(args.work_item)
 
         root_doc = _invoke_fetcher(fetcher, work_item_arg)
         severity_override = args.severity
@@ -539,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
                 child_severity = severity_override or str(child_doc["severity"])
                 if not args.dry_run:
                     pbi_dir = _write_pbi_directory(
-                        base_dir=repo,
+                        base_dir=queue_clone,
                         doc=child_doc,
                         severity=child_severity,
                         parent_id=root_parent_id,
@@ -547,15 +499,15 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 else:
                     pbi_dir = (
-                        repo
+                        queue_clone
                         / ".ralph"
                         / "inbox"
                         / _safe_path_component(child_doc["id"], field="id")
                     )
-                # Mirror the non-expand path (line 468 below): no files
-                # are written in dry-run, so the reported count must be 0.
-                # Counting them here would make the dry-run JSON output
-                # inconsistent with what actually happened on disk.
+                # Mirror the non-expand path: no files are written in
+                # dry-run, so the reported count must be 0. Counting them
+                # here would make the dry-run JSON output inconsistent
+                # with what actually happened on disk.
                 if not args.dry_run:
                     attachments_total += len(child_doc.get("attachments") or [])
                 children_expanded += 1
@@ -563,18 +515,16 @@ def main(argv: list[str] | None = None) -> int:
                     first_pbi_for_report = (
                         str(child_doc["id"]),
                         str(child_doc["type"]),
-                        str(pbi_dir.relative_to(repo)).replace("\\", "/"),
+                        str(pbi_dir.relative_to(queue_clone)).replace("\\", "/"),
                     )
                 if not args.dry_run:
-                    message = (
-                        f"feat(ralph-queue): add {child_doc['id']} (child of {root_doc['id']})"
-                    )
-                    last_commit_sha = commit_paths(repo, [pbi_dir], message)
+                    message = f"chore(queue): add {child_doc['id']} (child of {root_doc['id']})"
+                    last_commit_sha = commit_paths(queue_clone, [pbi_dir], message)
         else:
             severity = severity_override or str(root_doc["severity"])
             if not args.dry_run:
                 pbi_dir = _write_pbi_directory(
-                    base_dir=repo,
+                    base_dir=queue_clone,
                     doc=root_doc,
                     severity=severity,
                     parent_id=None,
@@ -582,24 +532,27 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 pbi_dir = (
-                    repo / ".ralph" / "inbox" / _safe_path_component(root_doc["id"], field="id")
+                    queue_clone
+                    / ".ralph"
+                    / "inbox"
+                    / _safe_path_component(root_doc["id"], field="id")
                 )
             attachments_total = len(root_doc.get("attachments") or []) if not args.dry_run else 0
             first_pbi_for_report = (
                 str(root_doc["id"]),
                 str(root_doc["type"]),
-                str(pbi_dir.relative_to(repo)).replace("\\", "/"),
+                str(pbi_dir.relative_to(queue_clone)).replace("\\", "/"),
             )
             if not args.dry_run:
                 last_commit_sha = commit_paths(
-                    repo,
+                    queue_clone,
                     [pbi_dir],
-                    f"feat(ralph-queue): add {root_doc['id']}",
+                    f"chore(queue): add {root_doc['id']}",
                 )
 
         if not args.dry_run and not args.no_push:
-            print(f"pushing {args.branch} to origin...", file=sys.stderr)
-            push(repo, args.branch)
+            print("pushing main to origin...", file=sys.stderr)
+            push(queue_clone, "main")
             pushed = True
 
         assert first_pbi_for_report is not None
@@ -609,8 +562,8 @@ def main(argv: list[str] | None = None) -> int:
             pbi_id=report_pbi_id,
             pbi_type=report_pbi_type,
             pbi_path=report_pbi_path,
-            repo_path=str(repo),
-            branch=args.branch,
+            queue_clone=str(queue_clone),
+            target_repo=target_repo,
             attachments_downloaded=attachments_total,
             children_expanded=children_expanded,
             commit_sha=last_commit_sha,

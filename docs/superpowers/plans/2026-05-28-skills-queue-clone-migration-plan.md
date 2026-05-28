@@ -73,7 +73,7 @@ No commit for Task 0.
 - Modify: `scripts/queue_writer.py`
 - Test: `tests/test_queue_writer.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_queue_writer.py`:
 
@@ -102,9 +102,9 @@ def test_checkout_queue_branch_is_removed():
     assert not hasattr(qw, "checkout_queue_branch")
 ```
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `scripts/queue_writer.py`**
+- [x] **Step 3: Edit `scripts/queue_writer.py`**
 
 - Delete the `checkout_queue_branch` function.
 - Delete any module-level `DEFAULT_QUEUE_BRANCH` constant.
@@ -127,13 +127,13 @@ def acquire_queue_clone(workspace_root, queue_repo, *, timeout=120.0):
     return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
 ```
 
-- [ ] **Step 4: Run the tests; expect PASS**
+- [x] **Step 4: Run the tests; expect PASS**
 
 ```bash
 uv run pytest tests/test_queue_writer.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/queue_writer.py tests/test_queue_writer.py
@@ -170,7 +170,7 @@ The `validate` schema validator + `attachments` handling + commit message style 
 - Modify: `skills/ralph-add/scripts/add.py`, `skills/ralph-add/SKILL.md`
 - Test: `tests/skills/test_ralph_add.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_add.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote).
@@ -198,9 +198,9 @@ def test_add_pbi_writes_to_queue_clone(tmp_path):
 
 Note: env-var routing in tests is fine for tests; production reads from `~/.ralph/config.toml`. Tests use a monkeypatch fixture that points the skill at the test workspace + queue. **No new env vars in production code** — tests are the one exception.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `skills/ralph-add/scripts/add.py`**
+- [x] **Step 3: Edit `skills/ralph-add/scripts/add.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers that exist only to swap branches.
 - Add `--target-repo <url>` argument. Validate via `parse_target_repo`.
@@ -213,15 +213,15 @@ Note: env-var routing in tests is fine for tests; production reads from `~/.ralp
 - Commit message style unchanged: `chore(queue): add <id>`.
 - Push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-add/SKILL.md`** to document the new `--target-repo` flag and remove `--repo` / `--branch`.
+- [x] **Step 4: Update `skills/ralph-add/SKILL.md`** to document the new `--target-repo` flag and remove `--repo` / `--branch`.
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_add.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-add/ tests/skills/test_ralph_add.py
@@ -238,28 +238,28 @@ git commit -m "feat(ralph-add): operate on queue clone; --target-repo replaces -
 - Modify: `skills/ralph-cancel/scripts/cancel.py`, `skills/ralph-cancel/SKILL.md`
 - Test: `tests/skills/test_ralph_cancel.py`
 
-- [ ] **Step 1: Update tests to use the fake-queue-remote pattern**
+- [x] **Step 1: Update tests to use the fake-queue-remote pattern**
 
 Same shape as Task 2's test rewrite.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `skills/ralph-cancel/scripts/cancel.py`**
+- [x] **Step 3: Edit `skills/ralph-cancel/scripts/cancel.py`**
 
 - Remove `--repo`, `--branch`.
 - Resolve `workspace_root` + `queue_repo` from config.
 - `acquire_queue_clone` to get the clone path.
 - Operate on `<clone>/.ralph/current/<pbi-id>/` (write CANCEL sentinel, commit, push to main).
 
-- [ ] **Step 4: Update SKILL.md.**
+- [x] **Step 4: Update SKILL.md.**
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_cancel.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-cancel/ tests/skills/test_ralph_cancel.py
@@ -276,20 +276,20 @@ git commit -m "feat(ralph-cancel): operate on queue clone; --pbi-id only"
 - Modify: `skills/ralph-promote/scripts/promote.py`, `skills/ralph-promote/SKILL.md`
 - Test: `tests/skills/test_ralph_promote.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_promote.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote) seeded with a PBI in the source state folder.
 - An empty workspace dir.
 - Test: after running `ralph-promote --pbi-id <id> --from inbox --to current`, the fake bare remote has a commit moving the PBI dir from `.ralph/inbox/<id>/` to `.ralph/current/<id>/` on `main`.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/skills/test_ralph_promote.py -v
 ```
 
-- [ ] **Step 3: Edit `skills/ralph-promote/scripts/promote.py`**
+- [x] **Step 3: Edit `skills/ralph-promote/scripts/promote.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers.
 - Keep `--pbi-id` and the `--from` / `--to` state arguments.
@@ -297,15 +297,15 @@ uv run pytest tests/skills/test_ralph_promote.py -v
 - Call `acquire_queue_clone(workspace_root, queue_repo)`.
 - `git mv` the PBI dir between state folders inside the clone, rewrite frontmatter `status:` and `updated_at:`, commit with the existing message style, push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-promote/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--from`, `--to`).
+- [x] **Step 4: Update `skills/ralph-promote/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--from`, `--to`).
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_promote.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-promote/ tests/skills/test_ralph_promote.py
@@ -322,20 +322,20 @@ git commit -m "feat(ralph-promote): operate on queue clone"
 - Modify: `skills/ralph-triage/scripts/triage.py`, `skills/ralph-triage/SKILL.md`
 - Test: `tests/skills/test_ralph_triage.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_triage.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote) seeded with a PBI in `.ralph/blocked/<id>/`.
 - An empty workspace dir.
 - Test: after running `ralph-triage --pbi-id <id> --to inbox`, the fake bare remote has a commit moving the PBI dir from `.ralph/blocked/<id>/` to `.ralph/inbox/<id>/`, with `attempts: 0` rewritten in the entry-file frontmatter.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/skills/test_ralph_triage.py -v
 ```
 
-- [ ] **Step 3: Edit `skills/ralph-triage/scripts/triage.py`**
+- [x] **Step 3: Edit `skills/ralph-triage/scripts/triage.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers.
 - Keep `--pbi-id` and the `--to {inbox,archive}` routing argument.
@@ -343,15 +343,15 @@ uv run pytest tests/skills/test_ralph_triage.py -v
 - Call `acquire_queue_clone(workspace_root, queue_repo)`.
 - `git mv` the PBI dir from `<clone>/.ralph/blocked/<id>/` to either `<clone>/.ralph/inbox/<id>/` (with `attempts: 0` rewrite in the entry file) or `<clone>/.ralph/archive/<id>/` (creating the archive folder on demand). Commit and push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-triage/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--to`).
+- [x] **Step 4: Update `skills/ralph-triage/SKILL.md`** to reflect the new argument shape (`--pbi-id`, `--to`).
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_triage.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-triage/ tests/skills/test_ralph_triage.py
@@ -373,7 +373,7 @@ Original 80% confidence Task 6 split into four single-responsibility subtasks. E
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Delete the following functions / dataclasses / constants:**
+- [x] **Step 1: Delete the following functions / dataclasses / constants:**
 
 - `DEFAULT_QUEUE_BRANCH`
 - `RepoConfig` dataclass
@@ -385,7 +385,7 @@ Original 80% confidence Task 6 split into four single-responsibility subtasks. E
 
 These are all the worktree-per-repo machinery that the new model doesn't need.
 
-- [ ] **Step 2: Smoke check — imports should now be smaller**
+- [x] **Step 2: Smoke check — imports should now be smaller**
 
 ```bash
 grep -n "^import\|^from" skills/ralph-status/scripts/status.py
@@ -393,7 +393,7 @@ grep -n "^import\|^from" skills/ralph-status/scripts/status.py
 
 Expected: `argparse`, `json`, `sys`, `dataclasses`, `datetime`, `pathlib`, `STATE_FOLDERS` / `PBIRow` / `PBIRowError` / `enumerate_state` from `scripts.pbi_reader`. The `subprocess`, `shutil`, `tempfile`, `os`, `contextlib` imports drop.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py
@@ -411,7 +411,7 @@ Note: the file is in a broken state between 6a and 6b — argparse references th
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Replace `_parse_args` with the new shape**
+- [x] **Step 1: Replace `_parse_args` with the new shape**
 
 ```python
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -449,9 +449,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 ```
 
-- [ ] **Step 2: Update `_main` to resolve workspace_root and queue_repo from `~/.ralph/config.toml`** (use `ralph_executor.user_config.load_user_config` or equivalent; if a wrapper doesn't exist, read the TOML directly with `tomllib`).
+- [x] **Step 2: Update `_main` to resolve workspace_root and queue_repo from `~/.ralph/config.toml`** (use `ralph_executor.user_config.load_user_config` or equivalent; if a wrapper doesn't exist, read the TOML directly with `tomllib`).
 
-- [ ] **Step 3: Smoke check the parser**
+- [x] **Step 3: Smoke check the parser**
 
 ```bash
 uv run python skills/ralph-status/scripts/status.py --help
@@ -459,7 +459,7 @@ uv run python skills/ralph-status/scripts/status.py --help
 
 Expected: help text matches the new shape (no `--repo` / `--repos-file` / `--branch` / `--no-cleanup`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py
@@ -475,7 +475,7 @@ git commit -m "feat(ralph-status): new argument parser; resolve queue from TOML"
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Replace `_COLUMN_ORDER`**
+- [x] **Step 1: Replace `_COLUMN_ORDER`**
 
 ```python
 _COLUMN_ORDER: tuple[str, ...] = (
@@ -489,7 +489,7 @@ _COLUMN_ORDER: tuple[str, ...] = (
 )
 ```
 
-- [ ] **Step 2: Replace `_row_to_cells`**
+- [x] **Step 2: Replace `_row_to_cells`**
 
 ```python
 def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
@@ -517,7 +517,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
 
 Note: `target_repo` was added to `PBIRow` by `RALPH-PBI-TARGET-REPO-FIELD` (#40). It is a string field on every PBI's frontmatter.
 
-- [ ] **Step 3: Add `_group_and_sort` to order rows**
+- [x] **Step 3: Add `_group_and_sort` to order rows**
 
 ```python
 def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowError]:
@@ -531,9 +531,9 @@ def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowErr
 
 Call `_group_and_sort` before `_render_table`.
 
-- [ ] **Step 4: Update `_main` to apply the `--target-repo` filter** after collecting rows, before grouping.
+- [x] **Step 4: Update `_main` to apply the `--target-repo` filter** after collecting rows, before grouping.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py
@@ -550,7 +550,7 @@ git commit -m "feat(ralph-status): group by target_repo; new TARGET column"
 - Modify: `skills/ralph-status/scripts/status.py`
 - Test: `tests/skills/test_ralph_status.py`
 
-- [ ] **Step 1: Replace `_row_to_json`**
+- [x] **Step 1: Replace `_row_to_json`**
 
 ```python
 def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
@@ -585,7 +585,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
 
 Top-level JSON envelope: `{"rows": [...], "errors": []}`. No `repos` array (single queue).
 
-- [ ] **Step 2: Rewrite `tests/skills/test_ralph_status.py`**
+- [x] **Step 2: Rewrite `tests/skills/test_ralph_status.py`**
 
 Replace all multi-repo fixtures with single-queue-clone fixtures:
 - Bare git repo as the queue remote.
@@ -596,13 +596,13 @@ Replace all multi-repo fixtures with single-queue-clone fixtures:
   - `--target-repo X`: only rows for X.
   - `--json`: new envelope shape; no `repos` key; rows have `target_repo`.
 
-- [ ] **Step 3: Run; expect PASS**
+- [x] **Step 3: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_status.py -v
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add skills/ralph-status/ tests/skills/test_ralph_status.py
@@ -720,15 +720,15 @@ git commit -m "feat(ralph-status): rewrite around single queue clone, group by t
 
 **Files:** every `skills/ralph-*/SKILL.md`
 
-- [ ] **Step 1: Grep for stale model references**
+- [x] **Step 1: Grep for stale model references**
 
 ```bash
 grep -rn "ralph-queue branch\|--branch\|--repos-file\|service repo" skills/ralph-*/SKILL.md
 ```
 
-- [ ] **Step 2: Fix any straggler**
+- [x] **Step 2: Fix any straggler**
 
-- [ ] **Step 3: Commit (if anything changed)**
+- [x] **Step 3: Commit (if anything changed)**
 
 ```bash
 git add skills/ralph-*/SKILL.md
@@ -746,7 +746,7 @@ git commit -m "docs(skills): sweep stale 'ralph-queue branch' references"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Replace the existing Install + One-time setup sections** with:
+- [x] **Step 1: Replace the existing Install + One-time setup sections** with:
 
 ```markdown
 ## Install
@@ -811,7 +811,7 @@ or auth is flaky it will print a warning but still write the config —
 the executor will retry on its next iteration.
 ```
 
-- [ ] **Step 2: Add a new section** after One-time setup:
+- [x] **Step 2: Add a new section** after One-time setup:
 
 ```markdown
 ## Working the queue
@@ -882,7 +882,7 @@ uv run python skills/ralph-triage/scripts/triage.py --pbi-id WI-1234 --to inbox
 ```
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
@@ -898,7 +898,7 @@ git commit -m "docs(readme): queue-repo install + working-the-queue section"
 **Files:**
 - Create: `docs/superpowers/ops/2026-05-28-pod-deployment.md`
 
-- [ ] **Step 1: Write the file**
+- [x] **Step 1: Write the file**
 
 ```markdown
 # Pod deployment runbook (2026-05-28)
@@ -1002,7 +1002,7 @@ finishes its iteration, exits idle, scheduler spins up the new image).
   and `acknowledged_at`), restart the pod.
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/superpowers/ops/2026-05-28-pod-deployment.md
@@ -1015,26 +1015,26 @@ git commit -m "docs(ops): pod deployment runbook for ralph-executor"
 
 **Confidence: 95%** — gate.
 
-- [ ] **Step 1: ruff check + format**
+- [x] **Step 1: ruff check + format**
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-- [ ] **Step 2: mypy**
+- [x] **Step 2: mypy**
 
 ```bash
 uv run mypy ralph_executor scripts skills tests
 ```
 
-- [ ] **Step 3: Full pytest**
+- [x] **Step 3: Full pytest**
 
 ```bash
 uv run pytest -q
 ```
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 ```bash
 git push -u origin ralph/SKILLS-QUEUE-CLONE-MIGRATION

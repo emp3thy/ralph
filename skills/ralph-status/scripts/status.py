@@ -1,28 +1,21 @@
 """``ralph-status`` skill entry point.
 
-Render a read-only view of one or more service repos' ralph-queue
-state. Uses a temporary ``git worktree`` per repo so the user's
-working tree is untouched.
+Read-only view of the single queue clone at
+``<workspace_root>/queue/``. Walks ``.ralph/<state>/`` for every state
+folder, parses each PBI's frontmatter via ``scripts.pbi_reader``, and
+renders the rows as a fixed-width table or JSON.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
-import os
-import shutil
-import subprocess
 import sys
-import tempfile
-from collections.abc import Iterable
-from contextlib import suppress
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 # Make ``scripts.pbi_reader`` importable when this script is invoked
-# directly via ``uv run python skills/ralph-status/scripts/show.py``.
+# directly via ``uv run python skills/ralph-status/scripts/status.py``.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -33,48 +26,20 @@ from scripts.pbi_reader import (  # noqa: E402
     PBIRowError,
     enumerate_state,
 )
-
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
-
-
-@dataclass
-class RepoConfig:
-    path: Path
-    name: str
-    branch: str
-
-
-@dataclass
-class RepoSnapshot:
-    config: RepoConfig
-    worktree_path: Path
-    rows: list[PBIRow | PBIRowError] = field(default_factory=list)
-
-
-class _FatalError(RuntimeError):
-    """Raised internally to signal a clean exit with code 2."""
+from scripts.queue_writer import (  # noqa: E402
+    QueueWriterError,
+    acquire_queue_clone,
+    resolve_queue_repo,
+    resolve_workspace_root,
+)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="ralph-status",
         description=(
-            "Read-only view of Ralph's queue across one or more service "
-            "repos. Creates a short-lived git worktree per repo to read "
-            "the ralph-queue branch without disturbing the user's "
-            "working tree."
-        ),
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--repo",
-        help="Path to a service repo to inspect.",
-    )
-    group.add_argument(
-        "--repos-file",
-        help=(
-            "Path to a config file listing service repos to inspect "
-            "(one path per non-blank, non-comment line)."
+            "Read-only view of the ralph queue. Reads "
+            "$RALPH_WORKSPACE/queue/.ralph/ and groups output by target_repo."
         ),
     )
     parser.add_argument(
@@ -83,9 +48,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Filter rows to a single state.",
     )
     parser.add_argument(
-        "--branch",
-        default=os.environ.get("RALPH_QUEUE_BRANCH", DEFAULT_QUEUE_BRANCH),
-        help=f"Queue branch name (default: {DEFAULT_QUEUE_BRANCH}).",
+        "--target-repo",
+        dest="target_repo",
+        help="Filter rows to PBIs whose target_repo matches this URL.",
     )
     parser.add_argument(
         "--json",
@@ -94,127 +59,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Emit JSON to stdout instead of a fixed-width table.",
     )
     parser.add_argument(
-        "--no-cleanup",
-        action="store_true",
-        help="Keep the temporary worktree(s) on disk after the command exits.",
+        "--workspace",
+        type=Path,
+        help="Override workspace_root from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-repo",
+        dest="queue_repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
     )
     return parser.parse_args(argv)
 
 
-def _load_repos_config(args: argparse.Namespace) -> list[RepoConfig]:
-    configs: list[RepoConfig] = []
-    branch = args.branch
-
-    # Use `is not None`, not truthiness: an explicit `--repo ""` would
-    # otherwise fall through to the else branch and crash on
-    # Path(None).resolve() because args.repos_file is None when --repo
-    # was given (argparse mutually-exclusive group).
-    if args.repo is not None:
-        if not args.repo.strip():
-            raise _FatalError("--repo must not be empty")
-        path = Path(args.repo).resolve()
-        configs.append(RepoConfig(path=path, name=path.name, branch=branch))
-    else:
-        cfg_path = Path(args.repos_file).resolve()
-        if not cfg_path.is_file():
-            raise _FatalError(f"--repos-file path does not exist: {cfg_path}")
-        for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            path = Path(line).expanduser().resolve()
-            configs.append(RepoConfig(path=path, name=path.name, branch=branch))
-        if not configs:
-            raise _FatalError(f"--repos-file contained no usable entries: {cfg_path}")
-    return configs
-
-
-def _run_git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _is_git_repo(path: Path) -> bool:
-    return (path / ".git").exists() or (path / "HEAD").is_file()
-
-
-def _ensure_branch_exists(repo: Path, branch: str) -> None:
-    """Verify the named branch can be resolved locally or via origin/."""
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        return
-    remote = _run_git(repo, "branch", "-r", "--list", f"origin/{branch}")
-    if remote.strip():
-        return
-    raise _FatalError(
-        f"branch {branch!r} not found locally or as origin/{branch} "
-        f"in {repo} (did Plan 2's setup runbook run against this repo?)"
-    )
-
-
-def _resolve_branch_ref(repo: Path, branch: str) -> str:
-    """Return a ref name we can hand to ``git worktree add``."""
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        return branch
-    return f"origin/{branch}"
-
-
-def _create_worktree(repo: Path, branch: str, dest: Path) -> Path:
-    """Create a detached worktree at ``dest`` pointing at ``branch``."""
-    ref = _resolve_branch_ref(repo, branch)
-    _run_git(repo, "worktree", "add", "--detach", str(dest), ref)
-    return dest
-
-
-def _remove_worktree(repo: Path, worktree_dir: Path) -> None:
-    try:
-        _run_git(repo, "worktree", "remove", "--force", str(worktree_dir))
-    except subprocess.CalledProcessError:
-        shutil.rmtree(worktree_dir, ignore_errors=True)
-        with suppress(subprocess.CalledProcessError):
-            _run_git(repo, "worktree", "prune")
-
-
-def _extract_queue_snapshot(
-    config: RepoConfig,
-    *,
-    states: Iterable[str],
-    worktree_root: Path,
-) -> RepoSnapshot:
-    if not config.path.exists():
-        raise _FatalError(f"--repo path does not exist: {config.path}")
-    if not _is_git_repo(config.path):
-        raise _FatalError(f"{config.path} is not a git repository (no .git/ directory)")
-    _ensure_branch_exists(config.path, config.branch)
-
-    # Disambiguate repos that share a basename. Two unrelated checkouts
-    # like /team-a/service and /team-b/service both have name=="service";
-    # without the path-hash suffix they would collide on the same
-    # worktree_dir, and the second iteration's `git worktree remove`
-    # would fail (the dir is registered against the FIRST repo's git
-    # database, not the second), leaving a stale entry that subsequent
-    # `git worktree prune` runs would never see.
-    path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
-    worktree_dir = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
-    if worktree_dir.exists():
-        _remove_worktree(config.path, worktree_dir)
-
-    _create_worktree(config.path, config.branch, worktree_dir)
-    snapshot = RepoSnapshot(config=config, worktree_path=worktree_dir)
-    for state in states:
-        snapshot.rows.extend(enumerate_state(worktree_dir, state, repo_name=config.name))
-    return snapshot
-
-
 _COLUMN_ORDER: tuple[str, ...] = (
-    "REPO",
+    "TARGET",
     "STATE",
     "ID",
     "TYPE",
@@ -222,6 +80,8 @@ _COLUMN_ORDER: tuple[str, ...] = (
     "AGE",
     "TITLE",
 )
+
+_TARGET_DISPLAY_MAX = 50
 
 
 def _age_string(created_at: datetime | None) -> str:
@@ -244,10 +104,16 @@ def _age_string(created_at: datetime | None) -> str:
     return f"{days}d"
 
 
+def _truncate_target(target: str) -> str:
+    if len(target) <= _TARGET_DISPLAY_MAX:
+        return target
+    return target[: _TARGET_DISPLAY_MAX - 3] + "..."
+
+
 def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
     if isinstance(row, PBIRow):
         return [
-            row.repo_name,
+            _truncate_target(row.target_repo) if row.target_repo else "?",
             row.state,
             row.pbi_id,
             row.pbi_type,
@@ -256,7 +122,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
             row.title,
         ]
     return [
-        row.repo_name,
+        "?",
         row.state,
         row.pbi_dir.name,
         "?",
@@ -264,6 +130,18 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
         "?",
         f"(parse error) {row.message}",
     ]
+
+
+def _group_and_sort(rows: list[PBIRow | PBIRowError]) -> list[PBIRow | PBIRowError]:
+    """Stable sort by (target_repo, state, created_at) so output is grouped."""
+
+    def key(row: PBIRow | PBIRowError) -> tuple[str, str, str]:
+        if isinstance(row, PBIRow):
+            created = row.created_at.isoformat() if row.created_at else ""
+            return (row.target_repo or "", row.state, created)
+        return ("", row.state, "")
+
+    return sorted(rows, key=key)
 
 
 def _render_table(rows: list[PBIRow | PBIRowError]) -> str:
@@ -292,21 +170,10 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _row_to_json(row: PBIRow | PBIRowError, *, canonical_repo_path: Path) -> dict[str, object]:
-    """Render a row as JSON. ``canonical_repo_path`` is the service repo
-    path the operator passed via ``--repo``, NOT the temp worktree under
-    which the rows were collected.
-
-    The reader currently stores ``row.repo_path == worktree_dir`` because
-    ``enumerate_state`` walks the worktree. That's the right value for
-    ``row.relative_pbi_dir()`` (pbi_dir IS under the worktree), but it's
-    the wrong value to expose to downstream JSON consumers — they expect
-    the service repo path (the one in ``repos[*].path``). Pass the
-    canonical path in from the snapshot to emit the right value."""
+def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
     if isinstance(row, PBIRow):
         return {
-            "repo": str(canonical_repo_path),
-            "repo_name": row.repo_name,
+            "target_repo": row.target_repo or None,
             "state": row.state,
             "id": row.pbi_id,
             "type": row.pbi_type,
@@ -319,125 +186,85 @@ def _row_to_json(row: PBIRow | PBIRowError, *, canonical_repo_path: Path) -> dic
             "error": None,
         }
     return {
-        "repo": str(canonical_repo_path),
-        "repo_name": row.repo_name,
+        "target_repo": None,
         "state": row.state,
         "id": row.pbi_dir.name,
-        "type": "?",
-        "severity": "?",
-        "attempts": 0,
+        "type": None,
+        "severity": None,
+        "attempts": None,
         "created_at": None,
         "updated_at": None,
-        "title": f"(parse error) {row.message}",
+        "title": None,
         "pbi_dir": row.relative_pbi_dir(),
         "error": row.message,
     }
 
 
-def _render_json(
-    snapshots: list[RepoSnapshot],
-    top_level_errors: list[str],
-) -> str:
-    rows: list[dict[str, object]] = []
-    for snap in snapshots:
-        for row in snap.rows:
-            rows.append(_row_to_json(row, canonical_repo_path=snap.config.path))
+def _render_json(rows: list[PBIRow | PBIRowError], errors: list[str]) -> str:
     payload: dict[str, object] = {
-        "rows": rows,
-        "errors": top_level_errors,
-        "repos": [
-            {
-                "path": str(snap.config.path),
-                "name": snap.config.name,
-                "branch": snap.config.branch,
-                "worktree_path": str(snap.worktree_path),
-            }
-            for snap in snapshots
-        ],
+        "rows": [_row_to_json(row) for row in rows],
+        "errors": errors,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def _collect_rows(
+    queue_clone: Path,
+    *,
+    states: tuple[str, ...],
+) -> list[PBIRow | PBIRowError]:
+    rows: list[PBIRow | PBIRowError] = []
+    for state in states:
+        rows.extend(enumerate_state(queue_clone, state))
+    return rows
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
-    states: tuple[str, ...] = (args.state,) if args.state else STATE_FOLDERS
-
     try:
-        configs = _load_repos_config(args)
-    except _FatalError as exc:
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_clone = acquire_queue_clone(workspace_root, queue_repo)
+    except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    worktree_root = Path(tempfile.mkdtemp(prefix="ralph-status-"))
-    snapshots: list[RepoSnapshot] = []
-    # Per-repo failures land here and propagate to the JSON `errors`
-    # field, per the SKILL.md contract: "Repos that could not be
-    # inspected at all appear in the top-level errors array and cause
-    # exit code 2." Without this, a single bad repo aborts the whole
-    # run and downstream JSON consumers never see per-repo detail.
-    top_level_errors: list[str] = []
     try:
-        for config in configs:
-            # _extract_queue_snapshot may call _create_worktree (which
-            # registers an entry in the service repo's .git/worktrees/)
-            # and THEN fail in enumerate_state (e.g. PermissionError on
-            # a state dir). Guard the call so a partial worktree gets
-            # cleaned up AND a failing repo doesn't kill the whole run.
-            try:
-                snap = _extract_queue_snapshot(config, states=states, worktree_root=worktree_root)
-            except Exception as exc:
-                if not args.no_cleanup:
-                    path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
-                    candidate = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
-                    if candidate.exists():
-                        with contextlib.suppress(Exception):
-                            _remove_worktree(config.path, candidate)
-                top_level_errors.append(f"{config.path}: {type(exc).__name__}: {exc}")
-                continue
-            snapshots.append(snap)
+        states: tuple[str, ...] = (args.state,) if args.state else STATE_FOLDERS
+        rows = _collect_rows(queue_clone, states=states)
 
-        all_rows: list[PBIRow | PBIRowError] = []
-        for snap in snapshots:
-            all_rows.extend(snap.rows)
+        if args.target_repo:
+            # PBIRowError rows have no parseable target_repo to filter on
+            # but the SKILL.md contract requires them to appear in `rows`
+            # so the caller can see parse failures. Pass them through the
+            # filter unconditionally; only PBIRow gets target_repo-matched.
+            filtered: list[PBIRow | PBIRowError] = [
+                row
+                for row in rows
+                if isinstance(row, PBIRowError)
+                or (isinstance(row, PBIRow) and row.target_repo == args.target_repo)
+            ]
+            rows = filtered
+
+        rows = _group_and_sort(rows)
 
         if args.emit_json:
-            sys.stdout.write(_render_json(snapshots, top_level_errors=top_level_errors))
+            sys.stdout.write(_render_json(rows, errors=[]))
         else:
-            sys.stdout.write(_render_table(all_rows))
-            repo_count = len(snapshots)
-            pbi_count = len(all_rows)
+            sys.stdout.write(_render_table(rows))
+            pbi_count = len(rows)
             print(
-                f"# {pbi_count} PBI(s) across {repo_count} repo(s) (states: {', '.join(states)})",
+                f"# {pbi_count} PBI(s) in {queue_clone} (states: {', '.join(states)})",
                 file=sys.stderr,
             )
-            for err in top_level_errors:
-                print(f"# repo-level error: {err}", file=sys.stderr)
-        # Exit 2 if any per-repo failure happened, 0 only if every
-        # repo inspected cleanly. Matches the SKILL.md contract.
-        return 2 if top_level_errors else 0
-    except _FatalError as exc:
+    except Exception as exc:
+        # Per SKILL.md: top-level failures print to stderr and exit 2.
+        # Catch-all preserves the documented contract even if a future
+        # change to _render_* or _collect_rows raises something new.
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr or ""
-        print(
-            f"error: git command failed ({exc.returncode}): {' '.join(exc.cmd)}\n{stderr}",
-            file=sys.stderr,
-        )
-        return 2
-    except Exception as exc:
-        # Catch-all for failures OUTSIDE the per-repo loop (e.g. an
-        # unexpected error during _render_json / _render_table). The
-        # per-repo failures are already captured in top_level_errors
-        # above; this is the safety net for everything else.
-        print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-    finally:
-        if not args.no_cleanup:
-            for snap in snapshots:
-                _remove_worktree(snap.config.path, snap.worktree_path)
-            shutil.rmtree(worktree_root, ignore_errors=True)
+    return 0
 
 
 if __name__ == "__main__":

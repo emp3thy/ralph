@@ -1,11 +1,11 @@
-"""Shared helpers for skills that mutate the ``ralph-queue`` branch.
+"""Shared helpers for skills that mutate the queue clone.
 
 The four supervisor skills (`ralph-add`, `ralph-cancel`, `ralph-promote`,
-`ralph-triage`) all follow the same pattern: validate the target repo,
-switch onto `ralph-queue`, mutate one or more PBI directories, commit,
-optionally push. This module is the single source of truth for that
-pattern so the skills stay consistent and the git-related test surface
-has a single home.
+`ralph-triage`) all follow the same pattern: acquire the queue clone at
+``<workspace_root>/queue/`` (always on ``main``), mutate one or more PBI
+directories under ``.ralph/``, commit, optionally push. This module is
+the single source of truth for that pattern so the skills stay
+consistent and the git-related test surface has a single home.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from ralph_executor.queue_clone import QueueCloneError, ensure_queue_clone
 
 QUEUE_STATE_FOLDERS: tuple[str, ...] = (
     "current",
@@ -68,27 +70,86 @@ def ensure_git_repo(repo: Path) -> None:
         raise QueueWriterError(f"{repo} is not a git repository (no .git/ directory)")
 
 
-def checkout_queue_branch(repo: Path, branch: str) -> None:
-    """Switch the working tree onto ``branch``.
+def acquire_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+    """Idempotent queue clone for operator skills.
 
-    If the branch exists locally, ``git checkout <branch>``. Otherwise, if
-    ``origin/<branch>`` exists, create a tracking branch. Otherwise raise
-    ``QueueWriterError`` -- the caller must run the ``ralph-queue`` setup
-    runbook first (Plan 2).
+    Thin wrapper around ``ralph_executor.queue_clone.ensure_queue_clone``
+    so skills can import a stable surface from this module without taking
+    a dependency on the executor package layout directly. On first call
+    the queue repo is cloned to ``<workspace_root>/queue``; on subsequent
+    calls the existing clone is fetched and fast-forwarded on ``main``.
+
+    Re-raises ``QueueCloneError`` (clone/fetch network or auth failures)
+    as ``QueueWriterError`` so that skills only need to handle one
+    exception type from this module — the contract documented above.
     """
-    ensure_git_repo(repo)
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        _run_git(repo, "checkout", branch)
-        return
-    remote = _run_git(repo, "branch", "-r", "--list", f"origin/{branch}")
-    if remote.strip():
-        _run_git(repo, "checkout", "-b", branch, f"origin/{branch}")
-        return
-    raise QueueWriterError(
-        f"branch {branch!r} not found locally or as origin/{branch}; "
-        "run docs/runbooks/ralph-queue-setup.md first"
-    )
+    try:
+        return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
+    except QueueCloneError as exc:
+        raise QueueWriterError(str(exc)) from exc
+
+
+_DEFAULT_WORKSPACE_ROOT = Path.home() / "ralph-workspaces"
+
+
+def resolve_workspace_root(cli_value: Path | None = None) -> Path:
+    """Resolve ``workspace_root`` for operator skills.
+
+    Order: explicit ``--workspace`` CLI flag → ``workspace_root`` in
+    ``~/.ralph/config.toml`` → default ``~/ralph-workspaces``. Returns an
+    absolute, expanded path. Skills never read the env-var fallback
+    (``RALPH_WORKSPACE``) directly — that knob is intentional executor-
+    only territory; skill paths are an operator-facing surface and stay
+    on the TOML / CLI rails.
+
+    ``ConfigError`` from a malformed / unreadable / wrong-type
+    ``~/.ralph/config.toml`` is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type from this module.
+    """
+    if cli_value is not None:
+        return cli_value.expanduser().resolve()
+    from ralph_executor.config import ConfigError
+    from ralph_executor.user_config import read_workspace_root
+
+    try:
+        from_toml = read_workspace_root()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+    if from_toml is not None:
+        return from_toml.expanduser().resolve()
+    return _DEFAULT_WORKSPACE_ROOT.resolve()
+
+
+def resolve_queue_repo(cli_value: str | None = None) -> str:
+    """Resolve ``queue_repo`` for operator skills.
+
+    Order: explicit ``--queue-repo`` CLI flag → ``queue_repo`` in
+    ``~/.ralph/config.toml``. No silent default — without a queue URL the
+    skill cannot do anything meaningful, so raise ``QueueWriterError``
+    pointing the operator at the init command.
+
+    ``ConfigError`` from a malformed / unreadable / wrong-type
+    ``~/.ralph/config.toml`` is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type from this module.
+    """
+    if cli_value is not None:
+        value = cli_value.strip()
+        if not value:
+            raise QueueWriterError("--queue-repo must be a non-empty string")
+        return value
+    from ralph_executor.config import ConfigError
+    from ralph_executor.user_config import read_queue_repo
+
+    try:
+        from_toml = read_queue_repo()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+    if from_toml is None:
+        raise QueueWriterError(
+            "queue_repo not configured: pass --queue-repo or set "
+            "'queue_repo' in ~/.ralph/config.toml (e.g. via `ralph-executor init`)"
+        )
+    return from_toml
 
 
 def is_path_in_head(repo: Path, rel_path: str) -> bool:

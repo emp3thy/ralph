@@ -2,7 +2,7 @@
 
 These helpers back the four supervisor skills (``ralph-add``,
 ``ralph-cancel``, ``ralph-promote``, ``ralph-triage``) and own all
-filesystem + git mutations on the ``ralph-queue`` branch.
+filesystem + git mutations on the queue clone's ``main`` branch.
 
 Every test builds a local bare repo + working clone in ``tmp_path`` so
 pushes are real (to a real local remote) and there is no network.
@@ -16,10 +16,11 @@ from pathlib import Path
 
 import pytest
 
+import scripts.queue_writer as qw
 from scripts.queue_writer import (
     QueueWriterError,
+    acquire_queue_clone,
     append_history,
-    checkout_queue_branch,
     commit_paths,
     ensure_git_repo,
     find_pbi_directory,
@@ -54,10 +55,6 @@ def git_repo(tmp_path: Path) -> Iterator[Path]:
     _git(work, "branch", "-M", "main")
     _git(work, "remote", "add", "origin", str(bare))
     _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
-    _git(work, "commit", "--allow-empty", "-m", "chore(queue): bootstrap ralph-queue")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
     yield work
 
 
@@ -71,62 +68,124 @@ def test_ensure_git_repo_rejects_non_repo(tmp_path: Path) -> None:
     assert "not a git repository" in str(exc.value).lower()
 
 
-def test_checkout_queue_branch_switches_to_existing_branch(
-    git_repo: Path,
+def test_acquire_queue_clone_returns_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """acquire_queue_clone forwards to ensure_queue_clone and returns its Path."""
+    seen: dict[str, object] = {}
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        seen["workspace"] = workspace_root
+        seen["queue_repo"] = queue_repo
+        seen["timeout"] = timeout
+        return workspace_root / "queue"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+
+    path = acquire_queue_clone(tmp_path, "https://github.com/example/q")
+    assert path == tmp_path / "queue"
+    assert seen == {
+        "workspace": tmp_path,
+        "queue_repo": "https://github.com/example/q",
+        "timeout": 120.0,
+    }
+
+
+def test_acquire_queue_clone_forwards_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
-    current = _git(git_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert current == "ralph-queue"
+    """Custom timeout kwarg threads through to ensure_queue_clone."""
+    captured: dict[str, object] = {}
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        captured["timeout"] = timeout
+        return workspace_root / "queue"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+    acquire_queue_clone(tmp_path, "https://github.com/example/q", timeout=30.0)
+    assert captured["timeout"] == 30.0
 
 
-def test_checkout_queue_branch_creates_local_tracking_when_only_remote_exists(
-    git_repo: Path,
+def test_acquire_queue_clone_wraps_queue_clone_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _git(git_repo, "checkout", "main")
-    _git(git_repo, "branch", "-D", "ralph-queue")
-    checkout_queue_branch(git_repo, "ralph-queue")
-    current = _git(git_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert current == "ralph-queue"
+    """A QueueCloneError from ensure_queue_clone must be re-raised as
+    QueueWriterError so skills only need to handle one exception type
+    from this module."""
+    from ralph_executor.queue_clone import QueueCloneError
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        raise QueueCloneError("git fetch failed (exit 128): could not auth")
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        acquire_queue_clone(tmp_path, "https://github.com/example/q")
+    assert "git fetch failed" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, QueueCloneError)
 
 
-def test_checkout_queue_branch_errors_when_branch_absent(
-    git_repo: Path,
-) -> None:
-    with pytest.raises(QueueWriterError) as exc:
-        checkout_queue_branch(git_repo, "does-not-exist")
-    msg = str(exc.value).lower()
-    assert "does-not-exist" in msg
+def test_resolve_workspace_root_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ConfigError from read_workspace_root (malformed config.toml) must
+    be re-raised as QueueWriterError so skills only see one type."""
+    from ralph_executor.config import ConfigError
+
+    def fake_read() -> Path | None:
+        raise ConfigError("/fake/.ralph/config.toml: invalid TOML: unexpected '='")
+
+    monkeypatch.setattr("ralph_executor.user_config.read_workspace_root", fake_read)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        qw.resolve_workspace_root(None)
+    assert "invalid TOML" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
+def test_resolve_queue_repo_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ConfigError from read_queue_repo (malformed config.toml) must be
+    re-raised as QueueWriterError so skills only see one type."""
+    from ralph_executor.config import ConfigError
+
+    def fake_read() -> str | None:
+        raise ConfigError("/fake/.ralph/config.toml: cannot read file: permission denied")
+
+    monkeypatch.setattr("ralph_executor.user_config.read_queue_repo", fake_read)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        qw.resolve_queue_repo(None)
+    assert "permission denied" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
+def test_checkout_queue_branch_is_removed() -> None:
+    """No compat shim: the old branch-checkout helper must not exist."""
+    assert not hasattr(qw, "checkout_queue_branch")
 
 
 def test_commit_paths_stages_and_records_commit(git_repo: Path) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
     pbi_dir = git_repo / ".ralph" / "inbox" / "WI-1"
     pbi_dir.mkdir(parents=True)
     (pbi_dir / "PBI.md").write_text("---\nid: WI-1\n---\n", encoding="utf-8")
     sha = commit_paths(
         git_repo,
         [pbi_dir],
-        "feat(ralph-queue): add WI-1",
+        "chore(queue): add WI-1",
     )
     assert sha
     log = _git(git_repo, "log", "-1", "--pretty=%s").strip()
-    assert log == "feat(ralph-queue): add WI-1"
+    assert log == "chore(queue): add WI-1"
 
 
 def test_push_advances_remote(git_repo: Path) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
-    before = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    before = _git(git_repo, "ls-remote", "origin", "main").strip()
     pbi_dir = git_repo / ".ralph" / "inbox" / "WI-2"
     pbi_dir.mkdir(parents=True)
     (pbi_dir / "PBI.md").write_text("---\nid: WI-2\n---\n", encoding="utf-8")
-    commit_paths(git_repo, [pbi_dir], "feat(ralph-queue): add WI-2")
-    push(git_repo, "ralph-queue")
-    after = _git(git_repo, "ls-remote", "origin", "ralph-queue").strip()
+    commit_paths(git_repo, [pbi_dir], "chore(queue): add WI-2")
+    push(git_repo, "main")
+    after = _git(git_repo, "ls-remote", "origin", "main").strip()
     assert before != after
 
 
 def test_find_pbi_directory_scans_state_folders(git_repo: Path) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
     target = git_repo / ".ralph" / "blocked" / "WI-3"
     target.mkdir(parents=True)
     (target / "PBI.md").write_text("---\nid: WI-3\n---\n", encoding="utf-8")
@@ -135,7 +194,6 @@ def test_find_pbi_directory_scans_state_folders(git_repo: Path) -> None:
 
 
 def test_find_pbi_directory_returns_none_when_missing(git_repo: Path) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
     (git_repo / ".ralph" / "inbox").mkdir(parents=True, exist_ok=True)
     assert find_pbi_directory(git_repo, "WI-NOPE") is None
 
@@ -143,7 +201,6 @@ def test_find_pbi_directory_returns_none_when_missing(git_repo: Path) -> None:
 def test_find_pbi_directory_prefers_current_over_other_states(
     git_repo: Path,
 ) -> None:
-    checkout_queue_branch(git_repo, "ralph-queue")
     inbox = git_repo / ".ralph" / "inbox" / "WI-4"
     inbox.mkdir(parents=True)
     (inbox / "PBI.md").write_text("---\nid: WI-4\n---\n", encoding="utf-8")
