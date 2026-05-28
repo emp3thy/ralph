@@ -550,7 +550,7 @@ git commit -m "feat(ralph-status): group by target_repo; new TARGET column"
 - Modify: `skills/ralph-status/scripts/status.py`
 - Test: `tests/skills/test_ralph_status.py`
 
-- [ ] **Step 1: Replace `_row_to_json`**
+- [x] **Step 1: Replace `_row_to_json`**
 
 ```python
 def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
@@ -585,7 +585,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
 
 Top-level JSON envelope: `{"rows": [...], "errors": []}`. No `repos` array (single queue).
 
-- [ ] **Step 2: Rewrite `tests/skills/test_ralph_status.py`**
+- [x] **Step 2: Rewrite `tests/skills/test_ralph_status.py`**
 
 Replace all multi-repo fixtures with single-queue-clone fixtures:
 - Bare git repo as the queue remote.
@@ -596,13 +596,13 @@ Replace all multi-repo fixtures with single-queue-clone fixtures:
   - `--target-repo X`: only rows for X.
   - `--json`: new envelope shape; no `repos` key; rows have `target_repo`.
 
-- [ ] **Step 3: Run; expect PASS**
+- [x] **Step 3: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_status.py -v
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add skills/ralph-status/ tests/skills/test_ralph_status.py
