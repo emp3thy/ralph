@@ -78,6 +78,16 @@ DEFAULT_STALE_DAYS = 3
 # ``claude_spawn.spawn_claude_p`` (subprocess-scoped, NOT exported to
 # ralph's parent env).
 DEFAULT_BASH_MAX_TIMEOUT_MS = 900_000
+# Per-iteration deadline (seconds) for the spawned ``claude -p``
+# subprocess. ``BASH_MAX_TIMEOUT_MS`` caps each individual bash-tool
+# call inside Claude, but a session can chain dozens of tool calls and
+# stay alive much longer than any sensible per-iteration budget. When
+# ``proc.wait(timeout=...)`` exceeds this value, the executor kills the
+# child and surfaces a synthetic ``error`` outcome to the loop so
+# attempts/max-attempts machinery handles the give-up policy. 1200 s
+# (20 min) is tight enough to catch hangs within one short coffee break
+# while leaving normal first-iteration work room to finish.
+DEFAULT_CLAUDE_SESSION_TIMEOUT_SECONDS = 1200
 # Sweep auto-merge opt-in (Plan SWEEP-AUTO-MERGE-CLEAN-PRS). When True,
 # the sweep auto-merges PRs that GitHub reports as
 # ``mergeable_state == "clean"`` (CI green + required approvals + no
@@ -126,6 +136,9 @@ _TOML_KNOWN_KEYS = frozenset(
         # spawned claude subprocess via BASH_MAX_TIMEOUT_MS — see
         # claude_spawn.spawn_claude_p.
         "bash_max_timeout_ms",
+        # Per-iteration deadline for the spawned claude subprocess. See
+        # DEFAULT_CLAUDE_SESSION_TIMEOUT_SECONDS above.
+        "claude_session_timeout_seconds",
         # CI-green verifier budget — see DEFAULT_PR_CHECK_POLL_* above.
         "pr_check_poll_max_attempts",
         "pr_check_poll_interval_seconds",
@@ -217,6 +230,14 @@ class ExecutorConfig:
     # min); Claude Code's own default is 600_000 (10 min). Strictly
     # positive (validated in ``load_config``).
     bash_max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS
+    # Per-iteration wall-clock deadline (seconds) for the spawned
+    # ``claude -p`` subprocess. Enforced by
+    # ``claude_spawn.spawn_claude_p`` via ``proc.wait(timeout=...)``; on
+    # expiry the child is killed, tee threads are joined, and a
+    # synthetic ``ClaudeOutcome(kind="error", ...)`` surfaces to the
+    # loop so attempts increments and max-attempts → blocked. Strictly
+    # positive (validated in ``load_config``).
+    claude_session_timeout_seconds: int = DEFAULT_CLAUDE_SESSION_TIMEOUT_SECONDS
     # Sweep auto-merge opt-in. When True the sweep act path merges PRs
     # that GitHub reports as ``mergeable_state == "clean"`` via the
     # ``pr-github`` skill's ``merge_pr`` op. Default False — flag must be
@@ -537,6 +558,18 @@ def load_config() -> ExecutorConfig:
         raise ConfigError(
             f"{source_label}: bash_max_timeout_ms must be positive (got {bash_max_timeout_ms})"
         )
+    claude_session_timeout_seconds = _resolve_int(
+        name="claude_session_timeout_seconds",
+        env_name="RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS",
+        toml_value=toml_overrides.get("claude_session_timeout_seconds"),
+        default=DEFAULT_CLAUDE_SESSION_TIMEOUT_SECONDS,
+        source_label=source_label,
+    )
+    if claude_session_timeout_seconds <= 0:
+        raise ConfigError(
+            f"{source_label}: claude_session_timeout_seconds must be positive "
+            f"(got {claude_session_timeout_seconds})"
+        )
     pr_check_poll_max_attempts = _resolve_int(
         name="pr_check_poll_max_attempts",
         env_name="RALPH_PR_CHECK_POLL_MAX_ATTEMPTS",
@@ -610,6 +643,7 @@ def load_config() -> ExecutorConfig:
         bot_author_email=bot_author_email,
         stale_days=stale_days,
         bash_max_timeout_ms=bash_max_timeout_ms,
+        claude_session_timeout_seconds=claude_session_timeout_seconds,
         auto_merge_clean_prs=auto_merge_clean_prs,
         same_file_min_prs=same_file_min_prs,
         same_file_window_hours=same_file_window_hours,

@@ -64,6 +64,13 @@ CONFIG_TOML_STUB = """\
 # ralph's parent env is not touched). Must be positive.
 # bash_max_timeout_ms = 900000
 #
+# Per-iteration wall-clock deadline (seconds) for the spawned claude -p
+# subprocess. On timeout the executor kills the child and surfaces an
+# error outcome to the loop (attempts increments, max-attempts -> blocked).
+# Default 1200 (20 min). Env override: RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS.
+# Must be positive.
+# claude_session_timeout_seconds = 1200
+#
 # Sweep auto-merge: when true, sweep auto-merges PRs that GitHub reports as
 # mergeable_state == "clean" (CI green + required approvals + no conflicts +
 # branch up-to-date). Default false. Opt in carefully — merging a PR a human

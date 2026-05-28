@@ -27,16 +27,18 @@ opened but a later step failed).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal
 
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.types import PBI
@@ -405,6 +407,48 @@ def _summarise_stream_json_line(raw_line: str) -> str:
     return event_type
 
 
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill ``proc`` AND any descendants.
+
+    The Windows ``claude`` binary is a ``.cmd`` shim that ``exec``s the
+    real Node entrypoint; ``proc.kill()`` only terminates the shim, so
+    the Node child keeps the stdout/stderr pipes open and the tee
+    threads block forever on read. We use ``taskkill /T /F`` on Windows
+    to walk the parent->child tree. On POSIX the spawn uses a fresh
+    process group (``start_new_session=True``) so a single ``killpg``
+    fells the whole tree, with ``proc.kill()`` as a fallback if the
+    process group could not be set (e.g. the spawn raced ahead of
+    ``setsid``).
+    """
+    if sys.platform == "win32":
+        # /T = also terminate child processes; /F = forceful. We ignore
+        # the return code: a non-zero exit just means the process was
+        # already gone, which is the desired end state. Suppress
+        # TimeoutExpired so ``_kill_process_tree`` never propagates an
+        # exception from inside an ``except`` handler in the caller.
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                check=False,
+                capture_output=True,
+                timeout=10,
+            )
+        # ``taskkill`` does the work; ``proc.kill()`` is a no-op fallback
+        # in case ``taskkill`` is unavailable on the operator's PATH (rare
+        # on a real Windows install but cheap to guard against).
+        with contextlib.suppress(OSError):
+            proc.kill()
+        return
+    # POSIX: kill the whole process group. ``os.killpg`` raises
+    # ``ProcessLookupError`` when the leader has already exited; in that
+    # case ``proc.kill()`` is enough to clean up anything left.
+    try:
+        os.killpg(os.getpgid(proc.pid), 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(OSError):
+            proc.kill()
+
+
 def _tee_stream(
     stream: IO[str],
     prefix: str,
@@ -495,6 +539,21 @@ def spawn_claude_p(
     env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
+    # Put the child in its own process group / session so the timeout
+    # path can fell the whole tree with one ``killpg`` (POSIX). On
+    # Windows we use ``taskkill /T`` instead, but starting in a new
+    # process group is still useful so the parent's Ctrl-C does not
+    # cascade into ralph's spawn while it is being killed deliberately.
+    popen_kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        # subprocess.CREATE_NEW_PROCESS_GROUP isn't strictly needed for
+        # taskkill /T to walk the tree (it traces parent->child via the
+        # Win32 toolhelp snapshot), but it isolates the child's signal
+        # disposition from ralph's so a Ctrl-C in the parent shell does
+        # not race with the timeout-driven taskkill.
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
         argv,
         cwd=str(effective_cwd),
@@ -503,6 +562,7 @@ def spawn_claude_p(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        **popen_kwargs,
     )
     stdout_buf: list[str] = []
     stderr_buf: list[str] = []
@@ -522,19 +582,49 @@ def spawn_claude_p(
     )
     t_out.start()
     t_err.start()
+    timed_out = False
     try:
-        returncode = proc.wait()
+        returncode = proc.wait(timeout=cfg.claude_session_timeout_seconds)
+    except subprocess.TimeoutExpired:
+        # Per-iteration deadline exceeded — assume the session is wedged
+        # (network hang outside a bash call, infinite tool loop, dead
+        # OAuth refresh, classifier deadlock) and fell the whole process
+        # tree. The tee threads see EOF once descendants die and exit
+        # cleanly. The synthetic outcome below surfaces a clear
+        # ``error`` to the loop, which treats it the same as any other
+        # error iteration: attempts increments, PBI stays in current/,
+        # max-attempts → blocked.
+        log.warning(
+            "claude session for PBI %s exceeded %ss -- killing",
+            pbi.id,
+            cfg.claude_session_timeout_seconds,
+        )
+        _kill_process_tree(proc)
+        # Reap the child so it doesn't linger as a zombie (or trip
+        # ResourceWarning under ``pytest -W error``); ignore OSError if
+        # taskkill / killpg already let Popen finalise.
+        with contextlib.suppress(OSError):
+            proc.wait()
+        timed_out = True
+        returncode = -1
     except BaseException:
         # KeyboardInterrupt (Ctrl-C from the operator) or any other
-        # exception: terminate the child so the pipe-read threads exit
+        # exception: fell the child tree so the pipe-read threads exit
         # cleanly, join them, then re-raise. Without this, the non-daemon
         # threads would block interpreter shutdown forever.
-        proc.kill()
+        _kill_process_tree(proc)
+        with contextlib.suppress(OSError):
+            proc.wait()
         t_out.join()
         t_err.join()
         raise
     t_out.join()
     t_err.join()
+    if timed_out:
+        stderr_buf.append(
+            f"\n[ralph] claude session exceeded "
+            f"{cfg.claude_session_timeout_seconds}s and was killed\n"
+        )
     # Re-raise any exception the tee threads captured so the classifier
     # never operates on truncated output.
     if stdout_err:

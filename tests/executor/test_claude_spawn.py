@@ -703,3 +703,128 @@ def test_spawn_claude_p_sets_bash_max_timeout_ms_from_cfg(
 
     assert outcome.exit_code == 0
     assert "BASH_MAX_TIMEOUT_MS=420000" in outcome.stdout
+
+
+def test_spawn_claude_p_kills_child_on_session_timeout(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``proc.wait`` exceeds ``cfg.claude_session_timeout_seconds``,
+    the spawner kills the child, joins the tee threads, and returns an
+    ``error`` outcome with a synthetic stderr explanation. This is the
+    unit-level coverage; the integration-level coverage drives a real
+    long-running fake claude script."""
+    from dataclasses import replace
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+
+    kill_calls: list[None] = []
+    wait_calls: list[float | None] = []
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = _EmptyStream()
+            self.stderr = _EmptyStream()
+            self.pid = 999999  # unused — taskkill/killpg are stubbed
+            self._killed = False
+
+        def wait(self, timeout: float | None = None) -> int:
+            wait_calls.append(timeout)
+            if not self._killed:
+                raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout or 0.0)
+            return -1
+
+        def kill(self) -> None:
+            kill_calls.append(None)
+            self._killed = True
+            self.stdout.close()
+            self.stderr.close()
+
+    fake_proc = _FakeProc()
+
+    def _fake_popen(*args: object, **kwargs: object) -> _FakeProc:
+        return fake_proc
+
+    tree_kill_calls: list[subprocess.Popen[str]] = []
+
+    def _fake_kill_tree(proc: subprocess.Popen[str]) -> None:
+        tree_kill_calls.append(proc)
+        proc.kill()
+
+    monkeypatch.setattr("ralph_executor.claude_spawn.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr(
+        "ralph_executor.claude_spawn._kill_process_tree",
+        _fake_kill_tree,
+    )
+    # Bypass the post-spawn ``gh pr list`` call; classify_outcome short-
+    # circuits on exit_code != 0 anyway, but we don't want the test
+    # depending on whether ``gh`` is installed.
+    monkeypatch.setattr(
+        "ralph_executor.claude_spawn._query_open_pr_via_gh",
+        lambda repo_path, branch: None,
+    )
+
+    cfg = replace(cfg_for_repo, claude_session_timeout_seconds=1)
+    outcome = spawn_claude_p(cfg, pbi)
+
+    assert tree_kill_calls == [fake_proc]
+    assert kill_calls == [None]
+    assert wait_calls and wait_calls[0] == 1
+    assert outcome.kind == "error"
+    assert outcome.exit_code == -1
+    assert "1s and was killed" in outcome.stderr
+
+
+class _EmptyStream:
+    """Minimal IO stand-in for ``subprocess.PIPE`` streams in unit tests.
+
+    The tee threads iterate the stream until EOF; ``__iter__`` yields
+    nothing so they exit immediately. ``close`` is provided so the fake
+    process can release the iterator if needed.
+    """
+
+    def __init__(self) -> None:
+        self._closed = False
+
+    def __iter__(self) -> _EmptyStream:
+        return self
+
+    def __next__(self) -> str:
+        raise StopIteration
+
+    def close(self) -> None:
+        self._closed = True
+
+
+def test_spawn_claude_p_session_timeout_integration(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+) -> None:
+    """A real long-running fake claude script must be killed within a
+    couple of seconds of the configured budget. Drives the full Popen +
+    tee + wait path that the unit test mocks out."""
+    from dataclasses import replace
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    write_claude_script(
+        fake_claude_binary,
+        "import sys, time\n"
+        "sys.stdout.write('starting\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(60)\n"
+        "sys.exit(0)\n",
+    )
+    cfg = replace(cfg_for_repo, claude_session_timeout_seconds=2)
+
+    start = time.monotonic()
+    outcome = spawn_claude_p(cfg, pbi)
+    elapsed = time.monotonic() - start
+
+    assert outcome.kind == "error"
+    assert outcome.exit_code != 0
+    assert "2s and was killed" in outcome.stderr
+    # Generous upper bound: the wall budget is 2 s, plus a small tail for
+    # process teardown + the post-spawn gh-pr-list call.
+    assert elapsed < 30, f"spawn took {elapsed:.1f}s, expected near 2s"
