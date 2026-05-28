@@ -810,19 +810,40 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
 
     current = source.current_pbi()
     if current is not None:
-        # FilesystemQueueSource doesn't populate ``target_repo`` on the
-        # PBI dataclass (it consumes the on-disk schema directly without
-        # the multi-target fields). Populate it here so ``_run_ralph``'s
-        # terminal-outcome cleanup can re-derive the target clone_root
-        # without depending on ``pbi.path`` (which the move_*_to_*
-        # operations invalidate before cleanup runs).
+        # FilesystemQueueSource doesn't populate ``target_repo`` /
+        # ``work_worktree`` on the PBI dataclass (it consumes the on-disk
+        # schema directly without the multi-target runtime fields).
+        # Populate both here so:
+        #   * ``_run_ralph``'s terminal-outcome cleanup can re-derive the
+        #     target clone_root without depending on ``pbi.path`` (which
+        #     the move_*_to_* operations invalidate before cleanup runs);
+        #   * ``spawn_claude_p`` uses the per-PBI work worktree inside the
+        #     target clone as cwd for resumed PBIs, NOT ``cfg.repo_path``
+        #     (which is ralph's own repo and would corrupt the wrong
+        #     repository for every iteration after the first).
         from dataclasses import replace as _replace
 
         try:
             target_url = _read_target_repo_from_pbi(current)
         except _ClaimError:
             target_url = ""
-        current = _replace(current, target_repo=target_url)
+        work_wt: Path | None = None
+        if cfg.use_worktrees and target_url:
+            try:
+                from ralph_executor.target_clone import ensure_clone
+                from ralph_executor.url_utils import parse_target_repo
+
+                info = parse_target_repo(target_url)
+                clone = ensure_clone(info, workspace_root=cfg.workspace_root)
+                work_wt = work_worktree_path(clone.clone_root, current.id)
+            except Exception:
+                log.warning(
+                    "iterate_once: could not resolve work worktree for resumed PBI %s; "
+                    "spawn_claude_p will fall back to cfg.repo_path",
+                    current.id,
+                    exc_info=True,
+                )
+        current = _replace(current, target_repo=target_url, work_worktree=work_wt)
         # Current occupied → run Ralph on it (attempt counter + spawn).
         # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
         # ``handle_stuck`` on terminal outcomes, both of which call
