@@ -82,6 +82,53 @@ def acquire_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float
     return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
 
 
+_DEFAULT_WORKSPACE_ROOT = Path.home() / "ralph-workspaces"
+
+
+def resolve_workspace_root(cli_value: Path | None = None) -> Path:
+    """Resolve ``workspace_root`` for operator skills.
+
+    Order: explicit ``--workspace`` CLI flag → ``workspace_root`` in
+    ``~/.ralph/config.toml`` → default ``~/ralph-workspaces``. Returns an
+    absolute, expanded path. Skills never read the env-var fallback
+    (``RALPH_WORKSPACE``) directly — that knob is intentional executor-
+    only territory; skill paths are an operator-facing surface and stay
+    on the TOML / CLI rails.
+    """
+    if cli_value is not None:
+        return cli_value.expanduser().resolve()
+    from ralph_executor.user_config import read_workspace_root
+
+    from_toml = read_workspace_root()
+    if from_toml is not None:
+        return from_toml.expanduser().resolve()
+    return _DEFAULT_WORKSPACE_ROOT.resolve()
+
+
+def resolve_queue_repo(cli_value: str | None = None) -> str:
+    """Resolve ``queue_repo`` for operator skills.
+
+    Order: explicit ``--queue-repo`` CLI flag → ``queue_repo`` in
+    ``~/.ralph/config.toml``. No silent default — without a queue URL the
+    skill cannot do anything meaningful, so raise ``QueueWriterError``
+    pointing the operator at the init command.
+    """
+    if cli_value is not None:
+        value = cli_value.strip()
+        if not value:
+            raise QueueWriterError("--queue-repo must be a non-empty string")
+        return value
+    from ralph_executor.user_config import read_queue_repo
+
+    from_toml = read_queue_repo()
+    if from_toml is None:
+        raise QueueWriterError(
+            "queue_repo not configured: pass --queue-repo or set "
+            "'queue_repo' in ~/.ralph/config.toml (e.g. via `ralph-executor init`)"
+        )
+    return from_toml
+
+
 def is_path_in_head(repo: Path, rel_path: str) -> bool:
     """Return True if ``rel_path`` exists in the current ``HEAD`` tree.
 

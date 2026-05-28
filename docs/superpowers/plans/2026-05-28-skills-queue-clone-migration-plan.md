@@ -170,7 +170,7 @@ The `validate` schema validator + `attachments` handling + commit message style 
 - Modify: `skills/ralph-add/scripts/add.py`, `skills/ralph-add/SKILL.md`
 - Test: `tests/skills/test_ralph_add.py`
 
-- [ ] **Step 1: Update the test fixture to use a fake remote queue repo**
+- [x] **Step 1: Update the test fixture to use a fake remote queue repo**
 
 In `tests/skills/test_ralph_add.py`, replace fixtures that built a target-repo-with-ralph-queue-branch with fixtures that build:
 - A bare git repo (the fake queue remote).
@@ -198,9 +198,9 @@ def test_add_pbi_writes_to_queue_clone(tmp_path):
 
 Note: env-var routing in tests is fine for tests; production reads from `~/.ralph/config.toml`. Tests use a monkeypatch fixture that points the skill at the test workspace + queue. **No new env vars in production code** — tests are the one exception.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `skills/ralph-add/scripts/add.py`**
+- [x] **Step 3: Edit `skills/ralph-add/scripts/add.py`**
 
 - Remove `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, and any worktree-creation helpers that exist only to swap branches.
 - Add `--target-repo <url>` argument. Validate via `parse_target_repo`.
@@ -213,15 +213,15 @@ Note: env-var routing in tests is fine for tests; production reads from `~/.ralp
 - Commit message style unchanged: `chore(queue): add <id>`.
 - Push to `origin/main`.
 
-- [ ] **Step 4: Update `skills/ralph-add/SKILL.md`** to document the new `--target-repo` flag and remove `--repo` / `--branch`.
+- [x] **Step 4: Update `skills/ralph-add/SKILL.md`** to document the new `--target-repo` flag and remove `--repo` / `--branch`.
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/skills/test_ralph_add.py -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/ralph-add/ tests/skills/test_ralph_add.py

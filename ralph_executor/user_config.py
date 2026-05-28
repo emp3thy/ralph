@@ -86,6 +86,18 @@ def read_ralph_home() -> Path | None:
     return _read_path_key("ralph_home")
 
 
+def read_workspace_root() -> Path | None:
+    """Return the ``workspace_root`` value from the user config, or None.
+
+    The operator-facing skills resolve their queue clone path relative to
+    ``workspace_root`` — same knob the executor consumes via
+    ``ralph_executor.config``. Exposing it here lets skills read the
+    user-level TOML without depending on the executor's full config
+    loader (which has many env-var side effects irrelevant to skill use).
+    """
+    return _read_path_key("workspace_root")
+
+
 def read_skills_root() -> Path | None:
     """Return the ``skills_root`` value from the user config, or None.
 
