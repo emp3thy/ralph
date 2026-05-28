@@ -78,9 +78,7 @@ def _configure_identity(repo: Path) -> None:
 
 
 @pytest.fixture
-def queue_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[tuple[Path, str]]:
+def queue_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, str]]:
     """Bare queue remote with an empty seeded ``main`` + tmp workspace dir.
 
     Also sets GIT_AUTHOR_* / GIT_COMMITTER_* env vars so commits made
