@@ -211,6 +211,7 @@ def cfg_for_repo(fake_repo: Path, fake_claude_binary: Path) -> ExecutorConfig:
         bot_author_email="",
         stale_days=3,
         bash_max_timeout_ms=900_000,
+        claude_session_timeout_seconds=1200,
     )
 
 

@@ -43,6 +43,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_ADO_AUTHOR_EMAIL",
         "RALPH_STALE_DAYS",
         "BASH_MAX_TIMEOUT_MS",
+        "RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -404,6 +405,40 @@ def test_bash_max_timeout_ms_rejected_when_negative_in_env(
 ) -> None:
     monkeypatch.setenv("BASH_MAX_TIMEOUT_MS", "-1")
     with pytest.raises(ConfigError, match="bash_max_timeout_ms must be positive"):
+        load_config()
+
+
+def test_claude_session_timeout_seconds_default(clean_env: Path) -> None:
+    cfg = load_config()
+    assert cfg.claude_session_timeout_seconds == 1200
+
+
+def test_claude_session_timeout_seconds_from_toml(clean_env: Path) -> None:
+    _write_toml(clean_env, "claude_session_timeout_seconds = 600\n")
+    cfg = load_config()
+    assert cfg.claude_session_timeout_seconds == 600
+
+
+def test_claude_session_timeout_seconds_env_wins(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_toml(clean_env, "claude_session_timeout_seconds = 600\n")
+    monkeypatch.setenv("RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS", "300")
+    cfg = load_config()
+    assert cfg.claude_session_timeout_seconds == 300
+
+
+def test_claude_session_timeout_seconds_rejected_when_zero(clean_env: Path) -> None:
+    _write_toml(clean_env, "claude_session_timeout_seconds = 0\n")
+    with pytest.raises(ConfigError, match="claude_session_timeout_seconds must be positive"):
+        load_config()
+
+
+def test_claude_session_timeout_seconds_rejected_when_negative_in_env(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS", "-1")
+    with pytest.raises(ConfigError, match="claude_session_timeout_seconds must be positive"):
         load_config()
 
 
