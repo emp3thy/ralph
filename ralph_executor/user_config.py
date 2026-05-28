@@ -22,10 +22,13 @@ in ``<repo>/.ralph/config.toml`` per Plan-7 layering).
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from pathlib import Path
 
 from ralph_executor.config import ConfigError
+
+log = logging.getLogger(__name__)
 
 # Path is constructed dynamically (``Path.home()`` is called per access)
 # so monkeypatched HOME / USERPROFILE in tests sees the override without
@@ -184,6 +187,18 @@ def _write_user_config(updates: dict[str, object]) -> Path:
     for key, val in existing.items():
         rendered = _render_toml_value(val)
         if rendered is None:
+            # ``_render_toml_value`` only handles str / bool / int / float.
+            # A TOML datetime / inline table / array (operator-edited)
+            # would silently disappear from the rewritten file. Log
+            # loudly so the operator can move the value back manually.
+            log.warning(
+                "user-config rewrite dropped key %r (value type %s not "
+                "serialisable by _render_toml_value); re-add it manually "
+                "to %s",
+                key,
+                type(val).__name__,
+                cfg_file,
+            )
             continue
         lines.append(f"{key} = {rendered}")
     cfg_file.write_text("\n".join(lines) + "\n", encoding="utf-8")

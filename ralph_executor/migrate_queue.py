@@ -86,8 +86,13 @@ def copy_queue_tree_filtered(source: Path, dest: Path) -> dict[str, int]:
 
 
 def _target_is_empty(target_url: str) -> bool:
-    """Return True if the target repo has zero refs (empty repo)."""
-    result = _run_git(None, "ls-remote", "--heads", target_url)
+    """Return True if the target repo has zero refs (empty repo).
+
+    Lists ALL refs (no ``--heads`` filter) so a target that contains
+    only tags (or only PR refs) is correctly classified as non-empty
+    and rejected by the migrate-queue safety check.
+    """
+    result = _run_git(None, "ls-remote", target_url)
     if result.returncode != 0:
         raise MigrateQueueError(
             f"could not list refs on target {target_url!r} "
@@ -117,7 +122,7 @@ def main(argv: list[str]) -> int:
     """Entry point for the ``migrate-queue`` subcommand.
 
     Validates the source has ``.ralph/inbox/``, probes the target with
-    ``git ls-remote --heads`` (must be empty), stages a temp dir via
+    ``git ls-remote`` (must report zero refs of any kind), stages a temp dir via
     :func:`copy_queue_tree_filtered`, then ``git init / add / commit /
     push origin main``. Raises :class:`MigrateQueueError` on any failure
     so the caller can surface a clean error message.
