@@ -74,6 +74,39 @@ def _lookup_repo(client: GhClient, owner: str, repo: str) -> None:
     client.get(f"/repos/{owner}/{repo}")
 
 
+def _ensure_repo_exists(
+    client: GhClient,
+    owner: str,
+    repo: str,
+    *,
+    org: str | None,
+    dry_run: bool,
+) -> bool:
+    """Return True if the repo already existed; False if it was just created.
+
+    Repo creation is the gating bootstrap step — there is nothing pre-existing
+    to "dry-run against" when the repo is absent, so we issue the create POST
+    regardless of ``dry_run`` and let the caller short-circuit the remaining
+    mutating steps (branch create, protection PUT) when ``dry_run`` is set.
+    The ``dry_run`` flag only changes the log line so operators can see the
+    bootstrap happened during a dry-run sweep.
+    """
+    try:
+        client.get(f"/repos/{owner}/{repo}")
+        return True
+    except GhError as exc:
+        if exc.status_code != 404:
+            raise
+    label = "DRY-RUN creating" if dry_run else "creating"
+    print(f"{label} {owner}/{repo} (private)...", file=sys.stderr)
+    payload = {"name": repo, "private": True, "auto_init": True}
+    if org is not None:
+        client.post(f"/orgs/{org}/repos", json_body=payload)
+    else:
+        client.post("/user/repos", json_body=payload)
+    return False
+
+
 def _read_branch_tip(client: GhClient, owner: str, repo: str, branch: str) -> str | None:
     """Return the tip SHA of ``refs/heads/{branch}`` or ``None`` if absent."""
     try:
@@ -168,6 +201,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Read state but do not POST/PUT any mutations.",
     )
+    parser.add_argument(
+        "--org",
+        default=None,
+        help="Create the repo under this organisation (default: under the authenticated user).",
+    )
     return parser.parse_args(argv)
 
 
@@ -184,7 +222,25 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         print(f"resolving repo {owner}/{args.repo!r}...", file=sys.stderr)
-        _lookup_repo(client, owner, args.repo)
+        repo_existed = _ensure_repo_exists(
+            client, owner, args.repo, org=args.org, dry_run=args.dry_run
+        )
+        if not repo_existed and args.dry_run:
+            # The repo doesn't exist yet; downstream steps (read main tip,
+            # create queue branch, apply protection) would all 404. Emit a
+            # summary describing what a real run would do and exit clean.
+            result = SetupResult(
+                owner=owner,
+                repo=args.repo,
+                branch_name=args.branch,
+                branch_base_sha="",
+                branch_created=False,
+                branch_existed=False,
+                protection_applied=False,
+                dry_run=True,
+            )
+            print(json.dumps(asdict(result), indent=2, sort_keys=True))
+            return 0
 
         print(f"reading tip of {args.base_branch}...", file=sys.stderr)
         base_sha = _read_branch_tip(client, owner, args.repo, args.base_branch)

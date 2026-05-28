@@ -146,18 +146,21 @@ def test_idempotent_when_branch_already_exists(
 
 
 @responses.activate
-def test_repo_not_found_exits_nonzero(env: None, capsys: pytest.CaptureFixture[str]) -> None:
+def test_repo_lookup_403_exits_nonzero(env: None, capsys: pytest.CaptureFixture[str]) -> None:
+    """A non-404 GhError on the repo lookup (e.g. 403 Forbidden — bad token
+    scope) must surface as a clean exit 2. 404 is a separate case handled by
+    ``_ensure_repo_exists`` (the repo is created)."""
     responses.add(
         responses.GET,
         REPO_URL,
-        json={"message": "Not Found"},
-        status=404,
+        json={"message": "Forbidden"},
+        status=403,
     )
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO])
     assert exit_code == 2
     stderr = capsys.readouterr().err
-    assert "Not Found" in stderr
+    assert "Forbidden" in stderr
 
 
 def test_missing_gh_token_exits_nonzero(
@@ -278,3 +281,34 @@ def test_concurrent_create_422_still_applies_protection(
     # had escaped to the outer GhError handler).
     put_calls = [c for c in responses.calls if c.request.method == "PUT"]
     assert len(put_calls) == 1
+
+
+def test_creates_repo_when_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """When the repo 404s, the script POSTs /user/repos to create it."""
+    from scripts import setup_ralph_queue_github as setup
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            if path == "/repos/test/queue":
+                raise setup.GhError(404, "not found", path)
+            return {}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("POST", path))
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            calls.append(("PUT", path))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--dry-run"])
+    assert rc == 0
+    assert ("POST", "/user/repos") in calls
