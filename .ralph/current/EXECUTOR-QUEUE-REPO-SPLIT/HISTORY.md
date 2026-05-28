@@ -56,3 +56,14 @@
 - mypy: `ralph_executor/loop.py` + `ralph_executor/config.py` clean. `cli.py:516` still holds the legacy `cfg.queue_branch` log argument — intentional, Task 7 owns the CLI rework.
 - Commit: forthcoming (`fix(loop,config): EXECUTOR-QUEUE-REPO-SPLIT — _claim_pbi worktree-only; drop legacy single-checkout mode`).
 - Next iteration: Task 6 — sweep `cfg.queue_branch` literal in `queue/movements.py` (one remaining call site if not already covered by Task 4) and confirm the rest of the file is `"main"`-only.
+
+## Iteration 6 — 2026-05-28T14:00:00+00:00
+
+- Task 6 verification: `grep -n "queue_branch" ralph_executor/queue/movements.py` returns zero hits. Work was rolled into Iteration 4's commit `a74e14d` (the `_persist_iteration_writes` / `iterate_once` / `queue/movements.py` push-target sweep). Plan boxes for Task 6 Steps 1–4 ticked in `docs/superpowers/plans/2026-05-28-executor-queue-repo-split-plan.md`; added a note pointing at the Iter-4 commit.
+- Task 7a: created `ralph_executor/migrate_queue.py` exposing `MigrateQueueError` + `copy_queue_tree_filtered(source, dest) -> dict[str, int]`. Helper iterates `_STATE_DIRS = ("inbox", "current", "pending-pr", "blocked", "archive")` — `done/` and `state/` are simply not in the list and are therefore skipped. Drops `META-cycle-*.md` sentinels from `blocked/`. Copies `.ralph/config.toml` if present. Writes a skeleton `.gitignore` (`.ralph/state/\n`) at the dest root.
+- Test: `tests/executor/test_migrate_queue.py::test_copy_filtered_excludes_done` — seeds an `inbox/WI-1`, `blocked/WI-9` + META sentinel, `done/WI-old`, `state/events.db`, `config.toml`; asserts done/state/META excluded, inbox/blocked/config kept, counts == {inbox:1, current:0, pending-pr:0, blocked:1, archive:0}. Module docstring annotates that `main` + `_target_is_empty` arrive in Task 7b.
+- `uv run pytest tests/executor/test_migrate_queue.py -v` → 1 passed.
+- Lint: `uv run ruff check` + `ruff format --check` clean on both new files.
+- mypy on `ralph_executor/migrate_queue.py` → only error is the pre-existing `cli.py:516 cfg.queue_branch` attr-defined — Task 7 owns the CLI rework. `migrate_queue.py` itself has zero errors.
+- Commit: forthcoming (`feat(migrate-queue): EXECUTOR-QUEUE-REPO-SPLIT — copy_queue_tree_filtered helper`).
+- Next iteration: Task 7b — add `_target_is_empty` + `main(argv)` to `migrate_queue.py`, wire `migrate-queue` subcommand + `--queue-repo` top-level flag into `cli.py`, add the two integration tests (empty-target push smoke + non-empty-target refusal).
