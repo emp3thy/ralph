@@ -35,11 +35,10 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _populate_inbox(fake_repo: Path, pbi_id: str = "WI-1234") -> Path:
-    _git(fake_repo, "checkout", "ralph-queue")
     pbi_dir = write_sample_pbi(fake_repo, pbi_id=pbi_id)
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", f"inbox: {pbi_id}")
-    _git(fake_repo, "push", "origin", "ralph-queue")
+    _git(fake_repo, "push", "origin", "main")
     return pbi_dir
 
 
@@ -70,11 +69,11 @@ def test_move_inbox_to_current_rewrites_status(
 
 def test_move_inbox_to_current_pushes_commit(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
     _populate_inbox(fake_repo)
-    remote_before = _git(fake_repo, "ls-remote", "origin", "ralph-queue").split()[0]
+    remote_before = _git(fake_repo, "ls-remote", "origin", "main").split()[0]
     source = FilesystemQueueSource(cfg_for_repo)
     pbi = source.inbox_pbis()[0]
     move_inbox_to_current(cfg_for_repo, pbi)
-    remote_after = _git(fake_repo, "ls-remote", "origin", "ralph-queue").split()[0]
+    remote_after = _git(fake_repo, "ls-remote", "origin", "main").split()[0]
     assert remote_before != remote_after
 
 
@@ -155,12 +154,11 @@ def test_same_file_thrashing_trips_after_ten_distinct_prs_touching_one_file(
     emission site against the real ``EventLog``.
     """
     target_file = "src/auth/handler.py"
-    _git(fake_repo, "checkout", "ralph-queue")
     for i in range(10):
         pbi_dir = write_sample_pbi(fake_repo, pbi_id=f"WI-2{i:03d}")
         _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
         _git(fake_repo, "commit", "-m", f"inbox: WI-2{i:03d}")
-    _git(fake_repo, "push", "origin", "ralph-queue")
+    _git(fake_repo, "push", "origin", "main")
 
     now = datetime.now(tz=UTC)
     event_log = open_log(fake_repo)
@@ -196,7 +194,7 @@ def test_same_file_thrashing_trips_after_ten_distinct_prs_touching_one_file(
 def test_move_inbox_to_current_survives_concurrent_remote_advance(
     cfg_for_repo: ExecutorConfig, fake_repo: Path, tmp_path: Path
 ) -> None:
-    """A concurrent push to origin/ralph-queue must not crash the move.
+    """A concurrent push to origin/main must not crash the move.
 
     Without push_with_rebase the second push is rejected as non-FF and
     GitCommandError propagates. With it, the helper fetches + rebases
@@ -205,11 +203,11 @@ def test_move_inbox_to_current_survives_concurrent_remote_advance(
     _populate_inbox(fake_repo)
 
     # Simulate a concurrent writer: clone the bare remote, add a commit
-    # touching an unrelated file on ralph-queue, push it back.
-    bare_remote = fake_repo.parent / "remote.git"
+    # touching an unrelated file on main, push it back.
+    bare_remote = tmp_path / "queue.git"
     racer = tmp_path / "racer"
     subprocess.run(
-        ["git", "clone", "--branch", "ralph-queue", str(bare_remote), str(racer)],
+        ["git", "clone", "--branch", "main", str(bare_remote), str(racer)],
         check=True,
         capture_output=True,
     )
@@ -231,7 +229,7 @@ def test_move_inbox_to_current_survives_concurrent_remote_advance(
         capture_output=True,
     )
     subprocess.run(
-        ["git", "-C", str(racer), "push", "origin", "ralph-queue"],
+        ["git", "-C", str(racer), "push", "origin", "main"],
         check=True,
         capture_output=True,
     )
@@ -241,20 +239,8 @@ def test_move_inbox_to_current_survives_concurrent_remote_advance(
     moved = move_inbox_to_current(cfg_for_repo, pbi)
     assert moved.status == "current"
 
-    # The racing commit is now part of the queue branch's history.
-    log = _git(fake_repo, "log", "--format=%s", "ralph-queue", "-5").splitlines()
+    # The racing commit is now part of main's history.
+    log = _git(fake_repo, "log", "--format=%s", "main", "-5").splitlines()
     assert "race: concurrent commit" in log
     # And the move's own commit landed on top of (or rebased above) it.
     assert any("move WI-1234 from inbox to current" in line for line in log)
-
-
-def test_move_uses_branch_from_config(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
-    _populate_inbox(fake_repo)
-    # Read the PBI while on ralph-queue (where .ralph/ exists), then
-    # switch to main — the move helper must checkout ralph-queue itself.
-    source = FilesystemQueueSource(cfg_for_repo)
-    pbi = source.inbox_pbis()[0]
-    _git(fake_repo, "checkout", "main")
-    move_inbox_to_current(cfg_for_repo, pbi)
-    branch = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert branch == "ralph-queue"
