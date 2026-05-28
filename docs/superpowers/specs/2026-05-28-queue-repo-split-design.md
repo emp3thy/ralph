@@ -149,12 +149,12 @@ Implementation:
 - Each `scripts/<skill>.py` drops `repo_path` / `branch` plumbing.
 - Each acquires the queue clone via `ensure_queue_clone(workspace_root, queue_repo)` (config-resolved at skill entry).
 - `ralph-add`'s `--target-repo` argument writes the PBI's `target_repo` frontmatter field (already required by the schema).
-- `ralph-status` loses its multi-repo aggregation; instead it gets a unified view for free (every PBI carries its own `target_repo`, so the report can group by target).
+- `ralph-status` is reframed away from the obsolete per-target-queue-branch model. It now reads the single queue clone and groups output by each PBI's `target_repo` field. The legacy `--repo` / `--repos-file` / `--branch` arguments are removed entirely (they were promising a multi-queue model that the data layer never delivered). Old `SKILL.md` lore about "service repos with their own ralph-queue branch" is rewritten.
 - Each `SKILL.md` is updated to document the new argument shape.
 
 ### Docs (PBI 2)
 
-- **README**: rewrite "Install" and "One-time setup". Remove instructions to clone the queue as a branch; replace with the `queue_repo` TOML key. Cover both workstation install and pulling the ROSA Docker image.
+- **README**: rewrite "Install" and "One-time setup". Remove instructions to clone the queue as a branch; replace with the `queue_repo` TOML key. Cover both workstation install and pulling the ROSA Docker image. Add a new "Working the queue" section showing how to use each operator-facing skill: `ralph-add` to create a PBI, `ralph-status` to see the current board (with sample output), `ralph-cancel` / `ralph-promote` / `ralph-triage` for state operations. `ralph-status` in particular has been under-surfaced; the README is where new operators learn it exists.
 - **New ops doc**: `docs/superpowers/ops/2026-05-28-pod-deployment.md`. Pod-shaped runbook: required config, expected layout under `$RALPH_WORKSPACE`, what minimal `~/.ralph/config.toml` looks like, how to seed `queue_repo` into a fresh pod.
 - **`prompt/PROMPT.md`**: review for any references to `ralph-queue` as a branch; update if found.
 - **Older specs / plans under `docs/superpowers/`**: add a banner pointing to this spec where the older docs describe the single-repo model.
@@ -188,7 +188,6 @@ Existing `tests/executor/test_*` updated by PBI 1's diff: any reference to `cfg.
 
 - **Brief gap between PBI 1 and PBI 2 landing.** Between merging PBI 1 to `main` and merging PBI 2, the executor uses the new queue repo but the skills still expect the old branch model. Mitigation: keep both PBIs in flight in one session; merge PBI 2 immediately after PBI 1. Manual PBI authoring (editing a file in the new queue clone and pushing) is the documented fallback during the window.
 - **Operator confusion about where to clone what.** Mitigated by the README rewrite and the pod-deployment ops doc. The new operator command list is shorter, not longer.
-- **`ralph-status` losing multi-repo aggregation.** It gains a unified view in exchange. If anyone relies on the per-target aggregation today, that becomes a `--group-by target_repo` flag — out of scope of this split.
 - **events.db reset.** Deliberate, accepted: the cycle detector's windows are 4–24h, so behaviour recovers within a day. The migration is a significant architectural change; resetting the rule state is appropriate.
 
 ## Out of scope
