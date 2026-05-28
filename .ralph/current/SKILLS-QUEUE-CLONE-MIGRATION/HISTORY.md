@@ -70,6 +70,13 @@
 - Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 7 checkboxes (Steps 1–3 → [x]).
 - Notes: Tasks 1–6d + 7 now complete. Next iteration picks up Task 8 (README rewrite — Install + "Working the queue" section). Whole-suite `pytest -q` from Iteration 7 still green (208 passed, 2 expected fails in `tests/skills/test_supervisor_skills_smoke.py` — out of scope until Task 10's full-suite gate).
 
+## Iteration 9 — 2026-05-28T21:30:00+00:00
+
+- Step Task 8: rewrote `README.md` Install + One-time setup sections + added new "Working the queue" section. Verbatim per plan Task 8 Steps 1–2. Install section now splits into Workstation (`uv sync`) vs Container (ROSA image pull + pointer to pod-deployment runbook) subsections. One-time setup describes the three TOML keys (`ralph_home`, `workspace_root`, `queue_repo`) plus a scripted-setup example and the `init`-clone smoke-test note. New "Working the queue" section walks all five skills (`ralph-status`, `ralph-add`, `ralph-cancel`, `ralph-promote`, `ralph-triage`) with example invocations and the grouped-by-target table sample for `ralph-status`.
+- Lint/type: README.md is markdown — ruff/mypy untouched by this iteration (no .py edits).
+- Updated `docs/superpowers/plans/2026-05-28-skills-queue-clone-migration-plan.md` Task 8 checkboxes (Steps 1–3 → [x]).
+- Notes: `## Per-repo setup` section (lines after the new "Working the queue" block) still describes the obsolete `ralph-queue` branch scaffold model (`scaffold --workspace`, `git push -u origin ralph-queue`, `setup_ralph_queue_github.py`). Same for the `## Running ralph` section ("switches to the `ralph-queue` branch"). Both contradict the queue-clone model the new sections introduce. Task 8 scope is bounded by the plan template (Install + One-time setup + Working the queue only) so deferred — flag for a separate doc-cleanup PBI or fold into Task 10's final sweep if the reviewer flags it. Next iteration picks up Task 9 (new `docs/superpowers/ops/2026-05-28-pod-deployment.md` runbook).
+
 ## Iteration 4 — 2026-05-28T16:30:00+00:00
 
 - Step Task 4: rewrote `skills/ralph-promote/scripts/promote.py` to operate on the queue clone as a STATE MOVER (was: severity bumper). Per spec line 143 and plan Task 4, `ralph-promote` now takes `--pbi-id` + `--from <state>` + `--to <state>` (both required, must differ, both restricted to `QUEUE_STATE_FOLDERS`). Dropped `--repo`, `--branch`, `DEFAULT_QUEUE_BRANCH`, `--severity`, `ALLOWED_SEVERITIES`, and the entire severity-bump idempotency dance (head/working severity cross-check, history dedup loop). Reduced the file from 287 LOC → 271 LOC.
