@@ -373,7 +373,7 @@ Original 80% confidence Task 6 split into four single-responsibility subtasks. E
 **Files:**
 - Modify: `skills/ralph-status/scripts/status.py`
 
-- [ ] **Step 1: Delete the following functions / dataclasses / constants:**
+- [x] **Step 1: Delete the following functions / dataclasses / constants:**
 
 - `DEFAULT_QUEUE_BRANCH`
 - `RepoConfig` dataclass
@@ -385,7 +385,7 @@ Original 80% confidence Task 6 split into four single-responsibility subtasks. E
 
 These are all the worktree-per-repo machinery that the new model doesn't need.
 
-- [ ] **Step 2: Smoke check — imports should now be smaller**
+- [x] **Step 2: Smoke check — imports should now be smaller**
 
 ```bash
 grep -n "^import\|^from" skills/ralph-status/scripts/status.py
@@ -393,7 +393,7 @@ grep -n "^import\|^from" skills/ralph-status/scripts/status.py
 
 Expected: `argparse`, `json`, `sys`, `dataclasses`, `datetime`, `pathlib`, `STATE_FOLDERS` / `PBIRow` / `PBIRowError` / `enumerate_state` from `scripts.pbi_reader`. The `subprocess`, `shutil`, `tempfile`, `os`, `contextlib` imports drop.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add skills/ralph-status/scripts/status.py

@@ -8,16 +8,8 @@ working tree is untouched.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
-import os
-import shutil
-import subprocess
 import sys
-import tempfile
-from collections.abc import Iterable
-from contextlib import suppress
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,22 +25,6 @@ from scripts.pbi_reader import (  # noqa: E402
     PBIRowError,
     enumerate_state,
 )
-
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
-
-
-@dataclass
-class RepoConfig:
-    path: Path
-    name: str
-    branch: str
-
-
-@dataclass
-class RepoSnapshot:
-    config: RepoConfig
-    worktree_path: Path
-    rows: list[PBIRow | PBIRowError] = field(default_factory=list)
 
 
 class _FatalError(RuntimeError):
@@ -99,118 +75,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Keep the temporary worktree(s) on disk after the command exits.",
     )
     return parser.parse_args(argv)
-
-
-def _load_repos_config(args: argparse.Namespace) -> list[RepoConfig]:
-    configs: list[RepoConfig] = []
-    branch = args.branch
-
-    # Use `is not None`, not truthiness: an explicit `--repo ""` would
-    # otherwise fall through to the else branch and crash on
-    # Path(None).resolve() because args.repos_file is None when --repo
-    # was given (argparse mutually-exclusive group).
-    if args.repo is not None:
-        if not args.repo.strip():
-            raise _FatalError("--repo must not be empty")
-        path = Path(args.repo).resolve()
-        configs.append(RepoConfig(path=path, name=path.name, branch=branch))
-    else:
-        cfg_path = Path(args.repos_file).resolve()
-        if not cfg_path.is_file():
-            raise _FatalError(f"--repos-file path does not exist: {cfg_path}")
-        for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            path = Path(line).expanduser().resolve()
-            configs.append(RepoConfig(path=path, name=path.name, branch=branch))
-        if not configs:
-            raise _FatalError(f"--repos-file contained no usable entries: {cfg_path}")
-    return configs
-
-
-def _run_git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _is_git_repo(path: Path) -> bool:
-    return (path / ".git").exists() or (path / "HEAD").is_file()
-
-
-def _ensure_branch_exists(repo: Path, branch: str) -> None:
-    """Verify the named branch can be resolved locally or via origin/."""
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        return
-    remote = _run_git(repo, "branch", "-r", "--list", f"origin/{branch}")
-    if remote.strip():
-        return
-    raise _FatalError(
-        f"branch {branch!r} not found locally or as origin/{branch} "
-        f"in {repo} (did Plan 2's setup runbook run against this repo?)"
-    )
-
-
-def _resolve_branch_ref(repo: Path, branch: str) -> str:
-    """Return a ref name we can hand to ``git worktree add``."""
-    local = _run_git(repo, "branch", "--list", branch)
-    if local.strip():
-        return branch
-    return f"origin/{branch}"
-
-
-def _create_worktree(repo: Path, branch: str, dest: Path) -> Path:
-    """Create a detached worktree at ``dest`` pointing at ``branch``."""
-    ref = _resolve_branch_ref(repo, branch)
-    _run_git(repo, "worktree", "add", "--detach", str(dest), ref)
-    return dest
-
-
-def _remove_worktree(repo: Path, worktree_dir: Path) -> None:
-    try:
-        _run_git(repo, "worktree", "remove", "--force", str(worktree_dir))
-    except subprocess.CalledProcessError:
-        shutil.rmtree(worktree_dir, ignore_errors=True)
-        with suppress(subprocess.CalledProcessError):
-            _run_git(repo, "worktree", "prune")
-
-
-def _extract_queue_snapshot(
-    config: RepoConfig,
-    *,
-    states: Iterable[str],
-    worktree_root: Path,
-) -> RepoSnapshot:
-    if not config.path.exists():
-        raise _FatalError(f"--repo path does not exist: {config.path}")
-    if not _is_git_repo(config.path):
-        raise _FatalError(f"{config.path} is not a git repository (no .git/ directory)")
-    _ensure_branch_exists(config.path, config.branch)
-
-    # Disambiguate repos that share a basename. Two unrelated checkouts
-    # like /team-a/service and /team-b/service both have name=="service";
-    # without the path-hash suffix they would collide on the same
-    # worktree_dir, and the second iteration's `git worktree remove`
-    # would fail (the dir is registered against the FIRST repo's git
-    # database, not the second), leaving a stale entry that subsequent
-    # `git worktree prune` runs would never see.
-    path_hash = f"{abs(hash(str(config.path.resolve()))) & 0xFFFFFFFF:08x}"
-    worktree_dir = worktree_root / f"{config.name}__{config.branch}__{path_hash}"
-    if worktree_dir.exists():
-        _remove_worktree(config.path, worktree_dir)
-
-    _create_worktree(config.path, config.branch, worktree_dir)
-    snapshot = RepoSnapshot(config=config, worktree_path=worktree_dir)
-    for state in states:
-        snapshot.rows.extend(enumerate_state(worktree_dir, state, repo_name=config.name))
-    return snapshot
 
 
 _COLUMN_ORDER: tuple[str, ...] = (
