@@ -644,6 +644,8 @@ def test_no_push_commits_but_does_not_push(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
 
     exit_code = add_module.main(
@@ -664,6 +666,8 @@ def test_no_push_commits_but_does_not_push(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert remote_sha_before == remote_sha_after
 

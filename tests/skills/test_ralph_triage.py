@@ -440,6 +440,8 @@ def test_triage_dry_run_writes_nothing(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
 
     exit_code = triage_module.main(
@@ -465,6 +467,8 @@ def test_triage_dry_run_writes_nothing(
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert before == after
 

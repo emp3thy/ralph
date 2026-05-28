@@ -1015,26 +1015,26 @@ git commit -m "docs(ops): pod deployment runbook for ralph-executor"
 
 **Confidence: 95%** — gate.
 
-- [ ] **Step 1: ruff check + format**
+- [x] **Step 1: ruff check + format**
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-- [ ] **Step 2: mypy**
+- [x] **Step 2: mypy**
 
 ```bash
 uv run mypy ralph_executor scripts skills tests
 ```
 
-- [ ] **Step 3: Full pytest**
+- [x] **Step 3: Full pytest**
 
 ```bash
 uv run pytest -q
 ```
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 ```bash
 git push -u origin ralph/SKILLS-QUEUE-CLONE-MIGRATION
