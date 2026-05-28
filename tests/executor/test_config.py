@@ -302,3 +302,43 @@ def test_default_queue_branch_is_ralph_queue(tmp_path, monkeypatch):
 
     cfg = load_config()
     assert cfg.queue_branch == "ralph-queue"
+
+
+def test_queue_branch_toml_override(tmp_path, monkeypatch):
+    """queue_branch in project TOML overrides the default."""
+    from ralph_executor.config import load_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".ralph").mkdir()
+    (repo / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n'
+        'queue_branch = "custom-branch"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
+    monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
+
+    cfg = load_config()
+    assert cfg.queue_branch == "custom-branch"
+
+
+def test_queue_branch_env_override_beats_toml(tmp_path, monkeypatch):
+    """RALPH_QUEUE_BRANCH env var overrides TOML."""
+    from ralph_executor.config import load_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / ".ralph").mkdir()
+    (repo / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/test/queue"\n'
+        'queue_branch = "toml-value"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
+    monkeypatch.setenv("RALPH_QUEUE_BRANCH", "env-value")
+
+    cfg = load_config()
+    assert cfg.queue_branch == "env-value"
