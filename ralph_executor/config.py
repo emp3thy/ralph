@@ -102,6 +102,15 @@ DEFAULT_AUTO_MERGE_CLEAN_PRS = False
 # feature additions and the rule otherwise false-trips.
 DEFAULT_SAME_FILE_MIN_PRS = 10
 DEFAULT_SAME_FILE_WINDOW_HOURS = 24.0
+# Drain-on-idle defaults. With ``watch_mode=False`` (the default), ``run_loop``
+# exits cleanly after ``idle_exit_threshold`` consecutive idle iterations so
+# pods / containers stop billing minutes once their queue is drained.
+# Operators who want the old "run forever, sleep on idle" daemon behaviour set
+# ``watch_mode = true`` (TOML) / ``RALPH_WATCH_MODE=1`` (env) / ``--watch``
+# (CLI). The threshold is 2 so a single false-idle caused by a sweep tick
+# mid-flight doesn't cut a healthy loop short.
+DEFAULT_WATCH_MODE = False
+DEFAULT_IDLE_EXIT_THRESHOLD = 2
 
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -160,6 +169,12 @@ _TOML_KNOWN_KEYS = frozenset(
         # DEFAULT_SAME_FILE_MIN_PRS / DEFAULT_SAME_FILE_WINDOW_HOURS.
         "same_file_min_prs",
         "same_file_window_hours",
+        # Drain-on-idle knobs — see DEFAULT_WATCH_MODE /
+        # DEFAULT_IDLE_EXIT_THRESHOLD. Default (watch_mode=False) exits the
+        # loop after a short idle streak; opt into daemon mode via
+        # ``watch_mode = true``.
+        "watch_mode",
+        "idle_exit_threshold",
     }
 )
 
@@ -263,6 +278,17 @@ class ExecutorConfig:
     # sprints where a central module legitimately receives many PRs.
     same_file_min_prs: int = DEFAULT_SAME_FILE_MIN_PRS
     same_file_window_hours: float = DEFAULT_SAME_FILE_WINDOW_HOURS
+    # Drain-on-idle. ``watch_mode=False`` (the default) means ``run_loop``
+    # exits cleanly after ``idle_exit_threshold`` consecutive idle iterations
+    # — the right shape for unattended pod / container runs where the queue
+    # contents are baked in at launch and nobody is around to feed it more
+    # work. Set ``watch_mode=True`` (TOML key ``watch_mode`` / env
+    # ``RALPH_WATCH_MODE`` / CLI ``--watch``) for the legacy "run forever,
+    # sleep on idle" daemon mode used on a workstation. ``idle_exit_threshold``
+    # is strictly positive (validated in ``load_config``); a higher value
+    # tolerates more transient false-idles before exit.
+    watch_mode: bool = DEFAULT_WATCH_MODE
+    idle_exit_threshold: int = DEFAULT_IDLE_EXIT_THRESHOLD
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -658,6 +684,24 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: same_file_window_hours must be positive "
             f"(got {same_file_window_hours})"
         )
+    watch_mode = _resolve_bool(
+        name="watch_mode",
+        env_name="RALPH_WATCH_MODE",
+        toml_value=toml_overrides.get("watch_mode"),
+        default=DEFAULT_WATCH_MODE,
+        source_label=source_label,
+    )
+    idle_exit_threshold = _resolve_int(
+        name="idle_exit_threshold",
+        env_name="RALPH_IDLE_EXIT_THRESHOLD",
+        toml_value=toml_overrides.get("idle_exit_threshold"),
+        default=DEFAULT_IDLE_EXIT_THRESHOLD,
+        source_label=source_label,
+    )
+    if idle_exit_threshold <= 0:
+        raise ConfigError(
+            f"{source_label}: idle_exit_threshold must be positive (got {idle_exit_threshold})"
+        )
 
     return ExecutorConfig(
         repo_path=repo_path,
@@ -685,4 +729,6 @@ def load_config() -> ExecutorConfig:
         workspace_root=workspace_root,
         same_file_min_prs=same_file_min_prs,
         same_file_window_hours=same_file_window_hours,
+        watch_mode=watch_mode,
+        idle_exit_threshold=idle_exit_threshold,
     )

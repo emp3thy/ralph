@@ -1012,17 +1012,31 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
 def run_loop(
     cfg: ExecutorConfig, *, max_iterations: int | None = None
 ) -> Iterator[IterationResult]:
-    """Run iterations until interrupted or ``max_iterations`` reached.
+    """Run iterations until interrupted, drained, or ``max_iterations`` reached.
 
     Yields each ``IterationResult`` so callers (and tests) can observe
     progress. ``max_iterations`` is primarily for tests; in production
-    callers pass ``None`` and the loop runs until KeyboardInterrupt.
+    callers pass ``None`` and the loop terminates either on KeyboardInterrupt
+    or — under the default ``cfg.watch_mode=False`` — once
+    ``cfg.idle_exit_threshold`` consecutive ``idle`` outcomes have stacked
+    up. Any non-idle outcome (claimed / ran_partial / ran_pr_created / …)
+    resets the consecutive-idle counter so a long PBI can interleave with
+    quiet ticks without false-tripping the drain.
+
+    ``cfg.watch_mode=True`` preserves the legacy daemon behaviour: idle
+    iterations sleep for ``cfg.iteration_sleep_seconds`` and the loop
+    keeps polling forever (still bounded by ``max_iterations`` when set).
 
     Raises ``HaltedError`` if the halt sentinel blocks the loop on entry
     (Plan 9 Layer 3). Callers that want a gentle drain should catch
     ``HaltedError`` and surface it to the operator.
     """
+    # Drain-on-idle log goes through the cli logger so operators grep one
+    # consistent ``ralph_executor.cli: queue drained …`` line regardless of
+    # whether the iteration loop runs from cli.main or a programmatic caller.
+    cli_log = logging.getLogger("ralph_executor.cli")
     count = 0
+    consecutive_idle = 0
     while True:
         try:
             result = iterate_once(cfg)
@@ -1036,8 +1050,18 @@ def run_loop(
         if result.outcome == "halted":
             log.warning("halt signalled -- exiting run_loop")
             return
+        if result.outcome == "idle":
+            consecutive_idle += 1
+        else:
+            consecutive_idle = 0
         count += 1
         if max_iterations is not None and count >= max_iterations:
+            return
+        if not cfg.watch_mode and consecutive_idle >= cfg.idle_exit_threshold:
+            cli_log.info(
+                "queue drained -- exiting after %d consecutive idle iterations",
+                consecutive_idle,
+            )
             return
         # Sleep only between iterations that found nothing to do.
         if result.outcome == "idle":

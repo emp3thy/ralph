@@ -500,6 +500,48 @@ def test_main_does_not_clobber_existing_env_with_empty_cfg(
     assert observed["GH_OWNER"] == "pre-existing"
 
 
+def test_main_rejects_watch_with_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--watch`` and ``--once`` collide (drain-forever vs run-once); the
+    CLI must reject the combo with a clear error before touching config."""
+    exit_code = cli.main(["--watch", "--once"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+
+
+def test_main_rejects_watch_with_iterations(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same mutex applies to ``--iterations N``."""
+    exit_code = cli.main(["--watch", "--iterations", "3"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+
+
+def test_main_watch_flag_sets_watch_mode_on_config(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--watch`` flips ``cfg.watch_mode`` to True; without it the loaded
+    config's existing value is preserved (default False in the fixture)."""
+    seen: list[bool] = []
+
+    def _fake_run_loop(cfg: ExecutorConfig):  # type: ignore[no-untyped-def]
+        seen.append(cfg.watch_mode)
+        # Yield a single non-idle result then terminate so main() returns.
+        yield IterationResult(outcome="ran_partial", pbi_id="WI-NOP")
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(cli, "run_loop", _fake_run_loop)
+
+    exit_code = cli.main(["--watch"])
+    assert exit_code == 0
+    assert seen == [True]
+
+
 def test_public_reexports_are_stable() -> None:
     """The names listed below are imported by Plans 8, 9, 10."""
     from ralph_executor import (
