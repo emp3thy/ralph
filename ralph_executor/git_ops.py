@@ -263,6 +263,20 @@ def mv(repo: Path, src: Path, dst: Path) -> None:
     )
 
 
+def ls_files(repo: Path, path: Path) -> list[str]:
+    """Return paths tracked by git under ``path`` (one entry per line).
+
+    Empty list = ``path`` exists on disk but no files under it are
+    tracked yet. Used by ``movements._move`` to detect the
+    external-writer-mid-add race (operator or another ralph session
+    wrote a new inbox PBI dir to the queue clone but has not yet run
+    ``git commit``); ``git mv`` would otherwise fail with
+    ``fatal: source directory is empty`` and crash the executor.
+    """
+    result = _run_git(repo, "ls-files", "--", str(path.relative_to(repo)))
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 def rev_parse_head(repo: Path) -> str:
     """Return the 40-char sha of the current HEAD."""
     return _run_git(repo, "rev-parse", "HEAD").stdout.strip()

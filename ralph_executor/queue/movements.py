@@ -45,6 +45,25 @@ class QueueMovementError(RuntimeError):
     """Raised when a folder move violates a precondition."""
 
 
+class UncommittedSource(RuntimeError):
+    """Raised when ``_move``'s source dir has no files tracked by git.
+
+    The dir is present on disk — an external writer (operator adding a
+    PBI in another shell, a second ralph session mid-add) has created the
+    directory and entry file but has not yet run ``git commit`` on the
+    queue branch. ``git mv`` would fail with ``fatal: source directory is
+    empty`` (exit 128) and a raw ``GitCommandError`` would propagate up
+    through ``_claim_pbi`` and kill the loop. ``iterate_once`` catches
+    this exception instead, logs a WARNING, and returns a recoverable
+    ``IterationResult(outcome="uncommitted_source", ...)`` so the next
+    iteration re-scans inbox once the writer's commit lands.
+    """
+
+    def __init__(self, pbi_id: str) -> None:
+        super().__init__(f"PBI {pbi_id} source dir has no files tracked by git yet")
+        self.pbi_id = pbi_id
+
+
 def _now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
@@ -99,6 +118,15 @@ def _move(
         raise QueueMovementError(f"source path {src} does not exist in the queue clone")
     if dst.exists():
         raise QueueMovementError(f"destination {dst} already exists; refusing to overwrite")
+
+    # Race guard: an external writer (operator, second ralph session)
+    # can create the source dir on disk before committing it. ``git mv``
+    # would then exit 128 with ``fatal: source directory is empty`` and
+    # crash the loop. Detect via ``git ls-files`` and raise a recoverable
+    # ``UncommittedSource`` instead; ``iterate_once`` catches it and the
+    # next iteration retries once the writer's commit lands.
+    if not git_ops.ls_files(queue_repo, src):
+        raise UncommittedSource(pbi.id)
 
     git_ops.mv(queue_repo, src, dst)
 
