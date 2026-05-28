@@ -40,3 +40,10 @@
 - Tests: green (4/4 targeted) `uv run pytest tests/executor/test_loop.py -k "read_target_repo_from_pbi" -v`; full test_loop.py 35/35 green
 - Lint: ruff check + ruff format --check + mypy --strict on loop.py all clean
 - Notes: Plan test stub `pbi = PBI(...)` without target_repo defaults — the field defaults to `""` per Task 6's design so legacy construction still compiles, which the helper rejects via the `if not target_repo:` branch (treats empty string same as missing). Added a 4th test (BUG.md probe) not in the plan to exercise the entry-file probe order. Next iteration: sub-step 7B — `parse_target_repo` + host check inside `_claim_pbi`, with 2 negative-path tests (non-github host, malformed URL).
+
+## Iteration 7 — 2026-05-28T03:00:00Z
+
+- Step: Task 7 sub-step 7B — wired `_read_target_repo_from_pbi` + `parse_target_repo` + github-only host gate into `_claim_pbi` prelude (runs before legacy/worktree fork). Added 2 negative-path tests (`test_claim_raises_claim_error_for_non_github_host`, `test_claim_raises_claim_error_for_invalid_url`) plus `_write_pbi_with_target` helper.
+- Tests: green (6/6 targeted) `uv run pytest tests/executor/test_loop.py -k "claim_raises or read_target_repo" -v`; full `tests/executor tests/safety` sweep 467/467 green.
+- Lint: ruff check + ruff format clean project-wide; mypy --strict on loop.py clean.
+- Notes: To keep the existing test_loop suite passing through the new prelude, updated `tests/executor/conftest.py:write_sample_pbi` to default `target_repo="https://github.com/test/repo"` (added as a kwarg so future tests can override). Existing fixtures + the worktree-mode tests inherit the github default and pass the host gate. ensure_clone wiring + worktree creation deferred to sub-step 7C. Next iteration: sub-step 7C — happy-path multi-target claim test (clone + worktree in clone) and TargetUnreachable → _ClaimError test, plus the actual ensure_clone + worktree.work_worktree_path(clone.clone_root, …) wiring inside `_claim_pbi`.
