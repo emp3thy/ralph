@@ -35,9 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from ralph_executor.url_utils import parse_target_repo
+
 # tomllib.load returns dict[str, Any] for any parseable TOML document.
 
-DEFAULT_QUEUE_BRANCH = "ralph-queue"
 DEFAULT_MAIN_BRANCH = "main"
 # Counts only FAILED iterations (stuck / error) — partial is multi-step
 # progress and doesn't decrement the budget. 20 gives a long plan plenty
@@ -120,7 +121,11 @@ _FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
 # logged as a warning and ignored — keeps forward compatibility cheap.
 _TOML_KNOWN_KEYS = frozenset(
     {
-        "queue_branch",
+        # Queue repo HTTPS URL. Required — operators set this once via TOML
+        # (no env var, no default; the loop crashes without it). The
+        # executor clones it into ``<workspace_root>/queue/`` and reads /
+        # writes ``.ralph/`` from that clone.
+        "queue_repo",
         "main_branch",
         "max_attempts",
         "log_level",
@@ -194,7 +199,11 @@ class ExecutorConfig:
     """
 
     repo_path: Path
-    queue_branch: str
+    # HTTPS URL of the queue repo (e.g. ``https://github.com/emp3thy/ralph-queue``).
+    # Required via TOML (or the ``--queue-repo`` CLI flag). The loop clones
+    # this into ``<workspace_root>/queue/`` once and pulls on subsequent
+    # iterations; every queue mutation pushes back to its ``main`` branch.
+    queue_repo: str
     main_branch: str
     max_attempts: int
     log_level: int
@@ -228,11 +237,12 @@ class ExecutorConfig:
     # the classifier returns ``partial`` and the next iteration re-polls.
     pr_check_poll_max_attempts: int
     pr_check_poll_interval_seconds: float
-    # Stage-B execution model. When True, the loop runs each PBI inside a
-    # per-PBI worktree under ``<repo>/.ralph-work/repo-<PBI-id>/`` and
-    # reads/writes ``.ralph/`` from a separate ``<repo>/.ralph-work/queue/``
-    # worktree pinned to ``queue_branch``. When False, behaviour reverts
-    # to the Stage-A single-checkout branch-dance path.
+    # Execution model. Must be True after EXECUTOR-QUEUE-REPO-SPLIT —
+    # ``load_config`` rejects ``False`` because the Stage-A single-checkout
+    # branch-dance path is gone. The loop runs each PBI inside a per-PBI
+    # worktree under ``<target-clone>/.ralph-work/<PBI-id>/`` and
+    # reads/writes ``.ralph/`` from the queue clone at
+    # ``<workspace_root>/queue/`` (materialised by ``ensure_queue_clone``).
     use_worktrees: bool = DEFAULT_USE_WORKTREES
     # Sweep tuning — promoted from env-only. ``bot_author_email`` is the
     # commit/PR author email ralph uses; sweep skips comments by this
@@ -500,13 +510,39 @@ def load_config() -> ExecutorConfig:
     toml_overrides = _load_toml_overrides(repo_path)
     source_label = str(repo_path / ".ralph" / "config.toml")
 
-    queue_branch = _resolve_str(
-        name="queue_branch",
-        env_name="RALPH_QUEUE_BRANCH",
-        toml_value=toml_overrides.get("queue_branch"),
-        default=DEFAULT_QUEUE_BRANCH,
-        source_label=source_label,
-    )
+    queue_repo_value = toml_overrides.get("queue_repo")
+    queue_repo_source = source_label
+    if queue_repo_value is None:
+        # Spec bridge: fall back to ~/.ralph/config.toml (the user-level
+        # location ``ralph-executor init`` writes the URL to). One operator
+        # runs against one queue, so the per-machine config is the natural
+        # home; the per-repo override stays available for one-off CI runs.
+        from ralph_executor.user_config import read_queue_repo, user_config_path
+
+        try:
+            user_queue_repo = read_queue_repo()
+        except ConfigError:
+            raise
+        if user_queue_repo is not None:
+            queue_repo_value = user_queue_repo
+            queue_repo_source = str(user_config_path())
+    if queue_repo_value is None:
+        raise ConfigError(
+            f"{source_label}: queue_repo not configured. "
+            "Add 'queue_repo = \"<url>\"' to your config.toml or pass --queue-repo."
+        )
+    if not isinstance(queue_repo_value, str):
+        raise ConfigError(
+            f"{queue_repo_source}: queue_repo must be a string, "
+            f"got {type(queue_repo_value).__name__}"
+        )
+    try:
+        parse_target_repo(queue_repo_value)
+    except ValueError as exc:
+        raise ConfigError(
+            f"{queue_repo_source}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
+        ) from exc
+    queue_repo = queue_repo_value
     main_branch = _resolve_str(
         name="main_branch",
         env_name="RALPH_MAIN_BRANCH",
@@ -647,6 +683,20 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_USE_WORKTREES,
         source_label=source_label,
     )
+    # Stage-A single-checkout mode no longer reachable: the queue is now
+    # its own clone at ``<workspace_root>/queue/`` (see ``queue_clone``),
+    # so there is no ralph-queue branch to swap to on the primary
+    # checkout. Reject the legacy knob outright so an operator who pinned
+    # ``use_worktrees = false`` in TOML notices the migration instead of
+    # silently running a half-broken claim path.
+    if not use_worktrees:
+        raise ConfigError(
+            f"{source_label}: use_worktrees=False is no longer supported. "
+            "The queue is a separate clone on the operator's workspace; the "
+            "single-checkout branch-dance model is gone. Remove "
+            "'use_worktrees = false' from your config.toml "
+            "(or unset RALPH_USE_WORKTREES)."
+        )
     auto_merge_clean_prs = _resolve_bool(
         name="auto_merge_clean_prs",
         env_name="RALPH_AUTO_MERGE_CLEAN_PRS",
@@ -705,7 +755,7 @@ def load_config() -> ExecutorConfig:
 
     return ExecutorConfig(
         repo_path=repo_path,
-        queue_branch=queue_branch,
+        queue_repo=queue_repo,
         main_branch=main_branch,
         max_attempts=max_attempts,
         log_level=log_level,

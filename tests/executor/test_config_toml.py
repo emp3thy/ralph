@@ -19,13 +19,25 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
+QUEUE_REPO_URL = "https://github.com/example/queue"
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
-    """RALPH_REPO_PATH set, every overridable env var removed."""
+    """RALPH_REPO_PATH set, every overridable env var removed.
+
+    Also pre-seeds ``.ralph/config.toml`` with the required ``queue_repo``
+    key so individual tests can focus on the knob they exercise. Tests
+    that want a different TOML state (or no TOML at all) overwrite/delete
+    via ``_write_toml`` / ``_write_raw_toml``.
+    """
     monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (git_repo / ".ralph" / "config.toml").write_text(
+        f'queue_repo = "{QUEUE_REPO_URL}"\n',
+        encoding="utf-8",
+    )
     for var in (
-        "RALPH_QUEUE_BRANCH",
         "RALPH_MAIN_BRANCH",
         "RALPH_MAX_ATTEMPTS",
         "RALPH_LOG_LEVEL",
@@ -54,24 +66,38 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
 
 
 def _write_toml(repo: Path, body: str) -> Path:
+    """Write `.ralph/config.toml` ensuring queue_repo is present.
+
+    queue_repo is required by load_config; this helper prepends a default
+    queue_repo line so callers can focus their TOML body on the keys they
+    care about. Tests that need to test queue_repo-specific behavior or
+    malformed TOML use ``_write_raw_toml`` instead.
+    """
+    cfg_file = repo / ".ralph" / "config.toml"
+    cfg_file.write_text(
+        f'queue_repo = "{QUEUE_REPO_URL}"\n' + body,
+        encoding="utf-8",
+    )
+    return cfg_file
+
+
+def _write_raw_toml(repo: Path, body: str) -> Path:
     cfg_file = repo / ".ralph" / "config.toml"
     cfg_file.write_text(body, encoding="utf-8")
     return cfg_file
 
 
-def test_missing_toml_uses_defaults(clean_env: Path) -> None:
-    """No config.toml -> behaves exactly like the env-only path."""
-    cfg = load_config()
-    assert cfg.queue_branch == "ralph-queue"
-    assert cfg.max_attempts == 20
-    assert cfg.iteration_sleep_seconds == 30.0
+def test_missing_toml_raises_for_missing_queue_repo(clean_env: Path) -> None:
+    """No config.toml -> ConfigError because queue_repo is now required."""
+    (clean_env / ".ralph" / "config.toml").unlink()
+    with pytest.raises(ConfigError, match="queue_repo"):
+        load_config()
 
 
 def test_toml_overrides_defaults(clean_env: Path) -> None:
     _write_toml(
         clean_env,
         """
-        queue_branch = "ops-queue"
         main_branch = "trunk"
         max_attempts = 7
         iteration_sleep_seconds = 1.5
@@ -80,7 +106,7 @@ def test_toml_overrides_defaults(clean_env: Path) -> None:
         """,
     )
     cfg = load_config()
-    assert cfg.queue_branch == "ops-queue"
+    assert cfg.queue_repo == QUEUE_REPO_URL
     assert cfg.main_branch == "trunk"
     assert cfg.max_attempts == 7
     assert cfg.iteration_sleep_seconds == 1.5
@@ -89,11 +115,11 @@ def test_toml_overrides_defaults(clean_env: Path) -> None:
 
 
 def test_env_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _write_toml(clean_env, 'queue_branch = "from-toml"\nmax_attempts = 7\n')
-    monkeypatch.setenv("RALPH_QUEUE_BRANCH", "from-env")
+    _write_toml(clean_env, 'main_branch = "from-toml"\nmax_attempts = 7\n')
+    monkeypatch.setenv("RALPH_MAIN_BRANCH", "from-env")
     monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "99")
     cfg = load_config()
-    assert cfg.queue_branch == "from-env"
+    assert cfg.main_branch == "from-env"
     assert cfg.max_attempts == 99
 
 
@@ -102,22 +128,22 @@ def test_toml_partial_override_falls_back_to_defaults(clean_env: Path) -> None:
     _write_toml(clean_env, "max_attempts = 4\n")
     cfg = load_config()
     assert cfg.max_attempts == 4
-    assert cfg.queue_branch == "ralph-queue"  # default kept
+    assert cfg.main_branch == "main"  # default kept
     assert cfg.iteration_sleep_seconds == 30.0
 
 
 def test_unknown_toml_key_is_warned_and_ignored(
     clean_env: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    _write_toml(clean_env, 'queue_branch = "ops"\nmystery_knob = 42\n')
+    _write_toml(clean_env, "mystery_knob = 42\n")
     with caplog.at_level(logging.WARNING, logger="ralph_executor.config"):
         cfg = load_config()
-    assert cfg.queue_branch == "ops"
+    assert cfg.queue_repo == QUEUE_REPO_URL
     assert any("mystery_knob" in rec.message for rec in caplog.records)
 
 
 def test_malformed_toml_raises(clean_env: Path) -> None:
-    _write_toml(clean_env, "queue_branch = ===bogus===\n")
+    _write_raw_toml(clean_env, "main_branch = ===bogus===\n")
     with pytest.raises(ConfigError, match="invalid TOML"):
         load_config()
 
@@ -137,8 +163,36 @@ def test_toml_wrong_type_bool_for_int_raises(clean_env: Path) -> None:
 
 
 def test_toml_wrong_type_string_raises(clean_env: Path) -> None:
-    _write_toml(clean_env, "queue_branch = 42\n")
-    with pytest.raises(ConfigError, match="queue_branch must be a string"):
+    _write_toml(clean_env, "main_branch = 42\n")
+    with pytest.raises(ConfigError, match="main_branch must be a string"):
+        load_config()
+
+
+def test_queue_repo_picked_up_from_toml(clean_env: Path) -> None:
+    """queue_repo flows from TOML into ExecutorConfig."""
+    _write_raw_toml(
+        clean_env,
+        'queue_repo = "https://github.com/operator/my-queue"\n',
+    )
+    cfg = load_config()
+    assert cfg.queue_repo == "https://github.com/operator/my-queue"
+
+
+def test_queue_repo_required_missing_raises(clean_env: Path) -> None:
+    _write_raw_toml(clean_env, "main_branch = 'main'\n")
+    with pytest.raises(ConfigError, match="queue_repo"):
+        load_config()
+
+
+def test_queue_repo_invalid_url_raises(clean_env: Path) -> None:
+    _write_raw_toml(clean_env, 'queue_repo = "ftp://example.com/queue"\n')
+    with pytest.raises(ConfigError, match="queue_repo"):
+        load_config()
+
+
+def test_queue_repo_wrong_type_raises(clean_env: Path) -> None:
+    _write_raw_toml(clean_env, "queue_repo = 42\n")
+    with pytest.raises(ConfigError, match="queue_repo must be a string"):
         load_config()
 
 
@@ -277,12 +331,16 @@ def test_use_worktrees_default_true(clean_env: Path) -> None:
 
 
 def test_use_worktrees_toml_false(clean_env: Path) -> None:
+    """``use_worktrees = false`` is rejected outright after the queue-repo
+    split — the single-checkout branch-dance model is gone."""
     _write_toml(clean_env, "use_worktrees = false\n")
-    cfg = load_config()
-    assert cfg.use_worktrees is False
+    with pytest.raises(ConfigError, match="use_worktrees=False is no longer supported"):
+        load_config()
 
 
 def test_use_worktrees_env_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env override flips TOML ``false`` back to ``true`` — both surfaces
+    feed the same resolver, so the override path stays exercised."""
     _write_toml(clean_env, "use_worktrees = false\n")
     monkeypatch.setenv("RALPH_USE_WORKTREES", "true")
     cfg = load_config()
@@ -310,7 +368,7 @@ def test_toml_array_of_tables_treated_as_unknown_key(
     _write_toml(clean_env, '[[entries]]\nname = "x"\n')
     with caplog.at_level(logging.WARNING, logger="ralph_executor.config"):
         cfg = load_config()
-    assert cfg.queue_branch == "ralph-queue"
+    assert cfg.queue_repo == QUEUE_REPO_URL
     assert any("entries" in rec.message for rec in caplog.records)
 
 

@@ -1,11 +1,10 @@
 """Atomic folder moves between ``.ralph/`` states.
 
 Each helper:
-  1. Switches the working tree to the queue branch.
-  2. Validates the PBI is currently in the expected source state.
-  3. ``git mv``s the directory to the destination state folder.
-  4. Rewrites the entry file's frontmatter (``status:``, ``updated_at:``).
-  5. Commits + pushes the queue branch.
+  1. Validates the PBI is currently in the expected source state.
+  2. ``git mv``s the directory to the destination state folder.
+  3. Rewrites the entry file's frontmatter (``status:``, ``updated_at:``).
+  4. Commits + pushes ``main`` on the queue clone.
 
 The result is a new ``PBI`` dataclass reflecting the new on-disk state.
 """
@@ -29,21 +28,17 @@ from ralph_executor.safety.events import (
     signature_from_text,
 )
 from ralph_executor.types import PBI, PBIStatus
-from ralph_executor.worktree import queue_worktree_path
 
 log = logging.getLogger(__name__)
 
 
 def _queue_repo(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the checkout that owns ``.ralph/`` for this run.
+    """Filesystem path of the queue clone for this run.
 
-    In worktree mode this is the long-lived queue worktree; in legacy
-    single-checkout mode it is the primary checkout itself. Both are
-    real working trees backed by the same ``.git/`` object store.
+    The queue is its own repository checked out at
+    ``<workspace_root>/queue/`` and always sits on ``main``.
     """
-    if cfg.use_worktrees:
-        return queue_worktree_path(cfg.repo_path)
-    return cfg.repo_path
+    return cfg.workspace_root / "queue"
 
 
 class QueueMovementError(RuntimeError):
@@ -97,18 +92,11 @@ def _move(
     if pbi.status != expected_state:
         raise QueueMovementError(f"PBI {pbi.id} must be in {expected_state}, found in {pbi.status}")
     queue_repo = _queue_repo(cfg)
-    if not cfg.use_worktrees:
-        # Legacy single-checkout: primary holds queue_branch, swap to it
-        # before touching .ralph/. In worktree mode the queue worktree is
-        # already pinned to queue_branch — no checkout needed (and a
-        # checkout would actually fail because the branch is owned by the
-        # queue worktree, not the primary).
-        git_ops.checkout(queue_repo, cfg.queue_branch)
 
     src = queue_repo / ".ralph" / expected_state / pbi.id
     dst = queue_repo / ".ralph" / target_state / pbi.id
     if not src.is_dir():
-        raise QueueMovementError(f"source path {src} does not exist on the queue branch")
+        raise QueueMovementError(f"source path {src} does not exist in the queue clone")
     if dst.exists():
         raise QueueMovementError(f"destination {dst} already exists; refusing to overwrite")
 
@@ -122,10 +110,11 @@ def _move(
         f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
     )
     # push_with_rebase tolerates concurrent writers (operator commits, a
-    # second ralph instance, web commits) racing the queue branch between
-    # this iteration's start and the move's push. PushRebaseConflict is
-    # the conflict case; iterate_once treats it as a recoverable warning.
-    git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
+    # second ralph instance, web commits) racing the queue repo's main
+    # between this iteration's start and the move's push.
+    # PushRebaseConflict is the conflict case; iterate_once treats it as
+    # a recoverable warning.
+    git_ops.push_with_rebase(queue_repo, remote="origin", branch="main")
     return parse_pbi_directory(dst, status=target_state)
 
 

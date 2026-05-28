@@ -44,7 +44,7 @@
 **Files:**
 - (read-only)
 
-- [ ] **Step 1: Run grep**
+- [x] **Step 1: Run grep**
 
 ```bash
 uv run python -c "import subprocess; subprocess.run(['rg', '-l', 'queue_branch'], check=True)"
@@ -56,7 +56,7 @@ Or simpler:
 grep -rl "queue_branch\|cfg\.queue_branch" ralph_executor scripts skills tests | sort
 ```
 
-- [ ] **Step 2: Categorise each hit**
+- [x] **Step 2: Categorise each hit**
 
 Write the list to scratch (a paste in the implementation PR is fine). Categorise each file as one of:
 - **CONFIG**: defines the field or default → remove (Task 1).
@@ -65,7 +65,7 @@ Write the list to scratch (a paste in the implementation PR is fine). Categorise
 - **TEST**: constructs `ExecutorConfig(queue_branch=...)` → swap to `queue_repo=...` (Task 9).
 - **DOC**: spec / plan / README mentioning the old model → out of scope of this PBI (PBI 2 handles docs).
 
-- [ ] **Step 3: Sanity check — no other surfaces**
+- [x] **Step 3: Sanity check — no other surfaces**
 
 Confirm no `RALPH_QUEUE_BRANCH` env reads remain in non-doc code:
 
@@ -87,7 +87,7 @@ No commit for Task 0 — it's a discovery step.
 - Modify: `ralph_executor/config.py`
 - Test: `tests/executor/test_config.py`, `tests/executor/test_config_toml.py`
 
-- [ ] **Step 1: Write the failing test (config.py field present, queue_branch absent)**
+- [x] **Step 1: Write the failing test (config.py field present, queue_branch absent)**
 
 Append to `tests/executor/test_config.py`:
 
@@ -130,7 +130,7 @@ def test_load_config_accepts_queue_repo(tmp_path):
     assert cfg.queue_repo == "https://github.com/emp3thy/ralph-queue"
 ```
 
-- [ ] **Step 2: Run the tests; verify they FAIL**
+- [x] **Step 2: Run the tests; verify they FAIL**
 
 ```bash
 uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo_field tests/executor/test_config.py::test_load_config_rejects_missing_queue_repo tests/executor/test_config.py::test_load_config_accepts_queue_repo -v
@@ -138,7 +138,7 @@ uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo
 
 Expected: 3 failures (AttributeError or similar — the field doesn't exist yet).
 
-- [ ] **Step 3: Edit `ralph_executor/config.py`**
+- [x] **Step 3: Edit `ralph_executor/config.py`**
 
 In the constants block near line 40:
 - Delete: `DEFAULT_QUEUE_BRANCH = "ralph-queue"`
@@ -156,7 +156,7 @@ In `load_config`:
 - Add a `queue_repo` resolver: read `queue_repo` from TOML; if absent, raise `ConfigError("queue_repo not configured. Add 'queue_repo = \"<url>\"' to your config.toml or pass --queue-repo.")`.
 - Validate format with `parse_target_repo` from `ralph_executor.url_utils` — same validator multi-repo PBI introduced. Bad value → `ConfigError(f"queue_repo {value!r} is not a valid HTTPS URL: {exc}")`.
 
-- [ ] **Step 4: Run the tests; verify they PASS**
+- [x] **Step 4: Run the tests; verify they PASS**
 
 ```bash
 uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo_field tests/executor/test_config.py::test_load_config_rejects_missing_queue_repo tests/executor/test_config.py::test_load_config_accepts_queue_repo -v
@@ -164,7 +164,7 @@ uv run pytest tests/executor/test_config.py::test_executor_config_has_queue_repo
 
 Expected: 3 passes.
 
-- [ ] **Step 5: Update existing config tests that pass `queue_branch=`**
+- [x] **Step 5: Update existing config tests that pass `queue_branch=`**
 
 Run:
 
@@ -174,7 +174,7 @@ grep -rln "queue_branch" tests/
 
 For each file, swap `queue_branch="ralph-queue"` → `queue_repo="https://github.com/example/queue"` in every `ExecutorConfig(...)` call. The URL doesn't have to be real for unit tests; use the example domain consistently.
 
-- [ ] **Step 6: Full config-test run**
+- [x] **Step 6: Full config-test run**
 
 ```bash
 uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -v
@@ -182,7 +182,7 @@ uv run pytest tests/executor/test_config.py tests/executor/test_config_toml.py -
 
 Expected: all green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add ralph_executor/config.py tests/executor/test_config.py tests/executor/test_config_toml.py
@@ -221,7 +221,7 @@ The queue equivalent adds a `git pull --ff-only main` after fetch (the queue clo
 - Create: `ralph_executor/queue_clone.py`
 - Test: `tests/executor/test_queue_clone.py`
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/executor/test_queue_clone.py`:
 
@@ -297,7 +297,7 @@ def test_bad_url_raises_queue_clone_error(tmp_path: Path) -> None:
     assert "queue" in str(exc.value).lower()
 ```
 
-- [ ] **Step 3: Run; expect FAIL (module doesn't exist)**
+- [x] **Step 3: Run; expect FAIL (module doesn't exist)**
 
 ```bash
 uv run pytest tests/executor/test_queue_clone.py -v
@@ -305,7 +305,7 @@ uv run pytest tests/executor/test_queue_clone.py -v
 
 Expected: `ModuleNotFoundError: No module named 'ralph_executor.queue_clone'`.
 
-- [ ] **Step 4: Implement `ralph_executor/queue_clone.py`**
+- [x] **Step 4: Implement `ralph_executor/queue_clone.py`**
 
 ```python
 """Idempotent clone of the queue repo into the workspace.
@@ -374,7 +374,7 @@ def ensure_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float 
     return dest
 ```
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_queue_clone.py -v
@@ -382,7 +382,7 @@ uv run pytest tests/executor/test_queue_clone.py -v
 
 Expected: 3 passes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ralph_executor/queue_clone.py tests/executor/test_queue_clone.py
@@ -399,7 +399,7 @@ git commit -m "feat(executor): ensure_queue_clone — idempotent queue repo clon
 - Modify: `ralph_executor/loop.py`
 - Test: `tests/executor/test_loop.py` (existing) — assert `_pull_queue` calls `ensure_queue_clone`.
 
-- [ ] **Step 1: Add a failing test**
+- [x] **Step 1: Add a failing test**
 
 Append to `tests/executor/test_loop.py` (or create the file if absent):
 
@@ -428,13 +428,13 @@ def test_pull_queue_calls_ensure_queue_clone(monkeypatch, tmp_path):
 
 If `_make_test_cfg` doesn't exist in this file, build the cfg inline using `ExecutorConfig(...)` with the new `queue_repo` arg.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
 ```bash
 uv run pytest tests/executor/test_loop.py::test_pull_queue_calls_ensure_queue_clone -v
 ```
 
-- [ ] **Step 3: Edit `ralph_executor/loop.py`**
+- [x] **Step 3: Edit `ralph_executor/loop.py`**
 
 Add to the imports block:
 
@@ -460,13 +460,13 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
 
 Delete `_ensure_on_queue_branch` (callers go away in Task 4).
 
-- [ ] **Step 4: Run the test; expect PASS**
+- [x] **Step 4: Run the test; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_loop.py::test_pull_queue_calls_ensure_queue_clone -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/loop.py tests/executor/test_loop.py
@@ -508,7 +508,7 @@ git commit -m "feat(loop): _pull_queue uses ensure_queue_clone"
 **Files:**
 - Modify: `ralph_executor/loop.py`, `ralph_executor/queue/movements.py`
 
-- [ ] **Step 1: Make every edit in the table above**
+- [x] **Step 1: Make every edit in the table above**
 
 Use the line numbers as anchors. Re-grep after editing — there should be zero `cfg.queue_branch` references in production code:
 
@@ -516,7 +516,7 @@ Use the line numbers as anchors. Re-grep after editing — there should be zero 
 grep -n "cfg\.queue_branch\|_ensure_on_queue_branch" ralph_executor/
 ```
 
-- [ ] **Step 2: Run the full executor + loop test suite**
+- [x] **Step 2: Run the full executor + loop test suite**
 
 ```bash
 uv run pytest tests/executor/ tests/safety/ -v
@@ -524,7 +524,7 @@ uv run pytest tests/executor/ tests/safety/ -v
 
 Failures expected only for fixtures still using `queue_branch="…"`. Those get fixed in Task 9.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add ralph_executor/loop.py ralph_executor/queue/movements.py
@@ -546,7 +546,7 @@ After the split:
 **Files:**
 - Modify: `ralph_executor/loop.py` (lines 524–660), `ralph_executor/config.py` (load_config validation)
 
-- [ ] **Step 1: Add a `use_worktrees=False` rejection to `load_config`**
+- [x] **Step 1: Add a `use_worktrees=False` rejection to `load_config`**
 
 In `config.py` `load_config`, after resolving `use_worktrees`, raise:
 
@@ -559,15 +559,15 @@ if not use_worktrees:
     )
 ```
 
-- [ ] **Step 2: Delete the legacy mode from `_claim_pbi`**
+- [x] **Step 2: Delete the legacy mode from `_claim_pbi`**
 
 Lines 570–593 (the `if cfg.use_worktrees:` branch + `else:` body): keep the multi-target prelude (parse_target_repo, host gate, `_ClaimError` raises) and the call to `_claim_pbi_worktree`. Delete the `else:` legacy branch entirely.
 
-- [ ] **Step 3: Edit `_claim_pbi_worktree` (line 596+)**
+- [x] **Step 3: Edit `_claim_pbi_worktree` (line 596+)**
 
 Delete the `ensure_worktree(...)` call that creates the queue worktree (line 615). The queue is already a clone on disk — `_pull_queue` materialised it earlier in the iteration. Keep everything related to the per-PBI work worktree inside the target clone.
 
-- [ ] **Step 4: Run claim-related tests**
+- [x] **Step 4: Run claim-related tests**
 
 ```bash
 uv run pytest tests/executor/ -k "claim or pbi" -v
@@ -575,7 +575,7 @@ uv run pytest tests/executor/ -k "claim or pbi" -v
 
 Failures expected only for fixtures still passing `use_worktrees=False` or constructing `ExecutorConfig(queue_branch=…)`. Task 9 handles fixtures.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/loop.py ralph_executor/config.py
@@ -591,15 +591,15 @@ git commit -m "fix(loop,config): _claim_pbi worktree-only; drop legacy single-ch
 **Files:**
 - Modify: `ralph_executor/queue/movements.py`
 
-- [ ] **Step 1: Identify the line**
+- [x] **Step 1: Identify the line**
 
 ```bash
 grep -n "cfg\.queue_branch\|queue_branch" ralph_executor/queue/movements.py
 ```
 
-- [ ] **Step 2: Replace `cfg.queue_branch` with the literal `"main"`** at every hit.
+- [x] **Step 2: Replace `cfg.queue_branch` with the literal `"main"`** at every hit.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 uv run pytest tests/executor/test_movements.py -v
@@ -607,12 +607,18 @@ uv run pytest tests/executor/test_movements.py -v
 
 Expected: tests pass except where fixtures still use `queue_branch=` in their `ExecutorConfig` — handled in Task 9.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ralph_executor/queue/movements.py
 git commit -m "fix(movements): push moves to main, not queue_branch"
 ```
+
+> **Note (Iteration 6):** Task 6 was completed inside Iteration 4's commit
+> `a74e14d fix(loop): EXECUTOR-QUEUE-REPO-SPLIT — drop queue branch swap, push to main`,
+> which rewrote `_persist_iteration_writes`, `iterate_once` push-conflict catch, and
+> `queue/movements.py` together. Verified post-rebase: `grep cfg.queue_branch
+> ralph_executor/queue/` returns zero hits. No separate commit needed.
 
 ---
 
@@ -625,7 +631,7 @@ git commit -m "fix(movements): push moves to main, not queue_branch"
 - Modify: `ralph_executor/cli.py`
 - Test: `tests/executor/test_migrate_queue.py`
 
-- [ ] **Step 1: Write the failing test for the file-filter helper**
+- [x] **Step 1: Write the failing test for the file-filter helper**
 
 `tests/executor/test_migrate_queue.py`:
 
@@ -723,9 +729,9 @@ def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
     assert "not empty" in str(exc.value).lower()
 ```
 
-- [ ] **Step 2: Run; expect FAIL (module missing)**
+- [x] **Step 2: Run; expect FAIL (module missing)**
 
-- [ ] **Step 3: Implement `ralph_executor/migrate_queue.py`**
+- [x] **Step 3: Implement `ralph_executor/migrate_queue.py`**
 
 ```python
 """migrate-queue subcommand: bootstrap emp3thy/ralph-queue from an existing
@@ -877,13 +883,13 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 4: Run the helper test; expect PASS**
+- [x] **Step 4: Run the helper test; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_migrate_queue.py::test_copy_filtered_excludes_done -v
 ```
 
-- [ ] **Step 5: Commit (helper only — CLI wiring follows in 7b)**
+- [x] **Step 5: Commit (helper only — CLI wiring follows in 7b)**
 
 ```bash
 git add ralph_executor/migrate_queue.py tests/executor/test_migrate_queue.py
@@ -899,7 +905,7 @@ git commit -m "feat(migrate-queue): copy_queue_tree_filtered helper"
 **Files:**
 - Modify: `ralph_executor/migrate_queue.py` (add `main` and `_target_is_empty`), `ralph_executor/cli.py`
 
-- [ ] **Step 1: Add the remaining tests**
+- [x] **Step 1: Add the remaining tests**
 
 `tests/executor/test_migrate_queue.py`:
 
@@ -940,9 +946,9 @@ def test_migrate_refuses_nonempty_target(tmp_path: Path) -> None:
     assert "not empty" in str(exc.value).lower()
 ```
 
-- [ ] **Step 2: Run; expect FAIL** (only `copy_queue_tree_filtered` exists from 7a)
+- [x] **Step 2: Run; expect FAIL** (only `copy_queue_tree_filtered` exists from 7a)
 
-- [ ] **Step 3: Add `_target_is_empty` and `main` to `migrate_queue.py`**
+- [x] **Step 3: Add `_target_is_empty` and `main` to `migrate_queue.py`**
 
 Use the exact bodies from Task 7a's earlier `migrate_queue.py` draft (they were already paired in the original 7). The `main` function:
 1. Parses `--source` and `--target`.
@@ -953,18 +959,18 @@ Use the exact bodies from Task 7a's earlier `migrate_queue.py` draft (they were 
 6. `git init --initial-branch=main`, `git add .`, `git commit`, `git remote add origin`, `git push origin main`.
 7. Prints summary and follow-up TOML / branch-deletion commands.
 
-- [ ] **Step 4: Wire into `ralph_executor/cli.py`**
+- [x] **Step 4: Wire into `ralph_executor/cli.py`**
 
 Add an `argparse` subcommand `migrate-queue` whose handler imports and calls `ralph_executor.migrate_queue.main(remaining_argv)`. Add a top-level `--queue-repo` flag (one-shot override of TOML) handled in the same `_apply_overrides` machinery as other flags. The migrate subcommand uses its own `--target`; the top-level flag does not pass through.
 
-- [ ] **Step 5: Run; expect PASS**
+- [x] **Step 5: Run; expect PASS**
 
 ```bash
 uv run pytest tests/executor/test_migrate_queue.py -v
 uv run ralph-executor migrate-queue --help
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ralph_executor/migrate_queue.py ralph_executor/cli.py tests/executor/test_migrate_queue.py
@@ -981,13 +987,13 @@ git commit -m "feat(cli): migrate-queue subcommand + --queue-repo flag"
 - Modify: `ralph_executor/setup_cmds.py`
 - Test: `tests/executor/test_setup_cmds.py`
 
-- [ ] **Step 1: Add a failing test**
+- [x] **Step 1: Add a failing test**
 
 In `tests/executor/test_setup_cmds.py`, add a test asserting that running `init` with a stubbed-in input stream writes `queue_repo = "<url>"` into the TOML config file. Use the same pattern as the existing `ralph_home` prompt test.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `setup_cmds.py`**
+- [x] **Step 3: Edit `setup_cmds.py`**
 
 In the `init` flow, after the existing `workspace_root` prompt, add a `queue_repo` prompt with:
 - Default: empty (force the operator to set it deliberately).
@@ -996,9 +1002,17 @@ In the `init` flow, after the existing `workspace_root` prompt, add a `queue_rep
 
 Append `queue_repo = "<url>"` to the written `~/.ralph/config.toml`.
 
-- [ ] **Step 4: Run; expect PASS**
+> **Iteration 8 note:** delivered. `cmd_init` writes `queue_repo` via the
+> new `_write_user_config` merge helper so `ralph_home` survives.
+> `_smoke_clone_queue_repo` uses `git ls-remote --heads`; failure is a
+> WARNING, never a blocker. `CONFIG_TOML_STUB` queue-branch comment was
+> replaced with a `queue_repo` example pointing at `~/.ralph/config.toml`.
+> A `load_config → user_config.read_queue_repo` bridge is the next gap
+> (filed against Task 9 in HISTORY).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 4: Run; expect PASS**
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/setup_cmds.py tests/executor/test_setup_cmds.py
@@ -1014,23 +1028,42 @@ git commit -m "feat(init): prompt for queue_repo, smoke clone for validation"
 **Files:**
 - Modify: `tests/executor/conftest.py`, `tests/executor/test_cli.py`, `tests/test_queue_writer.py`, `tests/safety/test_integration_loop.py`, `tests/test_setup_ralph_queue_github.py`, and any others surfaced by grep.
 
-- [ ] **Step 1: Enumerate**
+- [x] **Step 1: Enumerate**
 
 ```bash
 grep -rln "queue_branch" tests/
 ```
 
-- [ ] **Step 2: For each hit, swap to `queue_repo="https://github.com/example/queue"`**
+- [x] **Step 2: For each hit, swap to `queue_repo="https://github.com/example/queue"`**
 
 Any test that explicitly tested branch-swapping logic on the queue should be deleted (the logic is gone).
 
-- [ ] **Step 3: Run the full test suite**
+> **Iter 9–12 outcome:** swept `tests/executor/conftest.py` (queue-clone
+> topology fixture), `tests/executor/test_loop.py`, `test_filesystem_queue.py`,
+> `test_movements.py`, `test_claude_spawn.py`, `test_cli.py`,
+> `test_cli_reconcile.py`, `test_config_toml.py`, `test_git_ops.py`,
+> `test_loop_integration.py`, `test_worktree.py`, and
+> `tests/safety/test_cycle_detector.py` + `test_integration_loop.py`.
+> Also closed the iter-8 gap: `load_config` now bridges to
+> `user_config.read_queue_repo()` so `~/.ralph/config.toml` satisfies the
+> operator gate. Refreshed the `use_worktrees` field comment in
+> `ralph_executor/config.py` to drop the Stage-A wording. Files
+> deliberately left untouched (out of scope per Task 0 categorisation):
+> `tests/test_queue_writer.py` and `tests/test_setup_ralph_queue_github.py`
+> exercise the legacy `scripts/queue_writer.py` + `setup_ralph_queue_github.py`
+> bootstrap that PBI 2 will retire alongside the skills migration; the
+> `assert "queue_branch" not in names` line in `test_config.py:93` is an
+> intentional negative assertion, not a regression.
+
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 uv run pytest -x -q
 ```
 
-- [ ] **Step 4: Commit**
+868 passed / 4 skipped (post iter-12).
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/
@@ -1043,7 +1076,7 @@ git commit -m "test: migrate all fixtures from queue_branch to queue_repo"
 
 **Confidence: 95%** — gate.
 
-- [ ] **Step 1: ruff check + format**
+- [x] **Step 1: ruff check + format**
 
 ```bash
 uv run ruff check .
@@ -1052,29 +1085,34 @@ uv run ruff format --check .
 
 Fix any complaints.
 
-- [ ] **Step 2: mypy**
+- [x] **Step 2: mypy**
 
 ```bash
 uv run mypy ralph_executor scripts skills tests
 ```
 
-Fix any complaints.
+Iter-12 result: one residual `test_claude_spawn.py:855` non-overlapping
+equality warning (pre-existing `list[Popen[str]] == list[_FakeProc]`
+comparison in an isolation test); explicitly carried over from iter 8
+HISTORY as out-of-scope for this PBI.
 
-- [ ] **Step 3: Full pytest**
+- [x] **Step 3: Full pytest**
 
 ```bash
 uv run pytest -q
 ```
 
-Expected: all green.
+Expected: all green. Iter-12 actual: 868 passed / 4 skipped.
 
-- [ ] **Step 4: Open the PR**
+- [x] **Step 4: Open the PR**
 
 ```bash
 git push -u origin ralph/EXECUTOR-QUEUE-REPO-SPLIT
 ```
 
-Use the `pr` skill's create-pr op or `gh pr create`. PR description points at this plan and the spec.
+Used `gh pr create` (no `pr` skill in this worktree's scope). PR opened:
+**https://github.com/emp3thy/ralph/pull/48** — title
+"EXECUTOR-QUEUE-REPO-SPLIT: executor reads queue from a separate repo".
 
 ---
 

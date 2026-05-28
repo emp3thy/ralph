@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,11 +18,7 @@ from ralph_executor.loop import (
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.safety.events import EventType, open_log
 from ralph_executor.types import PBI
-from ralph_executor.worktree import (
-    list_worktrees,
-    queue_worktree_path,
-    work_worktree_path,
-)
+from ralph_executor.worktree import work_worktree_path
 from tests.executor.conftest import write_sample_pbi
 
 
@@ -40,12 +35,11 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _populate_inbox(fake_repo: Path, pbi_id: str = "WI-1234", severity: str = "normal") -> None:
-    _git(fake_repo, "checkout", "ralph-queue")
+    """Seed an inbox PBI directly on the queue clone's ``main`` branch."""
     write_sample_pbi(fake_repo, pbi_id=pbi_id, severity=severity)
     _git(fake_repo, "add", f".ralph/inbox/{pbi_id}")
     _git(fake_repo, "commit", "-m", f"inbox: {pbi_id}")
-    _git(fake_repo, "push", "origin", "ralph-queue")
-    _git(fake_repo, "checkout", "main")
+    _git(fake_repo, "push", "origin", "main")
 
 
 def _stub_spawn(outcome_kind: str, pr_url: str | None = None) -> object:
@@ -152,7 +146,7 @@ def test_iterate_once_moves_to_blocked_when_stuck(
     # Simulate Ralph writing STUCK.md before exit.
     pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
 
-    def _stuck_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    def _stuck_spawn(cfg: ExecutorConfig, pbi: object, **kwargs: object) -> ClaudeOutcome:
         (pbi_dir / "STUCK.md").write_text("# stuck\n", encoding="utf-8")
         return ClaudeOutcome(
             kind="stuck",
@@ -193,8 +187,8 @@ def test_iterate_once_recovers_from_push_conflict(
     """A PushRebaseConflict from the persist path must NOT crash the loop.
 
     Reproduction of the LOOP-PERSIST-PUSH-RACE bug: a concurrent writer
-    advanced origin/ralph-queue in a way that conflicts with the
-    iteration's persist commit. The helper raises PushRebaseConflict;
+    advanced origin/main on the queue repo in a way that conflicts with
+    the iteration's persist commit. The helper raises PushRebaseConflict;
     iterate_once must catch it, log a warning, and return outcome
     push_conflict so the loop keeps running.
     """
@@ -334,7 +328,7 @@ def test_stuck_outcome_increments_attempts(
     pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
     before = read_attempts(pbi_dir)
 
-    def _stuck_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    def _stuck_spawn(cfg: ExecutorConfig, pbi: object, **kwargs: object) -> ClaudeOutcome:
         (pbi_dir / "STUCK.md").write_text("# stuck\n", encoding="utf-8")
         return ClaudeOutcome(
             kind="stuck",
@@ -394,56 +388,26 @@ def test_iterate_once_invokes_cycle_detector_stub(
     assert called == [True]
 
 
-def test_iterate_once_pulls_ralph_queue_every_iteration(
+def test_iterate_once_refreshes_queue_clone_every_iteration(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pull_calls: list[str] = []
-    from ralph_executor import git_ops as real_git_ops
+    """Each iteration calls ``ensure_queue_clone`` to refresh the local clone."""
+    calls: list[tuple[Path, str]] = []
+    from ralph_executor.queue_clone import ensure_queue_clone as real_ensure
 
-    original_pull = real_git_ops.pull
+    def _spy(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        calls.append((workspace_root, queue_repo))
+        return real_ensure(workspace_root, queue_repo, timeout=timeout)
 
-    def _spy_pull(repo: Path, branch: str, remote: str = "origin") -> None:
-        pull_calls.append(branch)
-        original_pull(repo, branch, remote)
-
-    monkeypatch.setattr("ralph_executor.loop.git_ops.pull", _spy_pull)
+    monkeypatch.setattr("ralph_executor.loop.ensure_queue_clone", _spy)
     monkeypatch.setattr(
         "ralph_executor.loop.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
-    assert "ralph-queue" in pull_calls
-
-
-def test_iterate_once_pulls_main_only_on_fresh_claim(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _populate_inbox(fake_repo)
-    pull_calls: list[str] = []
-    from ralph_executor import git_ops as real_git_ops
-
-    original_pull = real_git_ops.pull
-
-    def _spy_pull(repo: Path, branch: str, remote: str = "origin") -> None:
-        pull_calls.append(branch)
-        original_pull(repo, branch, remote)
-
-    monkeypatch.setattr("ralph_executor.loop.git_ops.pull", _spy_pull)
-    monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
-        _stub_spawn("partial"),
-    )
-    iterate_once(cfg_for_repo)  # claim → main pulled
-    assert "main" in pull_calls
-
-    pull_calls.clear()
-    iterate_once(cfg_for_repo)  # current occupied → main NOT pulled
-    assert "main" not in pull_calls
-    assert "ralph-queue" in pull_calls
+    assert calls == [(cfg_for_repo.workspace_root, cfg_for_repo.queue_repo)]
 
 
 def test_run_loop_terminates_when_cycle_detector_trips(
@@ -479,11 +443,11 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression: when Claude appends to HISTORY.md during a partial-
-    outcome iteration, the executor must commit + push that change on
-    ralph-queue. Without _persist_iteration_writes, Claude's edits sit
-    dirty in the working tree and get lost on the next iteration's
-    branch checkout. Caught by first end-to-end self-host smoke
-    (Ralph PR #7 — TEST-001 left HISTORY.md uncommitted on ralph-queue).
+    outcome iteration, the executor must commit + push that change to the
+    queue clone's main. Without _persist_iteration_writes, Claude's edits
+    sit dirty in the queue clone and get lost on the next iteration.
+    Caught by first end-to-end self-host smoke (Ralph PR #7 — TEST-001
+    left HISTORY.md uncommitted).
     """
     _populate_inbox(fake_repo)
     iterate_once(cfg_for_repo)  # claim TEST-001 → current/
@@ -491,7 +455,7 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
     history_path = fake_repo / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
     history_before = history_path.read_text(encoding="utf-8")
 
-    def _appending_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    def _appending_spawn(cfg: ExecutorConfig, pbi: object, **kwargs: object) -> ClaudeOutcome:
         # Claude appends an iteration record to HISTORY.md, then exits
         # with partial (multi-step PBI, no PR yet).
         history_path.write_text(
@@ -514,7 +478,7 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
     head_after_iter = _git(fake_repo, "rev-parse", "HEAD").strip()
 
     assert result.outcome == "ran_partial"
-    # The persistence step must have produced a new commit on ralph-queue.
+    # The persistence step must have produced a new commit on the queue clone.
     assert head_after_iter != head_before_iter, (
         "expected _persist_iteration_writes to commit HISTORY.md edits"
     )
@@ -578,7 +542,7 @@ def test_file_touched_event_emitted_on_iteration_commit(
     history_path = fake_repo / ".ralph" / "current" / "WI-1234" / "HISTORY.md"
     history_before = history_path.read_text(encoding="utf-8")
 
-    def _appending_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    def _appending_spawn(cfg: ExecutorConfig, pbi: object, **kwargs: object) -> ClaudeOutcome:
         history_path.write_text(
             history_before + "\n## Iteration 1 — partial\n",
             encoding="utf-8",
@@ -705,16 +669,15 @@ def test_run_sweep_does_not_read_env_for_promoted_knobs(
     assert 'os.environ.get("RALPH_STALE_DAYS"' not in src
 
 
-def test_run_sweep_queue_root_uses_queue_worktree_under_worktree_mode(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_run_sweep_queue_root_points_at_queue_clone(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In worktree mode the sweep's ``queue_root`` must point at the
-    queue worktree's ``.ralph/`` (where pending-pr/ actually lives), not
-    at the primary checkout's ``.ralph/`` (which is empty — main has no
-    queue state). Without this fix the sweep scans 0 PBIs while
-    pending-pr/ accumulates orphans in the queue worktree."""
+    """The sweep's ``queue_root`` must point at the queue clone's
+    ``.ralph/`` (where pending-pr/ actually lives). After the queue-repo
+    split there is only one queue path: ``<workspace_root>/queue/.ralph/``.
+    """
     from dataclasses import replace
 
     from ralph_executor.loop import _run_sweep
@@ -740,12 +703,12 @@ def test_run_sweep_queue_root_uses_queue_worktree_under_worktree_mode(
         lambda cfg: fake_repo,
     )
 
-    cfg = replace(cfg_for_repo_worktree, bot_author_email="ralph@x.test")
+    cfg = replace(cfg_for_repo, bot_author_email="ralph@x.test")
     _run_sweep(cfg, FilesystemQueueSource(cfg))
 
-    expected = queue_worktree_path(fake_repo) / ".ralph"
+    expected = fake_repo / ".ralph"
     assert captured["queue_root"] == expected, (
-        f"sweep queue_root must point at the queue worktree's .ralph/; "
+        f"sweep queue_root must point at the queue clone's .ralph/; "
         f"got {captured['queue_root']!r}, expected {expected!r}"
     )
 
@@ -779,250 +742,109 @@ def test_file_touched_skipped_on_empty_commit(
 
 
 # ----------------------------------------------------------------------
-# Task 9 — worktree-mode integration tests (`cfg.use_worktrees=True`).
-# The shared ``cfg_for_repo`` fixture defaults to legacy single-checkout
-# (use_worktrees=False); tests below derive a worktree-mode config so
-# both branches stay covered. The helpers tests live in
-# ``test_worktree.py`` — these focus on the loop integration.
+# Queue-clone-model integration tests. After EXECUTOR-QUEUE-REPO-SPLIT
+# the queue clone IS the working tree (``cfg.workspace_root/queue``)
+# and per-PBI work worktrees live under the target clone. The shared
+# ``cfg_for_repo`` fixture sets up that topology; tests below pin the
+# behaviours that previously lived in the now-deleted worktree-mode
+# integration block.
 # ----------------------------------------------------------------------
 
 
-@pytest.fixture
-def cfg_for_repo_worktree(
+def test_claim_creates_work_worktree_on_feature_branch(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[ExecutorConfig]:
-    """Worktree-mode variant of ``cfg_for_repo`` with best-effort cleanup.
-
-    Pytest's ``tmp_path`` cleanup trips on Windows when ``.ralph-work/``
-    still holds git-registered worktrees; force-remove them on teardown
-    so the next test (and the harness) start clean.
-
-    Task 7 sub-step 7C wires ``_claim_pbi`` to call ``target_clone.ensure_clone``
-    before creating the work worktree. To keep the existing worktree-mode
-    tests (which never set up a real clone) working unchanged, this fixture
-    monkeypatches ``ensure_clone`` to return a ``TargetClone`` whose
-    ``clone_root`` IS ``fake_repo``. Tests that need a distinct clone root
-    can override the monkeypatch.
-    """
-    cfg = dataclasses.replace(cfg_for_repo, use_worktrees=True)
-
-    from ralph_executor.target_clone import TargetClone
-    from ralph_executor.url_utils import TargetRepoInfo
-
-    def _fake_ensure_clone_to_fake_repo(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
-        return TargetClone(info=info, clone_root=fake_repo)
-
-    monkeypatch.setattr(
-        "ralph_executor.target_clone.ensure_clone",
-        _fake_ensure_clone_to_fake_repo,
-    )
-
-    try:
-        yield cfg
-    finally:
-        for entry in list_worktrees(fake_repo):
-            path = entry.get("path")
-            if isinstance(path, str) and Path(path).resolve() != fake_repo.resolve():
-                subprocess.run(
-                    ["git", "-C", str(fake_repo), "worktree", "remove", "--force", path],
-                    check=False,
-                    capture_output=True,
-                )
-        subprocess.run(
-            ["git", "-C", str(fake_repo), "worktree", "prune"],
-            check=False,
-            capture_output=True,
-        )
-
-
-def test_claim_with_worktrees_creates_queue_and_work_trees(
-    cfg_for_repo_worktree: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A worktree-mode claim materialises both the long-lived queue tree
-    and a per-PBI work tree without touching the primary checkout's
-    branch."""
+    """A claim materialises a per-PBI work worktree under the target
+    clone, checked out on the feature branch ``ralph/<PBI-id>``."""
     _populate_inbox(fake_repo)
-    primary_before = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
     monkeypatch.setattr(
         "ralph_executor.loop.spawn_claude_p",
         _stub_spawn("partial"),
     )
 
-    result = iterate_once(cfg_for_repo_worktree)
+    result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "claimed"
-    queue_wt = queue_worktree_path(fake_repo)
+    # Queue clone has the PBI moved into current/.
+    assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
+    # Work worktree exists on the feature branch (target clone IS fake_repo
+    # via the autouse _fake_ensure_target_clone fixture).
     work_wt = work_worktree_path(fake_repo, "WI-1234")
-    # Queue worktree is on ralph-queue with the PBI moved into current/.
-    assert queue_wt.is_dir()
-    assert (queue_wt / ".ralph" / "current" / "WI-1234").is_dir()
-    # Work worktree exists on the feature branch.
     assert work_wt.is_dir()
     work_branch = _git(work_wt, "rev-parse", "--abbrev-ref", "HEAD").strip()
     assert work_branch == "ralph/WI-1234"
-    # Primary checkout's branch is untouched.
-    primary_after = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert primary_after == primary_before
-
-
-def test_persist_iteration_writes_worktree_mode_commits_from_queue_tree(
-    cfg_for_repo_worktree: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """In worktree mode ``_persist_iteration_writes`` commits and pushes
-    from the queue worktree — the primary checkout is never branch-swapped
-    and the new commit lands on ``origin/ralph-queue`` via the queue
-    worktree's push."""
-    _populate_inbox(fake_repo)
-    iterate_once(cfg_for_repo_worktree)  # claim — creates worktrees
-
-    queue_wt = queue_worktree_path(fake_repo)
-    pbi_dir_in_queue = queue_wt / ".ralph" / "current" / "WI-1234"
-    history_path = pbi_dir_in_queue / "HISTORY.md"
-    history_before = history_path.read_text(encoding="utf-8")
-
-    def _appending_spawn(
-        cfg: ExecutorConfig,
-        pbi: object,
-        *,
-        cwd: Path | None = None,
-        pbi_dir: Path | None = None,
-    ) -> ClaudeOutcome:
-        history_path.write_text(
-            history_before + "\n## Iteration 1 — partial\n",
-            encoding="utf-8",
-        )
-        return ClaudeOutcome(
-            kind="partial",
-            pr_url=None,
-            stdout="",
-            stderr="",
-            exit_code=0,
-            duration_seconds=0.01,
-        )
-
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
-    head_before = _git(queue_wt, "rev-parse", "HEAD").strip()
-    primary_before = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-
-    result = iterate_once(cfg_for_repo_worktree)
-
-    assert result.outcome == "ran_partial"
-    head_after = _git(queue_wt, "rev-parse", "HEAD").strip()
-    assert head_after != head_before, "queue worktree must produce a new commit"
-    # Primary's HEAD is unchanged — no branch swap on the primary.
-    primary_after = _git(fake_repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert primary_after == primary_before
-    # The push landed on origin/ralph-queue.
-    _git(fake_repo, "fetch", "origin")
-    remote_head = _git(fake_repo, "rev-parse", "origin/ralph-queue").strip()
-    assert remote_head == head_after
-    # No dirty files left in the queue worktree's PBI dir.
-    pbi_status = _git(queue_wt, "status", "--porcelain", ".ralph/current/WI-1234").strip()
-    assert pbi_status == "", f"queue PBI dir dirty after persist: {pbi_status!r}"
 
 
 def test_terminal_outcome_removes_work_tree(
-    cfg_for_repo_worktree: ExecutorConfig,
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the iteration ends in a terminal outcome (pr_created here),
-    the per-PBI work worktree is torn down. The queue worktree persists
-    across PBIs."""
+    the per-PBI work worktree is torn down. The queue clone persists."""
     _populate_inbox(fake_repo)
-    iterate_once(cfg_for_repo_worktree)  # claim → worktrees created
+    iterate_once(cfg_for_repo)  # claim
 
     work_wt = work_worktree_path(fake_repo, "WI-1234")
-    queue_wt = queue_worktree_path(fake_repo)
     assert work_wt.is_dir(), "precondition: work worktree exists after claim"
 
     monkeypatch.setattr(
         "ralph_executor.loop.spawn_claude_p",
         _stub_spawn("pr_created", pr_url="https://example/pr/9"),
     )
-    result = iterate_once(cfg_for_repo_worktree)
+    result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "ran_pr_created"
     assert not work_wt.exists(), "work worktree should be removed on pr_created"
-    # Queue worktree persists.
-    assert queue_wt.is_dir()
+    # Queue clone persists.
+    assert fake_repo.is_dir()
     # ``ralph/WI-1234`` ref is preserved — pending-pr PBIs need it.
     feature_ref = _git(fake_repo, "branch", "--list", "ralph/WI-1234").strip()
     assert "ralph/WI-1234" in feature_ref
 
 
-# ``test_legacy_single_checkout_path_still_works_when_flag_false``: the
-# entire test_loop.py suite above uses ``cfg_for_repo`` (use_worktrees=
-# False) and exercises claim → spawn → persist → terminal-outcome moves
-# end-to-end. The legacy single-checkout path therefore has dense
-# regression coverage already; no dedicated test added here.
-
-
-def test_event_log_lives_in_queue_worktree_under_worktree_mode(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_event_log_lives_in_queue_clone(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In worktree mode every ``open_log`` call must target the queue
-    worktree, not the primary checkout. Otherwise events (notably
-    ``PBI_OPENED`` from ``move_inbox_to_current``) silently land in a
-    stray ``.ralph/state/events.db`` in the primary checkout — never
-    committed/pushed with the queue branch and invisible to the cycle
-    detector after a process restart."""
+    """Every ``open_log`` call targets the queue clone. The
+    ``PBI_OPENED`` event from ``move_inbox_to_current`` must land in
+    ``<queue-clone>/.ralph/state/events.db`` — that's the file the cycle
+    detector reads on subsequent process restarts."""
     _populate_inbox(fake_repo)
     monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("partial"))
 
-    iterate_once(cfg_for_repo_worktree)
+    iterate_once(cfg_for_repo)
 
-    queue_wt = queue_worktree_path(fake_repo)
-    queue_db = queue_wt / ".ralph" / "state" / "events.db"
-    primary_db = fake_repo / ".ralph" / "state" / "events.db"
-    assert queue_db.is_file(), f"event log must live in the queue worktree; expected at {queue_db}"
-    assert not primary_db.exists(), (
-        f"primary checkout should never get a stray events.db; found {primary_db}"
-    )
-    # And the PBI_OPENED event from move_inbox_to_current actually lives there.
-    event_log = open_log(queue_wt)
+    queue_db = fake_repo / ".ralph" / "state" / "events.db"
+    assert queue_db.is_file(), f"event log must live in the queue clone; expected at {queue_db}"
+    event_log = open_log(fake_repo)
     try:
         events = event_log.recent(window=timedelta(hours=1), now=datetime.now(tz=UTC))
     finally:
         event_log.close()
     pbi_opened = [e for e in events if e.kind == EventType.PBI_OPENED]
-    assert pbi_opened, "PBI_OPENED event missing from queue-worktree event log"
+    assert pbi_opened, "PBI_OPENED event missing from queue-clone event log"
 
 
-def test_stuck_blocked_move_targets_queue_worktree(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_stuck_blocked_move_targets_queue_clone(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In worktree mode `handle_stuck` must operate against the queue
-    worktree, not the primary checkout. ``pbi.path`` lives under
-    ``.ralph-work/queue/.ralph/current/<id>`` so calling
-    ``move_to_blocked`` with ``repo=cfg.repo_path`` raises ValueError
-    (``parts[0] == '.ralph-work'`` fails the ``parts[0] != '.ralph'``
-    guard in ``ralph_executor/safety/stuck.py::move_to_blocked``).
-    The blocked PBI must end up in the queue worktree's ``.ralph/blocked/``,
-    where the next ``git push`` from the queue worktree will commit it."""
+    """``handle_stuck`` must move the PBI inside the queue clone's
+    ``.ralph/blocked/`` — where the next push to origin/main carries it
+    to the queue repo. The PBI dir for the running iteration lives at
+    ``<queue-clone>/.ralph/current/<id>``."""
     _populate_inbox(fake_repo)
-    iterate_once(cfg_for_repo_worktree)  # claim → worktrees created
+    iterate_once(cfg_for_repo)  # claim
 
-    queue_wt = queue_worktree_path(fake_repo)
-    pbi_dir_in_queue = queue_wt / ".ralph" / "current" / "WI-1234"
+    pbi_dir_in_queue = fake_repo / ".ralph" / "current" / "WI-1234"
 
-    def _stuck_spawn(
-        cfg: ExecutorConfig,
-        pbi: object,
-        *,
-        cwd: Path | None = None,
-        pbi_dir: Path | None = None,
-    ) -> ClaudeOutcome:
+    def _stuck_spawn(cfg: ExecutorConfig, pbi: object, **kwargs: object) -> ClaudeOutcome:
         (pbi_dir_in_queue / "STUCK.md").write_text("# stuck\n", encoding="utf-8")
         return ClaudeOutcome(
             kind="stuck",
@@ -1034,43 +856,31 @@ def test_stuck_blocked_move_targets_queue_worktree(
         )
 
     monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
-    result = iterate_once(cfg_for_repo_worktree)
+    result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "ran_stuck"
-    # Lands in queue worktree, not primary.
-    assert (queue_wt / ".ralph" / "blocked" / "WI-1234").is_dir()
-    assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists()
+    assert (fake_repo / ".ralph" / "blocked" / "WI-1234").is_dir()
 
 
-def test_max_attempts_blocked_move_targets_queue_worktree(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_max_attempts_blocked_move_targets_queue_clone(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In worktree mode the max-attempts blocked move must target the
-    queue worktree's ``.ralph/blocked/``. Otherwise the PBI is moved to
-    the primary checkout's working tree (on `main`, no `.ralph/`),
-    landing outside git tracking and silently disappearing from the
-    queue system."""
-    # `max_attempts()` reads RALPH_MAX_ATTEMPTS from the env, not from cfg.
+    """The max-attempts blocked move must land the PBI in the queue
+    clone's ``.ralph/blocked/`` — otherwise it falls outside git
+    tracking and disappears from the queue."""
     monkeypatch.setenv("RALPH_MAX_ATTEMPTS", "1")
     _populate_inbox(fake_repo)
-    iterate_once(cfg_for_repo_worktree)  # claim
-
-    queue_wt = queue_worktree_path(fake_repo)
+    iterate_once(cfg_for_repo)  # claim
 
     monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("error"))
-    # First error: attempts 0 -> 1 (== limit, allowed).
-    iterate_once(cfg_for_repo_worktree)
-    # Second error: attempts 1 -> 2 (> limit), triggers max-attempts move.
-    result = iterate_once(cfg_for_repo_worktree)
+    iterate_once(cfg_for_repo)  # attempts 0 -> 1 (== limit, allowed)
+    result = iterate_once(cfg_for_repo)  # attempts 1 -> 2 (> limit), max-attempts
 
     assert result.outcome == "ran_stuck"
-    assert (queue_wt / ".ralph" / "blocked" / "WI-1234").is_dir(), (
-        "max-attempts blocked move must target the queue worktree"
-    )
-    assert not (fake_repo / ".ralph" / "blocked" / "WI-1234").exists(), (
-        "primary checkout must never receive blocked PBI dirs in worktree mode"
+    assert (fake_repo / ".ralph" / "blocked" / "WI-1234").is_dir(), (
+        "max-attempts blocked move must target the queue clone"
     )
 
 
@@ -1222,24 +1032,21 @@ def test_claim_raises_claim_error_for_invalid_url(
 # ----------------------------------------------------------------------
 
 
-def test_claim_in_worktree_mode_clones_target_and_creates_worktree_in_clone(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_claim_clones_target_and_creates_worktree_in_clone(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    """Happy path: worktree-mode claim runs ensure_clone, creates the per-PBI
-    worktree INSIDE the clone, and returns a PBI with target_info +
+    """Happy path: a claim runs ensure_clone, creates the per-PBI
+    worktree INSIDE the target clone, and returns a PBI with target_info +
     work_worktree populated."""
-    from dataclasses import replace as dc_replace
-
     from ralph_executor.loop import _claim_pbi
     from ralph_executor.target_clone import TargetClone
     from ralph_executor.url_utils import TargetRepoInfo
 
-    custom_ws = tmp_path / "ws"
+    cfg = cfg_for_repo
+    custom_ws = cfg.workspace_root
     clone_root = custom_ws / "clones" / "test-repo"
-    cfg = dc_replace(cfg_for_repo_worktree, workspace_root=custom_ws)
 
     ensure_clone_calls: list[tuple[TargetRepoInfo, Path]] = []
 
@@ -1307,21 +1114,19 @@ def test_claim_in_worktree_mode_clones_target_and_creates_worktree_in_clone(
     assert claimed.work_worktree == clone_root / ".ralph-work" / "WI-CLONE"
 
 
-def test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_claim_raises_claim_error_when_clone_unreachable(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ensure_clone -> TargetUnreachable maps to _ClaimError("target unreachable: ...")."""
-    from ralph_executor.loop import _claim_pbi, _ClaimError
+    from ralph_executor.loop import _claim_pbi, _ClaimError, _pull_queue
     from ralph_executor.target_clone import TargetUnreachable
     from ralph_executor.url_utils import TargetRepoInfo
 
     _populate_inbox(fake_repo, pbi_id="WI-NET")
-    from ralph_executor.loop import _pull_queue
-
-    _pull_queue(cfg_for_repo_worktree)
-    source = FilesystemQueueSource(cfg_for_repo_worktree)
+    _pull_queue(cfg_for_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
     picked = source.pick_next()
     assert picked is not None
 
@@ -1331,7 +1136,7 @@ def test_claim_in_worktree_mode_raises_claim_error_when_clone_unreachable(
     monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
 
     with pytest.raises(_ClaimError, match=r"target unreachable: network unreachable"):
-        _claim_pbi(cfg_for_repo_worktree, picked)
+        _claim_pbi(cfg_for_repo, picked)
 
 
 # ----------------------------------------------------------------------
@@ -1347,7 +1152,6 @@ def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
     """A claim that hits a non-github host raises _ClaimError; iterate_once
     catches it, moves the PBI from inbox/ to blocked/<id>/, appends the
     failure reason to HISTORY.md, and returns ``claim_failed``."""
-    _git(fake_repo, "checkout", "ralph-queue")
     pbi_dir = write_sample_pbi(
         fake_repo,
         pbi_id="WI-ADO",
@@ -1355,16 +1159,13 @@ def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
     )
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", "inbox: WI-ADO")
-    _git(fake_repo, "push", "origin", "ralph-queue")
-    _git(fake_repo, "checkout", "main")
+    _git(fake_repo, "push", "origin", "main")
 
     result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "claim_failed"
     assert result.pbi_id == "WI-ADO"
 
-    _git(fake_repo, "checkout", "ralph-queue")
-    _git(fake_repo, "pull", "origin", "ralph-queue")
     assert (fake_repo / ".ralph" / "blocked" / "WI-ADO").is_dir()
     assert not (fake_repo / ".ralph" / "inbox" / "WI-ADO").exists()
     history = (fake_repo / ".ralph" / "blocked" / "WI-ADO" / "HISTORY.md").read_text(
@@ -1372,6 +1173,32 @@ def test_iterate_once_moves_pbi_to_blocked_when_claim_raises_claim_error(
     )
     assert "Claim failed" in history
     assert "unsupported host" in history
+
+
+def test_pull_queue_calls_ensure_queue_clone(
+    cfg_for_repo: ExecutorConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_pull_queue`` must delegate to ``queue_clone.ensure_queue_clone``."""
+    from ralph_executor import loop
+
+    cfg = dataclasses.replace(
+        cfg_for_repo,
+        workspace_root=tmp_path,
+        queue_repo="https://github.com/example/q",
+    )
+    calls: list[tuple[Path, str]] = []
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        calls.append((workspace_root, queue_repo))
+        return workspace_root / "queue"
+
+    monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
+
+    loop._pull_queue(cfg)
+
+    assert calls == [(tmp_path, "https://github.com/example/q")]
 
 
 def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
@@ -1462,13 +1289,13 @@ def test_run_loop_drains_against_empty_filesystem_queue(
     assert all(r.outcome == "idle" for r in results)
 
 
-def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable_in_worktree_mode(
-    cfg_for_repo_worktree: ExecutorConfig,
+def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable(
+    cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Worktree-mode: ensure_clone raises TargetUnreachable -> _ClaimError
-    -> iterate_once moves PBI to blocked/<id>/ with reason in HISTORY.md."""
+    """ensure_clone raises TargetUnreachable -> _ClaimError -> iterate_once
+    moves PBI to blocked/<id>/ with reason in HISTORY.md."""
     from ralph_executor.target_clone import TargetUnreachable
     from ralph_executor.url_utils import TargetRepoInfo
 
@@ -1479,15 +1306,14 @@ def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable_in_worktree_m
 
     monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _raise_unreachable)
 
-    result = iterate_once(cfg_for_repo_worktree)
+    result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "claim_failed"
     assert result.pbi_id == "WI-NET2"
 
-    queue_wt = queue_worktree_path(fake_repo)
-    assert (queue_wt / ".ralph" / "blocked" / "WI-NET2").is_dir()
-    assert not (queue_wt / ".ralph" / "inbox" / "WI-NET2").exists()
-    history = (queue_wt / ".ralph" / "blocked" / "WI-NET2" / "HISTORY.md").read_text(
+    assert (fake_repo / ".ralph" / "blocked" / "WI-NET2").is_dir()
+    assert not (fake_repo / ".ralph" / "inbox" / "WI-NET2").exists()
+    history = (fake_repo / ".ralph" / "blocked" / "WI-NET2" / "HISTORY.md").read_text(
         encoding="utf-8"
     )
     assert "Claim failed" in history

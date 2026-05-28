@@ -60,31 +60,60 @@ def _make_fake_claude(tmp_path: Path) -> Path:
 
 
 def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
-    """Initialise a bare + worktree pair; return (work_path, cfg)."""
-    bare = tmp_path / "remote.git"
-    work = tmp_path / "work"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
-    subprocess.run(["git", "init", str(work)], check=True, capture_output=True)
-    _git(work, "config", "user.email", "test@example.com")
-    _git(work, "config", "user.name", "Test User")
-    _git(work, "commit", "--allow-empty", "-m", "chore: init")
-    _git(work, "branch", "-M", "main")
-    _git(work, "remote", "add", "origin", str(bare))
-    _git(work, "push", "-u", "origin", "main")
-    _git(work, "checkout", "-b", "ralph-queue")
+    """Materialise the queue-clone topology used by the post-split loop.
+
+    Layout::
+
+        <tmp>/queue.git           bare remote (queue_repo URL)
+        <tmp>/ws/queue            queue clone the executor reads/writes
+
+    Returns (queue_clone_path, cfg). ``cfg.workspace_root`` is ``<tmp>/ws``
+    so ``ensure_queue_clone`` no-ops on the already-materialised clone, and
+    ``cfg.queue_repo`` is ``file://<tmp>/queue.git`` so any rebase-pull
+    can resolve a real remote.
+    """
+    bare = tmp_path / "queue.git"
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    clone = workspace / "queue"
+
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(seed)],
+        check=True,
+        capture_output=True,
+    )
+    _git(seed, "config", "user.email", "test@example.com")
+    _git(seed, "config", "user.name", "Test User")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main commit")
+    (seed / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
+    _git(seed, "add", ".gitignore")
+    _git(seed, "commit", "-m", "chore: gitignore .ralph/state/")
     for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
-        d = work / ".ralph" / sub
-        d.mkdir(parents=True, exist_ok=True)
-        (d / ".gitkeep").write_text("", encoding="utf-8")
-    _git(work, "add", ".ralph")
-    _git(work, "commit", "-m", "chore(queue): bootstrap .ralph/")
-    _git(work, "push", "-u", "origin", "ralph-queue")
-    _git(work, "checkout", "main")
+        (seed / ".ralph" / sub).mkdir(parents=True)
+        (seed / ".ralph" / sub / ".gitkeep").write_text("", encoding="utf-8")
+    _git(seed, "add", ".ralph")
+    _git(seed, "commit", "-m", "chore(queue): bootstrap .ralph/ tree")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "main")
+
+    subprocess.run(
+        ["git", "clone", str(bare), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test User")
 
     fake_claude = _make_fake_claude(tmp_path)
     cfg = ExecutorConfig(
-        repo_path=work,
-        queue_branch="ralph-queue",
+        repo_path=clone,
+        queue_repo=f"file://{bare.as_posix()}",
         main_branch="main",
         max_attempts=3,
         log_level=20,
@@ -99,31 +128,50 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
-        # Integration loop tests cover the legacy single-checkout path;
-        # worktree-mode coverage lives in the dedicated Task 9 suite.
-        use_worktrees=False,
+        use_worktrees=True,
+        workspace_root=workspace,
     )
-    return work, cfg
+    return clone, cfg
 
 
 def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
-    """Write a minimal PBI directory into ``.ralph/current/<pbi_id>``."""
-    _git(repo, "checkout", "ralph-queue")
+    """Write a minimal PBI directory into ``.ralph/current/<pbi_id>`` on the
+    queue clone's ``main`` and push to ``origin``."""
     pbi_dir = repo / ".ralph" / "current" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
     (pbi_dir / "PBI.md").write_text(
         f"---\nid: {pbi_id}\ntype: feature\nstatus: current\n"
         f"severity: normal\nattempts: {attempts}\n"
         f"created_at: 2026-05-24T09:00:00+00:00\n"
-        f"updated_at: 2026-05-24T09:00:00+00:00\n---\n\n# {pbi_id}\n",
+        f"updated_at: 2026-05-24T09:00:00+00:00\n"
+        f"target_repo: https://github.com/test/repo\n---\n\n# {pbi_id}\n",
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
     _git(repo, "add", f".ralph/current/{pbi_id}")
     _git(repo, "commit", "-m", f"test: seed {pbi_id} in current/")
-    _git(repo, "push", "origin", "ralph-queue")
-    _git(repo, "checkout", "main")
+    _git(repo, "push", "origin", "main")
+
+
+def _stub_target_clone(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: Path,
+) -> None:
+    """Replace ``ensure_clone`` so it returns the queue clone path.
+
+    The integration loop calls ``target_clone.ensure_clone`` for the
+    resumed-PBI path and would otherwise try to ``git clone`` a real
+    GitHub URL. Returning the queue clone keeps all worktree machinery
+    pointed at the in-tmp_path repo.
+    """
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    def _fake(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=repo)
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +186,7 @@ def test_iteration_refuses_to_start_when_sentinel_halted(
     """iterate_once raises HaltedError when the sentinel is in HALTED state."""
     repo, cfg = _init_repo(tmp_path)
     _write_pbi_in_current(repo, "WI-active")
+    _stub_target_clone(monkeypatch, repo)
 
     # Prepend fake claude to PATH so spawn subprocess resolves it.
     monkeypatch.setenv(
@@ -164,6 +213,7 @@ def test_iteration_resumes_once_sentinel_acknowledged(
     """An ACKNOWLEDGED sentinel must not block the loop."""
     repo, cfg = _init_repo(tmp_path)
     _write_pbi_in_current(repo, "WI-active")
+    _stub_target_clone(monkeypatch, repo)
 
     monkeypatch.setenv(
         "PATH",
@@ -175,7 +225,7 @@ def test_iteration_resumes_once_sentinel_acknowledged(
     monkeypatch.setattr(
         loop_module,
         "spawn_claude_p",
-        lambda cfg, pbi: ClaudeOutcome(
+        lambda cfg, pbi, *, cwd=None, pbi_dir=None: ClaudeOutcome(
             kind="partial",
             pr_url=None,
             stdout="",
@@ -207,6 +257,7 @@ def test_iteration_triggers_halt_when_detector_fires(
     """Pre-seeded signature_recurrence events cause iterate_once to raise HaltedError."""
     repo, cfg = _init_repo(tmp_path)
     _write_pbi_in_current(repo, "WI-active")
+    _stub_target_clone(monkeypatch, repo)
 
     monkeypatch.setenv(
         "PATH",
@@ -240,7 +291,7 @@ def test_iteration_triggers_halt_when_detector_fires(
     monkeypatch.setattr(
         loop_module,
         "spawn_claude_p",
-        lambda cfg, pbi: ClaudeOutcome(
+        lambda cfg, pbi, *, cwd=None, pbi_dir=None: ClaudeOutcome(
             kind="partial",
             pr_url=None,
             stdout="",
@@ -276,6 +327,7 @@ def test_attempts_exceeded_moves_pbi_to_blocked(
     repo, cfg = _init_repo(tmp_path)
     # Write a PBI with attempts already at the limit so the next increment fires.
     _write_pbi_in_current(repo, "WI-overrun", attempts=1)
+    _stub_target_clone(monkeypatch, repo)
 
     monkeypatch.setenv(
         "PATH",
@@ -288,7 +340,7 @@ def test_attempts_exceeded_moves_pbi_to_blocked(
     monkeypatch.setattr(
         loop_module,
         "spawn_claude_p",
-        lambda cfg, pbi: ClaudeOutcome(
+        lambda cfg, pbi, *, cwd=None, pbi_dir=None: ClaudeOutcome(
             kind="error",
             pr_url=None,
             stdout="",

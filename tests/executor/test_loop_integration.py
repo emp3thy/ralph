@@ -22,7 +22,13 @@ from tests.executor.conftest import write_sample_pbi
 
 
 def _stub_spawn(outcome_kind: str = "partial") -> object:
-    def _fake_spawn(cfg: ExecutorConfig, pbi: object) -> ClaudeOutcome:
+    def _fake_spawn(
+        cfg: ExecutorConfig,
+        pbi: object,
+        *,
+        cwd: Path | None = None,
+        pbi_dir: Path | None = None,
+    ) -> ClaudeOutcome:
         return ClaudeOutcome(
             kind=outcome_kind,  # type: ignore[arg-type]
             pr_url=None,
@@ -51,7 +57,7 @@ def _cfg_with_sweep_knobs(
 
 
 def _populate_inbox_via_git(fake_repo: Path, pbi_id: str = "WI-INTEG") -> None:
-    """Stage a sample PBI on the ralph-queue branch the way the loop expects."""
+    """Stage a sample PBI on the queue clone's ``main`` and push to origin."""
     import subprocess
 
     def _git(*args: str) -> None:
@@ -65,12 +71,10 @@ def _populate_inbox_via_git(fake_repo: Path, pbi_id: str = "WI-INTEG") -> None:
             errors="replace",
         )
 
-    _git("checkout", "ralph-queue")
     write_sample_pbi(fake_repo, pbi_id=pbi_id)
     _git("add", f".ralph/inbox/{pbi_id}")
     _git("commit", "-m", f"inbox: {pbi_id}")
-    _git("push", "origin", "ralph-queue")
-    _git("checkout", "main")
+    _git("push", "origin", "main")
 
 
 def test_sweep_runs_when_current_is_empty(

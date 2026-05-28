@@ -39,11 +39,10 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _setup_current_pbi(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> PBI:
-    _git(fake_repo, "checkout", "ralph-queue")
     write_sample_pbi(fake_repo, pbi_id="WI-1234")
     _git(fake_repo, "add", ".ralph/inbox/WI-1234")
     _git(fake_repo, "commit", "-m", "inbox: WI-1234")
-    _git(fake_repo, "push", "origin", "ralph-queue")
+    _git(fake_repo, "push", "origin", "main")
     source = FilesystemQueueSource(cfg_for_repo)
     pbi = source.inbox_pbis()[0]
     return move_inbox_to_current(cfg_for_repo, pbi)

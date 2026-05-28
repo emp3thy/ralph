@@ -337,7 +337,7 @@ def test_main_init_subcommand_writes_user_config(
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     target = tmp_path / "dev" / "ralph"
 
-    exit_code = cli.main(["init", "--ralph-home", str(target)])
+    exit_code = cli.main(["init", "--ralph-home", str(target), "--yes"])
     assert exit_code == 0
     assert read_ralph_home() == target.resolve()
     out = capsys.readouterr().out
@@ -498,6 +498,75 @@ def test_main_does_not_clobber_existing_env_with_empty_cfg(
 
     cli.main(["--once"])
     assert observed["GH_OWNER"] == "pre-existing"
+
+
+def test_main_migrate_queue_dispatches_to_module(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``ralph-executor migrate-queue`` forwards --source/--target."""
+    from ralph_executor import migrate_queue as migrate_mod
+
+    captured: list[list[str]] = []
+
+    def _fake_main(argv: list[str]) -> int:
+        captured.append(argv)
+        return 0
+
+    monkeypatch.setattr(migrate_mod, "main", _fake_main)
+
+    rc = cli.main(
+        [
+            "migrate-queue",
+            "--source",
+            str(tmp_path),
+            "--target",
+            "https://github.com/example/q",
+        ]
+    )
+    assert rc == 0
+    assert captured == [["--source", str(tmp_path), "--target", "https://github.com/example/q"]]
+
+
+def test_main_migrate_queue_surfaces_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``MigrateQueueError`` from the module becomes a clean exit 2."""
+    from ralph_executor import migrate_queue as migrate_mod
+
+    def _raise(_argv: list[str]) -> int:
+        raise migrate_mod.MigrateQueueError("nope")
+
+    monkeypatch.setattr(migrate_mod, "main", _raise)
+
+    rc = cli.main(
+        [
+            "migrate-queue",
+            "--source",
+            str(tmp_path),
+            "--target",
+            "https://github.com/example/q",
+        ]
+    )
+    assert rc == 2
+
+
+def test_main_queue_repo_flag_overrides_cfg(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Top-level ``--queue-repo`` overrides ``cfg.queue_repo`` for the iteration."""
+    seen: list[ExecutorConfig] = []
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        seen.append(cfg)
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "iterate_once", _fake_iterate)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+
+    cli.main(["--once", "--queue-repo", "https://github.com/example/override"])
+    assert len(seen) == 1
+    assert seen[0].queue_repo == "https://github.com/example/override"
 
 
 def test_main_rejects_watch_with_once(

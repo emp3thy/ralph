@@ -130,6 +130,13 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=_VALID_LOG_LEVELS,
         help="Override RALPH_LOG_LEVEL for this run.",
     )
+    parser.add_argument(
+        "--queue-repo",
+        metavar="URL",
+        help=(
+            "Override the queue_repo TOML value for this run (HTTPS URL of the queue repository)."
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -212,6 +219,26 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="with_config_toml",
         action="store_false",
         help="Skip writing the .ralph/config.toml stub.",
+    )
+
+    # ``ralph-executor migrate-queue``
+    migrate_parser = subparsers.add_parser(
+        "migrate-queue",
+        help=(
+            "One-shot: bootstrap a new queue repo from an existing .ralph/ "
+            "tree. Source must contain .ralph/inbox/; target must be empty."
+        ),
+    )
+    migrate_parser.add_argument(
+        "--source",
+        required=True,
+        type=Path,
+        help="Path to the existing queue worktree (parent of .ralph/).",
+    )
+    migrate_parser.add_argument(
+        "--target",
+        required=True,
+        help="HTTPS (or file://) URL of the empty new queue repo.",
     )
 
     # ``ralph-executor reconcile``
@@ -308,6 +335,7 @@ def _resolve_workspace(name: str) -> Path:
 def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
     repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
+    queue_repo: str = cfg.queue_repo
     watch_mode: bool = cfg.watch_mode
     changed = False
     # argparse already enforces mutual exclusion between --repo and --workspace.
@@ -320,6 +348,19 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     if args.log_level:
         log_level = int(logging.getLevelName(args.log_level))
         changed = True
+    if getattr(args, "queue_repo", None):
+        # Mirror load_config's parse_target_repo validation so the CLI
+        # override surfaces a clean ConfigError on a malformed URL
+        # rather than crashing inside ensure_queue_clone with an
+        # unhandled QueueCloneError later in iterate_once.
+        from ralph_executor.url_utils import parse_target_repo
+
+        try:
+            parse_target_repo(args.queue_repo)
+        except ValueError as exc:
+            raise ConfigError(f"--queue-repo: {exc}") from exc
+        queue_repo = args.queue_repo
+        changed = True
     # --watch overrides any TOML / env value; absence of the flag does NOT
     # disable a TOML watch_mode=true (operators who pinned daemon mode in
     # config keep it).
@@ -328,7 +369,13 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         changed = True
     if not changed:
         return cfg
-    return dataclasses.replace(cfg, repo_path=repo_path, log_level=log_level, watch_mode=watch_mode)
+    return dataclasses.replace(
+        cfg,
+        repo_path=repo_path,
+        log_level=log_level,
+        queue_repo=queue_repo,
+        watch_mode=watch_mode,
+    )
 
 
 def _resolve_iteration_count(args: argparse.Namespace) -> int | None:
@@ -521,6 +568,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.subcommand == "reconcile":
         return _cmd_reconcile(args)
+    if args.subcommand == "migrate-queue":
+        from ralph_executor.migrate_queue import MigrateQueueError
+        from ralph_executor.migrate_queue import main as migrate_main
+
+        try:
+            return migrate_main(["--source", str(args.source), "--target", args.target])
+        except MigrateQueueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     # --- default command: run the executor loop ---
     # --watch is mutually exclusive with the explicit-iteration-count flags;
@@ -543,9 +599,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(cfg.log_level)
 
     log.info(
-        "ralph-executor starting (repo=%s queue=%s main=%s)",
+        "ralph-executor starting (repo=%s queue_repo=%s main=%s)",
         cfg.repo_path,
-        cfg.queue_branch,
+        cfg.queue_repo,
         cfg.main_branch,
     )
 

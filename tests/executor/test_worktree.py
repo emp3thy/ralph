@@ -1,10 +1,10 @@
 """Tests for ``ralph_executor.worktree`` helpers.
 
-The helpers wrap ``git worktree`` for the two-worktree executor: queue
-worktree pinned to ``ralph-queue`` and a per-PBI work worktree on
-``ralph/<PBI-ID>``. These tests exercise the helpers directly against a
-real local git repo (no mocks of subprocess) so the porcelain parsing and
-edge cases (already-exists, branch-from-base, missing-on-remove) are
+After EXECUTOR-QUEUE-REPO-SPLIT the queue is its own clone, not a
+branch worktree — the helpers now only build the per-PBI work worktree
+on ``ralph/<PBI-ID>``. These tests exercise the helpers directly against
+a real local git repo (no mocks of subprocess) so the porcelain parsing
+and edge cases (already-exists, branch-from-base, missing-on-remove) are
 covered against the actual ``git`` binary.
 """
 
