@@ -987,13 +987,13 @@ git commit -m "feat(cli): migrate-queue subcommand + --queue-repo flag"
 - Modify: `ralph_executor/setup_cmds.py`
 - Test: `tests/executor/test_setup_cmds.py`
 
-- [ ] **Step 1: Add a failing test**
+- [x] **Step 1: Add a failing test**
 
 In `tests/executor/test_setup_cmds.py`, add a test asserting that running `init` with a stubbed-in input stream writes `queue_repo = "<url>"` into the TOML config file. Use the same pattern as the existing `ralph_home` prompt test.
 
-- [ ] **Step 2: Run; expect FAIL**
+- [x] **Step 2: Run; expect FAIL**
 
-- [ ] **Step 3: Edit `setup_cmds.py`**
+- [x] **Step 3: Edit `setup_cmds.py`**
 
 In the `init` flow, after the existing `workspace_root` prompt, add a `queue_repo` prompt with:
 - Default: empty (force the operator to set it deliberately).
@@ -1002,9 +1002,17 @@ In the `init` flow, after the existing `workspace_root` prompt, add a `queue_rep
 
 Append `queue_repo = "<url>"` to the written `~/.ralph/config.toml`.
 
-- [ ] **Step 4: Run; expect PASS**
+> **Iteration 8 note:** delivered. `cmd_init` writes `queue_repo` via the
+> new `_write_user_config` merge helper so `ralph_home` survives.
+> `_smoke_clone_queue_repo` uses `git ls-remote --heads`; failure is a
+> WARNING, never a blocker. `CONFIG_TOML_STUB` queue-branch comment was
+> replaced with a `queue_repo` example pointing at `~/.ralph/config.toml`.
+> A `load_config → user_config.read_queue_repo` bridge is the next gap
+> (filed against Task 9 in HISTORY).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 4: Run; expect PASS**
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add ralph_executor/setup_cmds.py tests/executor/test_setup_cmds.py

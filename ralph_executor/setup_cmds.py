@@ -18,9 +18,12 @@ import sys
 from pathlib import Path
 
 from ralph_executor.config import ConfigError, validate_repo_path
+from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
+    read_queue_repo,
     read_ralph_home,
     user_config_path,
+    write_queue_repo,
     write_ralph_home,
 )
 
@@ -34,7 +37,10 @@ CONFIG_TOML_STUB = """\
 # Environment variables (RALPH_*) override anything set here; CLI flags
 # override env. See the load_config docstring for the precedence chain.
 #
-# queue_branch = "ralph-queue"
+# Queue repo HTTPS URL lives at the user level (~/.ralph/config.toml),
+# not here. `ralph-executor init` writes it. Shown here only as a
+# reference for what the executor reads at startup:
+# queue_repo = "https://github.com/<owner>/<name>-queue"
 # main_branch = "main"
 # max_attempts = 20
 # iteration_sleep_seconds = 30
@@ -129,6 +135,59 @@ def _check_tool(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _prompt_queue_repo() -> str | None:
+    """Prompt for the queue-repo HTTPS URL until valid; None on EOF.
+
+    No default — the operator must set this deliberately, since there is
+    no sensible per-machine fallback (a queue points at one specific
+    GitHub repo). Empty input → reprompt. Invalid URL → reprompt.
+    EOFError (closed stdin) → return None so the caller can warn and
+    move on instead of crashing.
+    """
+    while True:
+        print(
+            "Queue repo URL (e.g. https://github.com/<owner>/ralph-queue): ",
+            end="",
+            flush=True,
+        )
+        try:
+            raw = input().strip()
+        except EOFError:
+            print("")
+            return None
+        if not raw:
+            print("queue_repo cannot be empty — try again (Ctrl+D to skip).")
+            continue
+        try:
+            parse_target_repo(raw)
+        except ValueError as exc:
+            print(f"invalid queue_repo URL: {exc}. Try again.")
+            continue
+        return raw
+
+
+def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
+    """Best-effort reachability check for ``url``: ``git ls-remote --heads``.
+
+    Returns True on a zero-exit ``git ls-remote``; False on any failure
+    (non-zero exit, ``git`` missing, network timeout). Caller treats
+    False as a warning, never a blocker — the operator may be on a flaky
+    network or behind credentials that are valid for clone but reject
+    ``ls-remote``.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", url],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
     """Run ``ralph-executor init``.
 
@@ -146,29 +205,64 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
     if existing is not None and ralph_home is None:
         print(f"ralph_home already set to {existing} in {user_config_path()}")
         print("(pass --ralph-home PATH to overwrite, or edit the file directly)")
-        return 0
-
-    chosen: Path
-    if ralph_home is not None:
-        chosen = ralph_home.expanduser()
-    elif assume_yes:
-        chosen = _default_ralph_home()
     else:
-        chosen = _prompt_ralph_home(_default_ralph_home())
-    chosen = chosen.resolve()
+        chosen: Path
+        if ralph_home is not None:
+            chosen = ralph_home.expanduser()
+        elif assume_yes:
+            chosen = _default_ralph_home()
+        else:
+            chosen = _prompt_ralph_home(_default_ralph_home())
+        chosen = chosen.resolve()
 
-    # Disk-full / permission-denied / etc. on either the ralph_home
-    # directory creation or the user-config write would otherwise
-    # surface as a raw traceback. cli.py only catches ConfigError for
-    # the init dispatch arm, so convert here.
-    try:
-        chosen.mkdir(parents=True, exist_ok=True)
-        written = write_ralph_home(chosen)
-    except OSError as exc:
-        print(f"error: cannot write user config: {exc}", file=sys.stderr)
-        return 2
-    print(f"wrote {written}")
-    print(f"ralph_home = {chosen}")
+        # Disk-full / permission-denied / etc. on either the ralph_home
+        # directory creation or the user-config write would otherwise
+        # surface as a raw traceback. cli.py only catches ConfigError for
+        # the init dispatch arm, so convert here.
+        try:
+            chosen.mkdir(parents=True, exist_ok=True)
+            written = write_ralph_home(chosen)
+        except OSError as exc:
+            print(f"error: cannot write user config: {exc}", file=sys.stderr)
+            return 2
+        print(f"wrote {written}")
+        print(f"ralph_home = {chosen}")
+
+    # queue_repo lives at the user-level (one queue per operator). Prompt
+    # for it after ralph_home so a fresh `init` lands both knobs in one
+    # pass; a re-run with queue_repo already set is a no-op print.
+    existing_queue = read_queue_repo()
+    if existing_queue is not None:
+        print(f"queue_repo already set to {existing_queue} in {user_config_path()}")
+    elif assume_yes:
+        print(
+            "WARNING: queue_repo not set. Add it manually to "
+            f'{user_config_path()}: queue_repo = "<https-url>"'
+        )
+    else:
+        chosen_queue = _prompt_queue_repo()
+        if chosen_queue is None:
+            print(
+                "WARNING: queue_repo not set (closed stdin or skipped). "
+                f"Add it manually to {user_config_path()}."
+            )
+        else:
+            if not _smoke_clone_queue_repo(chosen_queue):
+                print(
+                    f"WARNING: smoke `git ls-remote {chosen_queue}` failed — "
+                    "proceeding anyway (could be a flaky network or "
+                    "credentials valid only for clone, not ls-remote)."
+                )
+            try:
+                queue_cfg = write_queue_repo(chosen_queue)
+            except OSError as exc:
+                print(
+                    f"error: cannot write queue_repo to user config: {exc}",
+                    file=sys.stderr,
+                )
+                return 2
+            print(f"queue_repo = {chosen_queue}")
+            print(f"wrote {queue_cfg}")
 
     # Best-effort tool checks. Warn, never abort: an operator might be
     # setting up on a host where claude is installed under a non-default

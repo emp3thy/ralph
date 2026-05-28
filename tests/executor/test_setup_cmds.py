@@ -14,7 +14,12 @@ from ralph_executor.setup_cmds import (
     cmd_init,
     cmd_scaffold,
 )
-from ralph_executor.user_config import read_ralph_home, user_config_path
+from ralph_executor.user_config import (
+    read_queue_repo,
+    read_ralph_home,
+    user_config_path,
+    write_queue_repo,
+)
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -27,6 +32,33 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _default_closed_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default ``input()`` raises EOFError so cmd_init tests that don't
+    explicitly drive the queue_repo prompt fall through with a warning
+    rather than blocking on real stdin.
+
+    Tests that want to exercise the prompt override this by calling
+    ``monkeypatch.setattr(builtins, "input", ...)`` again — the second
+    monkeypatch.setattr wins, per pytest's stacked-undo semantics.
+    """
+    import builtins
+
+    def _closed(prompt: str = "") -> str:  # noqa: ARG001
+        raise EOFError("default closed stdin")
+
+    monkeypatch.setattr(builtins, "input", _closed)
+
+
+@pytest.fixture
+def _smoke_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `_smoke_clone_queue_repo` return True without touching the network."""
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: True,
+    )
 
 
 @pytest.fixture
@@ -155,6 +187,129 @@ def test_init_warns_when_gh_missing(
     out = capsys.readouterr().out
     assert "gh CLI not found" in out
     assert "claude CLI not found" in out
+
+
+# ---------------------------------------------------------------------------
+# cmd_init — queue_repo prompt (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def test_init_prompts_for_queue_repo_and_writes_user_config(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _smoke_ok: None,
+) -> None:
+    """`init` prompts for queue_repo, validates the URL, and persists it
+    to ``~/.ralph/config.toml`` alongside ralph_home."""
+    import builtins
+
+    answers = iter(["https://github.com/example/ralph-queue"])
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    exit_code = cmd_init(ralph_home=fake_home / "ralph", assume_yes=False)
+    assert exit_code == 0
+    assert read_queue_repo() == "https://github.com/example/ralph-queue"
+    # ralph_home survives the second write — _write_user_config merges keys.
+    assert read_ralph_home() == (fake_home / "ralph").resolve()
+
+
+def test_init_reprompts_on_invalid_queue_repo(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _smoke_ok: None,
+) -> None:
+    """parse_target_repo rejection → reprompt; final valid URL is written."""
+    import builtins
+
+    answers = iter(
+        [
+            "",  # empty → reprompt
+            "ftp://nope.example.com/q",  # bad scheme → reprompt
+            "https://github.com/example/queue",  # accepted
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    exit_code = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert exit_code == 0
+    assert read_queue_repo() == "https://github.com/example/queue"
+
+
+def test_init_smoke_clone_failure_warns_but_writes(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`git ls-remote` failure prints a warning but the value still lands —
+    operator may be on a flaky network or behind credentials that are
+    valid for clone but reject ls-remote."""
+    import builtins
+
+    answers = iter(["https://github.com/example/queue"])
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: False,
+    )
+
+    exit_code = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "smoke" in out.lower()
+    assert read_queue_repo() == "https://github.com/example/queue"
+
+
+def test_init_assume_yes_skips_queue_repo_prompt_with_warning(
+    fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--yes` must never block on stdin — emit a warning and leave
+    queue_repo unset for the operator to add manually."""
+    exit_code = cmd_init(ralph_home=None, assume_yes=True)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "queue_repo" in out
+    assert "WARNING" in out
+    assert read_queue_repo() is None
+
+
+def test_init_skips_queue_repo_prompt_if_already_set(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A second `init` with queue_repo already in user_config must NOT
+    reprompt — the function is idempotent for that knob."""
+    write_queue_repo("https://github.com/already/set")
+
+    import builtins
+
+    def boom(*_a: object, **_k: object) -> str:
+        raise AssertionError("init must not prompt when queue_repo already set")
+
+    monkeypatch.setattr(builtins, "input", boom)
+
+    exit_code = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "queue_repo already set" in out
+    assert read_queue_repo() == "https://github.com/already/set"
+
+
+def test_init_handles_closed_stdin_on_queue_repo_prompt(
+    fake_home: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """EOFError during the prompt → warning + clean exit, no write.
+
+    Uses the autouse default (`_default_closed_stdin`) — input() raises
+    EOFError on the very first call, simulating a piped / closed stdin.
+    """
+    exit_code = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "queue_repo" in out
+    assert "WARNING" in out
+    assert read_queue_repo() is None
 
 
 # ---------------------------------------------------------------------------
