@@ -125,7 +125,7 @@ Bootstrap 5 from CDN (`cdn.jsdelivr.net`). One CDN link in `<head>`. No JS — p
 - **Background launcher** (`start-server.sh`) is the recommended invocation. It runs `report.py` detached, writes `server-info`, prints the URL, exits.
 - **Auto-exit:** 30 minutes after the last HTTP request, the server self-terminates and writes `server-stopped` next to `server-info`. The idle timer resets on every request to `/` or `/health`.
 - **State file:** `<repo>/.ralph-work/report/server-info` — JSON with `{port, url, pid, started_at}`. `stop-server.sh` reads `pid` and sends SIGTERM.
-- **Port selection:** auto-pick a free port in the range `52340–52399` by binding `0` and reading back the chosen port. If the entire range is in use, fail with a clear error.
+- **Port selection:** OS-assigned (bind port `0`, read back the chosen port from the listening socket). Predictable URLs are not required; the URL is always read from `server-info`. `--port <int>` lets the operator pin one if desired.
 - **Bind host:** always `127.0.0.1`. Optional `--bind 0.0.0.0` flag for the remote-browser case; documented but not exposed in `start-server.sh` by default.
 - **Routes:**
   - `GET /` — full report HTML. Resets idle timer.
