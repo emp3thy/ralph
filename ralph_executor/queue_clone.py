@@ -24,8 +24,27 @@ class QueueCloneError(RuntimeError):
 def _run_git(
     repo: Path | None, *args: str, timeout: float = 120.0
 ) -> subprocess.CompletedProcess[str]:
+    """``run_text`` wrapper that converts subprocess failures to
+    :class:`QueueCloneError`.
+
+    ``subprocess.run`` raises ``TimeoutExpired`` before returning a
+    result object when the operation exceeds the wall-clock budget; it
+    raises ``FileNotFoundError`` (an ``OSError`` subclass) when ``git``
+    is absent from ``PATH``. Either would escape ``ensure_queue_clone``
+    unwrapped and crash the executor process in the caller (the
+    loop's ``_pull_queue`` only knows ``QueueCloneError``).
+    """
     argv = ["git", *(["-C", str(repo)] if repo is not None else []), *args]
-    return run_text(argv, capture_output=True, timeout=timeout)
+    try:
+        return run_text(argv, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise QueueCloneError(
+            f"git {' '.join(args)} exceeded {timeout}s in {repo or '<no repo>'}"
+        ) from exc
+    except OSError as exc:
+        raise QueueCloneError(
+            f"git {' '.join(args)} failed in {repo or '<no repo>'}: {exc}"
+        ) from exc
 
 
 def ensure_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:

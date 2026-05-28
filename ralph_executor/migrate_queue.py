@@ -31,8 +31,25 @@ class MigrateQueueError(RuntimeError):
 def _run_git(
     repo: Path | None, *args: str, timeout: float = 120.0
 ) -> subprocess.CompletedProcess[str]:
+    """``run_text`` wrapper that converts subprocess failures to
+    :class:`MigrateQueueError`.
+
+    Without this, ``TimeoutExpired`` (slow ``ls-remote`` / ``push``)
+    or ``OSError`` (``git`` absent from ``PATH``) would escape past
+    ``cli.py``'s migrate-queue dispatch handler (which only catches
+    ``MigrateQueueError``) and crash with a raw traceback.
+    """
     argv = ["git", *(["-C", str(repo)] if repo is not None else []), *args]
-    return run_text(argv, capture_output=True, timeout=timeout)
+    try:
+        return run_text(argv, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise MigrateQueueError(
+            f"git {' '.join(args)} exceeded {timeout}s in {repo or '<no repo>'}"
+        ) from exc
+    except OSError as exc:
+        raise MigrateQueueError(
+            f"git {' '.join(args)} failed in {repo or '<no repo>'}: {exc}"
+        ) from exc
 
 
 def copy_queue_tree_filtered(source: Path, dest: Path) -> dict[str, int]:
