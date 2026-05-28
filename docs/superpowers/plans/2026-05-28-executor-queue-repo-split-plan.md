@@ -1028,23 +1028,42 @@ git commit -m "feat(init): prompt for queue_repo, smoke clone for validation"
 **Files:**
 - Modify: `tests/executor/conftest.py`, `tests/executor/test_cli.py`, `tests/test_queue_writer.py`, `tests/safety/test_integration_loop.py`, `tests/test_setup_ralph_queue_github.py`, and any others surfaced by grep.
 
-- [ ] **Step 1: Enumerate**
+- [x] **Step 1: Enumerate**
 
 ```bash
 grep -rln "queue_branch" tests/
 ```
 
-- [ ] **Step 2: For each hit, swap to `queue_repo="https://github.com/example/queue"`**
+- [x] **Step 2: For each hit, swap to `queue_repo="https://github.com/example/queue"`**
 
 Any test that explicitly tested branch-swapping logic on the queue should be deleted (the logic is gone).
 
-- [ ] **Step 3: Run the full test suite**
+> **Iter 9–12 outcome:** swept `tests/executor/conftest.py` (queue-clone
+> topology fixture), `tests/executor/test_loop.py`, `test_filesystem_queue.py`,
+> `test_movements.py`, `test_claude_spawn.py`, `test_cli.py`,
+> `test_cli_reconcile.py`, `test_config_toml.py`, `test_git_ops.py`,
+> `test_loop_integration.py`, `test_worktree.py`, and
+> `tests/safety/test_cycle_detector.py` + `test_integration_loop.py`.
+> Also closed the iter-8 gap: `load_config` now bridges to
+> `user_config.read_queue_repo()` so `~/.ralph/config.toml` satisfies the
+> operator gate. Refreshed the `use_worktrees` field comment in
+> `ralph_executor/config.py` to drop the Stage-A wording. Files
+> deliberately left untouched (out of scope per Task 0 categorisation):
+> `tests/test_queue_writer.py` and `tests/test_setup_ralph_queue_github.py`
+> exercise the legacy `scripts/queue_writer.py` + `setup_ralph_queue_github.py`
+> bootstrap that PBI 2 will retire alongside the skills migration; the
+> `assert "queue_branch" not in names` line in `test_config.py:93` is an
+> intentional negative assertion, not a regression.
+
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 uv run pytest -x -q
 ```
 
-- [ ] **Step 4: Commit**
+868 passed / 4 skipped (post iter-12).
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/
@@ -1057,7 +1076,7 @@ git commit -m "test: migrate all fixtures from queue_branch to queue_repo"
 
 **Confidence: 95%** — gate.
 
-- [ ] **Step 1: ruff check + format**
+- [x] **Step 1: ruff check + format**
 
 ```bash
 uv run ruff check .
@@ -1066,21 +1085,24 @@ uv run ruff format --check .
 
 Fix any complaints.
 
-- [ ] **Step 2: mypy**
+- [x] **Step 2: mypy**
 
 ```bash
 uv run mypy ralph_executor scripts skills tests
 ```
 
-Fix any complaints.
+Iter-12 result: one residual `test_claude_spawn.py:855` non-overlapping
+equality warning (pre-existing `list[Popen[str]] == list[_FakeProc]`
+comparison in an isolation test); explicitly carried over from iter 8
+HISTORY as out-of-scope for this PBI.
 
-- [ ] **Step 3: Full pytest**
+- [x] **Step 3: Full pytest**
 
 ```bash
 uv run pytest -q
 ```
 
-Expected: all green.
+Expected: all green. Iter-12 actual: 868 passed / 4 skipped.
 
 - [ ] **Step 4: Open the PR**
 

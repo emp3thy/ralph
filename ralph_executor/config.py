@@ -222,11 +222,12 @@ class ExecutorConfig:
     # the classifier returns ``partial`` and the next iteration re-polls.
     pr_check_poll_max_attempts: int
     pr_check_poll_interval_seconds: float
-    # Stage-B execution model. When True, the loop runs each PBI inside a
-    # per-PBI worktree under ``<repo>/.ralph-work/repo-<PBI-id>/`` and
-    # reads/writes ``.ralph/`` from a separate ``<repo>/.ralph-work/queue/``
-    # worktree pinned to ``queue_branch``. When False, behaviour reverts
-    # to the Stage-A single-checkout branch-dance path.
+    # Execution model. Must be True after EXECUTOR-QUEUE-REPO-SPLIT —
+    # ``load_config`` rejects ``False`` because the Stage-A single-checkout
+    # branch-dance path is gone. The loop runs each PBI inside a per-PBI
+    # worktree under ``<target-clone>/.ralph-work/<PBI-id>/`` and
+    # reads/writes ``.ralph/`` from the queue clone at
+    # ``<workspace_root>/queue/`` (materialised by ``ensure_queue_clone``).
     use_worktrees: bool = DEFAULT_USE_WORKTREES
     # Sweep tuning — promoted from env-only. ``bot_author_email`` is the
     # commit/PR author email ralph uses; sweep skips comments by this
@@ -484,6 +485,21 @@ def load_config() -> ExecutorConfig:
     source_label = str(repo_path / ".ralph" / "config.toml")
 
     queue_repo_value = toml_overrides.get("queue_repo")
+    queue_repo_source = source_label
+    if queue_repo_value is None:
+        # Spec bridge: fall back to ~/.ralph/config.toml (the user-level
+        # location ``ralph-executor init`` writes the URL to). One operator
+        # runs against one queue, so the per-machine config is the natural
+        # home; the per-repo override stays available for one-off CI runs.
+        from ralph_executor.user_config import read_queue_repo, user_config_path
+
+        try:
+            user_queue_repo = read_queue_repo()
+        except ConfigError:
+            raise
+        if user_queue_repo is not None:
+            queue_repo_value = user_queue_repo
+            queue_repo_source = str(user_config_path())
     if queue_repo_value is None:
         raise ConfigError(
             f"{source_label}: queue_repo not configured. "
@@ -491,13 +507,14 @@ def load_config() -> ExecutorConfig:
         )
     if not isinstance(queue_repo_value, str):
         raise ConfigError(
-            f"{source_label}: queue_repo must be a string, got {type(queue_repo_value).__name__}"
+            f"{queue_repo_source}: queue_repo must be a string, "
+            f"got {type(queue_repo_value).__name__}"
         )
     try:
         parse_target_repo(queue_repo_value)
     except ValueError as exc:
         raise ConfigError(
-            f"{source_label}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
+            f"{queue_repo_source}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
         ) from exc
     queue_repo = queue_repo_value
     main_branch = _resolve_str(

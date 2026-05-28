@@ -544,7 +544,7 @@ class TestEvaluateAll:
         def _cfg(min_prs: int) -> ExecutorConfig:
             return ExecutorConfig(
                 repo_path=tmp_path,
-                queue_branch="ralph-queue",
+                queue_repo="https://github.com/example/queue",
                 main_branch="main",
                 max_attempts=3,
                 log_level=20,
@@ -559,7 +559,7 @@ class TestEvaluateAll:
                 halt_webhook="",
                 pr_check_poll_max_attempts=1,
                 pr_check_poll_interval_seconds=0.1,
-                use_worktrees=False,
+                use_worktrees=True,
                 bot_author_email="",
                 stale_days=3,
                 bash_max_timeout_ms=900_000,

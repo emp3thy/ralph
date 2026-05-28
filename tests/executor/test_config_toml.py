@@ -331,12 +331,16 @@ def test_use_worktrees_default_true(clean_env: Path) -> None:
 
 
 def test_use_worktrees_toml_false(clean_env: Path) -> None:
+    """``use_worktrees = false`` is rejected outright after the queue-repo
+    split — the single-checkout branch-dance model is gone."""
     _write_toml(clean_env, "use_worktrees = false\n")
-    cfg = load_config()
-    assert cfg.use_worktrees is False
+    with pytest.raises(ConfigError, match="use_worktrees=False is no longer supported"):
+        load_config()
 
 
 def test_use_worktrees_env_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env override flips TOML ``false`` back to ``true`` — both surfaces
+    feed the same resolver, so the override path stays exercised."""
     _write_toml(clean_env, "use_worktrees = false\n")
     monkeypatch.setenv("RALPH_USE_WORKTREES", "true")
     cfg = load_config()

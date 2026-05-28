@@ -337,7 +337,7 @@ def test_main_init_subcommand_writes_user_config(
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     target = tmp_path / "dev" / "ralph"
 
-    exit_code = cli.main(["init", "--ralph-home", str(target)])
+    exit_code = cli.main(["init", "--ralph-home", str(target), "--yes"])
     assert exit_code == 0
     assert read_ralph_home() == target.resolve()
     out = capsys.readouterr().out
