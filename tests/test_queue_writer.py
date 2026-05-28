@@ -104,6 +104,25 @@ def test_acquire_queue_clone_forwards_timeout(
     assert captured["timeout"] == 30.0
 
 
+def test_acquire_queue_clone_wraps_queue_clone_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A QueueCloneError from ensure_queue_clone must be re-raised as
+    QueueWriterError so skills only need to handle one exception type
+    from this module."""
+    from ralph_executor.queue_clone import QueueCloneError
+
+    def fake_ensure(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+        raise QueueCloneError("git fetch failed (exit 128): could not auth")
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+
+    with pytest.raises(QueueWriterError) as excinfo:
+        acquire_queue_clone(tmp_path, "https://github.com/example/q")
+    assert "git fetch failed" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, QueueCloneError)
+
+
 def test_checkout_queue_branch_is_removed() -> None:
     """No compat shim: the old branch-checkout helper must not exist."""
     assert not hasattr(qw, "checkout_queue_branch")

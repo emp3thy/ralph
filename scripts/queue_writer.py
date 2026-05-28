@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from ralph_executor.queue_clone import ensure_queue_clone
+from ralph_executor.queue_clone import QueueCloneError, ensure_queue_clone
 
 QUEUE_STATE_FOLDERS: tuple[str, ...] = (
     "current",
@@ -78,8 +78,15 @@ def acquire_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float
     a dependency on the executor package layout directly. On first call
     the queue repo is cloned to ``<workspace_root>/queue``; on subsequent
     calls the existing clone is fetched and fast-forwarded on ``main``.
+
+    Re-raises ``QueueCloneError`` (clone/fetch network or auth failures)
+    as ``QueueWriterError`` so that skills only need to handle one
+    exception type from this module — the contract documented above.
     """
-    return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
+    try:
+        return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
+    except QueueCloneError as exc:
+        raise QueueWriterError(str(exc)) from exc
 
 
 _DEFAULT_WORKSPACE_ROOT = Path.home() / "ralph-workspaces"
