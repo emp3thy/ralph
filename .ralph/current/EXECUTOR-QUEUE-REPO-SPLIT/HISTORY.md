@@ -41,3 +41,18 @@
 - Lint: `uv run ruff check ralph_executor/loop.py ralph_executor/queue/movements.py` → clean. `ruff format` → no changes.
 - mypy / pyright on touched files: only the Task-5-scoped `cfg.queue_branch` attr-defined errors at L565/L588 remain; all `_persist`/`_move`/`iterate_once` references are gone.
 - Next iteration: Task 5 — drop the legacy `use_worktrees=False` branch out of `_claim_pbi` and the queue-worktree `ensure_worktree` call in `_claim_pbi_worktree`; add the `use_worktrees=False` rejection to `load_config`.
+
+## Iteration 5 — 2026-05-28T13:15:00+00:00
+
+- Task 5: completed worktree-only claim path + `use_worktrees=False` rejection.
+  - `config.py:load_config` — added `if not use_worktrees: raise ConfigError(...)` immediately after the `_resolve_bool` for `use_worktrees`. Message names the migration (single-checkout branch-dance gone; queue is its own clone). Both env-var (`RALPH_USE_WORKTREES=false`) and TOML (`use_worktrees = false`) paths now raise.
+  - `loop.py:_claim_pbi` — deleted the `cfg.use_worktrees` if/else fork; the function now always delegates to `_claim_pbi_worktree` after the multi-target prelude. Removed the legacy `event_log = open_log(...) / _pull_main / branch checkout / checkout(cfg.queue_branch)` block (≈20 LOC). Docstring rewritten to drop the "Legacy single-checkout mode" section.
+  - `loop.py:_claim_pbi_worktree` — deleted `queue_wt = queue_worktree_path(cfg.repo_path)` + `ensure_worktree(...queue_branch)` (the queue clone IS the working tree now; `_pull_queue → ensure_queue_clone` materialises it earlier in the iteration). Docstring updated.
+  - Dead-code sweep: removed `_pull_main`, `_switch_to_feature_branch` (only callers were the deleted legacy branch). Dropped the now-unused `queue_worktree_path` import. `_run_ralph` spawn site swapped `queue_worktree_path(cfg.repo_path) / ".ralph"` → `_queue_repo_root(cfg) / ".ralph"` so Claude reads its PBI dir from the queue clone, not the obsolete `.ralph-work/queue/` worktree. Updated `_run_ralph` and `iterate_once` docstrings to drop the `cfg.queue_branch` / "working tree on ralph-queue" framing; refreshed the `_run_sweep` comment that still mentioned `cfg.use_worktrees`.
+- Tests added: `test_load_config_use_worktrees_env_false_rejected`, `test_load_config_use_worktrees_toml_false_rejected` in `tests/executor/test_config.py`. Existing `test_load_config_use_worktrees_env_false` was repurposed (renamed + asserts ConfigError).
+- `uv run pytest tests/executor/test_config.py -v` → 22 passed.
+- `uv run pytest tests/executor/ -k "claim or pbi" -q` → 14 failed / 46 passed. All failures are the conftest `cfg_for_repo` fixture (`use_worktrees=False`, `workspace_root=~/ralph-workspaces`) — explicitly deferred to Task 9 (fixture sweep) per the plan's Task 5 Step 4 note.
+- Lint: `uv run ruff check ralph_executor/loop.py ralph_executor/config.py tests/executor/test_config.py` clean; `ruff format` reformatted `tests/executor/test_config.py` (string-arg layout, no semantic change).
+- mypy: `ralph_executor/loop.py` + `ralph_executor/config.py` clean. `cli.py:516` still holds the legacy `cfg.queue_branch` log argument — intentional, Task 7 owns the CLI rework.
+- Commit: forthcoming (`fix(loop,config): EXECUTOR-QUEUE-REPO-SPLIT — _claim_pbi worktree-only; drop legacy single-checkout mode`).
+- Next iteration: Task 6 — sweep `cfg.queue_branch` literal in `queue/movements.py` (one remaining call site if not already covered by Task 4) and confirm the rest of the file is `"main"`-only.
