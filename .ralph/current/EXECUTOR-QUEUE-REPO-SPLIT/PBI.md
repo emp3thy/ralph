@@ -3,7 +3,7 @@ id: EXECUTOR-QUEUE-REPO-SPLIT
 type: feature
 status: current
 severity: high
-attempts: 0
+attempts: 1
 created_at: 2026-05-28T01:00:00+00:00
 updated_at: 2026-05-28T09:32:59+00:00
 depends_on: []
