@@ -29,6 +29,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
     write_frontmatter,
@@ -97,6 +98,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_repo from ~/.ralph/config.toml.",
     )
     parser.add_argument(
+        "--queue-branch",
+        metavar="BRANCH",
+        help="Override the queue_branch from ~/.ralph/config.toml for this run (default: ralph-queue).",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the move locally but do not push.",
@@ -143,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_branch = resolve_queue_branch(args.queue_branch)
 
         action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
         rel_from = f".ralph/{SOURCE_FOLDER}/{args.pbi_id}"
@@ -180,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo)
+        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
 
         from_dir = clone / ".ralph" / SOURCE_FOLDER / args.pbi_id
         to_dir = clone / ".ralph" / args.destination / args.pbi_id
@@ -270,8 +277,8 @@ def main(argv: list[str] | None = None) -> int:
 
         pushed = False
         if not args.no_push:
-            print("pushing main to origin...", file=sys.stderr)
-            push(clone, "main")
+            print(f"pushing {queue_branch} to origin...", file=sys.stderr)
+            push(clone, queue_branch)
             pushed = True
 
         archive_created = args.destination == "archive" and not archive_existed_before

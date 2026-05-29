@@ -24,6 +24,7 @@ from scripts.queue_writer import (  # noqa: E402
     commit_paths,
     is_path_in_head,
     push,
+    resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
 )
@@ -67,6 +68,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_repo from ~/.ralph/config.toml.",
     )
     parser.add_argument(
+        "--queue-branch",
+        metavar="BRANCH",
+        help="Override the queue_branch from ~/.ralph/config.toml for this run (default: ralph-queue).",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the sentinel locally but do not push.",
@@ -100,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_branch = resolve_queue_branch(args.queue_branch)
 
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
@@ -126,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo)
+        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
 
         pbi_dir = _resolve_current_pbi(clone, args.pbi_id)
         sentinel = pbi_dir / CANCEL_FILE_NAME
@@ -166,8 +173,8 @@ def main(argv: list[str] | None = None) -> int:
 
         pushed = False
         if not args.no_push:
-            print("pushing main to origin...", file=sys.stderr)
-            push(clone, "main")
+            print(f"pushing {queue_branch} to origin...", file=sys.stderr)
+            push(clone, queue_branch)
             pushed = True
 
         result = CancelResult(

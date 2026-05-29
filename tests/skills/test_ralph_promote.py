@@ -69,12 +69,12 @@ def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
-    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _configure_identity(seed)
-    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
     _git(seed, "remote", "add", "origin", str(bare))
-    _git(seed, "push", "-u", "origin", "main")
+    _git(seed, "push", "-u", "origin", "ralph-queue")
     yield workspace, str(bare)
 
 
@@ -110,7 +110,7 @@ def _seed_pbi(
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
-    _git(work, "push", "origin", "main")
+    _git(work, "push", "origin", "ralph-queue")
 
 
 def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
@@ -309,7 +309,7 @@ def test_promote_no_push_keeps_remote_unchanged(
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-200")
     subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
     _configure_identity(workspace / "queue")
-    before = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
+    before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = promote_module.main(
         _argv(
@@ -325,7 +325,7 @@ def test_promote_no_push_keeps_remote_unchanged(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
+    after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
 
 
@@ -338,7 +338,7 @@ def test_promote_dry_run_writes_nothing(
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-300")
     before = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -365,7 +365,7 @@ def test_promote_dry_run_writes_nothing(
     # Dry-run must NOT clone the queue or push.
     assert not (workspace / "queue").exists()
     after = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -539,3 +539,36 @@ def test_promote_refuses_when_destination_dir_exists(
     assert exit_code == 2
     stderr = capsys.readouterr().err.lower()
     assert "already exists" in stderr or "exists" in stderr
+
+
+def test_promote_pushes_ralph_queue_by_default(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ralph-promote pushes to ralph-queue when no --queue-branch override."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-7100")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    pushed: list[tuple[Path, str]] = []
+
+    def fake_push(repo: Path, branch: str) -> None:
+        pushed.append((repo, branch))
+
+    monkeypatch.setattr(promote_module, "push", fake_push)
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-7100",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert [branch for _repo, branch in pushed] == ["ralph-queue"]

@@ -71,13 +71,13 @@ def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
-    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _git(seed, "config", "user.email", "seed@example.com")
     _git(seed, "config", "user.name", "Seed")
-    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
     _git(seed, "remote", "add", "origin", str(bare))
-    _git(seed, "push", "-u", "origin", "main")
+    _git(seed, "push", "-u", "origin", "ralph-queue")
     yield workspace, str(bare)
 
 
@@ -640,7 +640,7 @@ def test_no_push_commits_but_does_not_push(
     _configure_clone_identity(workspace)
 
     remote_sha_before = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -662,7 +662,7 @@ def test_no_push_commits_but_does_not_push(
     assert payload["commit_sha"] != ""
 
     remote_sha_after = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -924,6 +924,35 @@ def test_ralph_add_queue_repo_resolved_from_toml(
     assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_id"] == f"WI-{WORK_ITEM_ID}"
+
+
+def test_ralph_add_pushes_ralph_queue_by_default(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    add_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ralph-add pushes to ralph-queue when no --queue-branch override."""
+    workspace, queue_repo = queue_env
+    pushed: list[tuple[Path, str]] = []
+
+    def fake_push(repo: Path, branch: str) -> None:
+        pushed.append((repo, branch))
+
+    monkeypatch.setattr(add_module, "push", fake_push)
+
+    doc = _doc(number=WORK_ITEM_ID, title="default queue_branch")
+    fetcher = _write_mock_fetcher(tmp_path, documents_by_id={WORK_ITEM_ID: doc})
+    monkeypatch.setenv("RALPH_WORKITEM_FETCH_SCRIPT", str(fetcher))
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_clone_identity(workspace)
+
+    exit_code = add_module.main(
+        _common_argv(work_item=f"WI-{WORK_ITEM_ID}", workspace=workspace, queue_repo=queue_repo)
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert [branch for _repo, branch in pushed] == ["ralph-queue"]
 
 
 def test_ralph_add_errors_when_queue_repo_unset(

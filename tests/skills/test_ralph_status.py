@@ -107,12 +107,12 @@ def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
-    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _configure_identity(seed)
-    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
     _git(seed, "remote", "add", "origin", str(bare))
-    _git(seed, "push", "-u", "origin", "main")
+    _git(seed, "push", "-u", "origin", "ralph-queue")
     yield workspace, str(bare)
 
 
@@ -136,7 +136,7 @@ def _seed_pbi(
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     _git(work, "add", f".ralph/{state}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state}")
-    _git(work, "push", "origin", "main")
+    _git(work, "push", "origin", "ralph-queue")
 
 
 @pytest.fixture
@@ -553,3 +553,28 @@ def test_queue_repo_resolved_from_toml(
     assert exit_code == 0, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["rows"]) == 5
+
+
+def test_status_acquires_ralph_queue_by_default(
+    seeded_queue: tuple[Path, str],
+    status_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ralph-status calls acquire_queue_clone with queue_branch='ralph-queue' by default."""
+    workspace, queue_repo = seeded_queue
+    calls: list[tuple[Path, str, str]] = []
+
+    real_acquire = status_module.acquire_queue_clone
+
+    def fake_acquire(workspace_root: Path, repo: str, branch: str) -> Path:
+        calls.append((workspace_root, repo, branch))
+        return real_acquire(workspace_root, repo, branch)
+
+    monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
+
+    exit_code = status_module.main(
+        ["--workspace", str(workspace), "--queue-repo", queue_repo, "--json"]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert [branch for _ws, _repo, branch in calls] == ["ralph-queue"]

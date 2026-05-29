@@ -96,12 +96,12 @@ def queue_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
-    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _configure_identity(seed)
-    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
     _git(seed, "remote", "add", "origin", str(bare))
-    _git(seed, "push", "-u", "origin", "main")
+    _git(seed, "push", "-u", "origin", "ralph-queue")
     yield workspace, str(bare)
 
 
@@ -139,7 +139,7 @@ def _seed_pbi(
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
-    _git(work, "push", "origin", "main")
+    _git(work, "push", "origin", "ralph-queue")
 
 
 def _verify_clone(tmp_path: Path, bare_url: str, suffix: str) -> Path:

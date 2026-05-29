@@ -71,12 +71,12 @@ def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
-    subprocess.run(["git", "init", "-b", "main", str(seed)], check=True)
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _configure_identity(seed)
-    _git(seed, "commit", "--allow-empty", "-m", "chore: initial main")
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
     _git(seed, "remote", "add", "origin", str(bare))
-    _git(seed, "push", "-u", "origin", "main")
+    _git(seed, "push", "-u", "origin", "ralph-queue")
     yield workspace, str(bare)
 
 
@@ -126,7 +126,7 @@ def _seed_blocked_pbi(
         )
     _git(work, "add", f".ralph/blocked/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed blocked {pbi_id}")
-    _git(work, "push", "origin", "main")
+    _git(work, "push", "origin", "ralph-queue")
 
 
 def _seed_pbi_at_state(
@@ -158,7 +158,7 @@ def _seed_pbi_at_state(
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
-    _git(work, "push", "origin", "main")
+    _git(work, "push", "origin", "ralph-queue")
 
 
 def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
@@ -436,7 +436,7 @@ def test_triage_dry_run_writes_nothing(
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-1200")
     before = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -463,7 +463,7 @@ def test_triage_dry_run_writes_nothing(
     # Dry-run must NOT clone the queue or push.
     assert not (workspace / "queue").exists()
     after = subprocess.run(
-        ["git", "ls-remote", queue_repo, "main"],
+        ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
         capture_output=True,
         text=True,
@@ -514,7 +514,7 @@ def test_triage_no_push_keeps_remote_unchanged(
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-1300")
     subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
     _configure_identity(workspace / "queue")
-    before = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
+    before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = triage_module.main(
         _argv(
@@ -530,7 +530,7 @@ def test_triage_no_push_keeps_remote_unchanged(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(workspace / "queue", "ls-remote", "origin", "main").strip()
+    after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
 
 
@@ -668,3 +668,36 @@ def test_triage_queue_repo_resolved_from_toml(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pbi_id"] == "WI-1600"
     assert payload["commit_sha"] != ""
+
+
+def test_triage_pushes_ralph_queue_by_default(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ralph-triage pushes to ralph-queue when no --queue-branch override."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-7200")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    pushed: list[tuple[Path, str]] = []
+
+    def fake_push(repo: Path, branch: str) -> None:
+        pushed.append((repo, branch))
+
+    monkeypatch.setattr(triage_module, "push", fake_push)
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-7200",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="default-branch test",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert [branch for _repo, branch in pushed] == ["ralph-queue"]
