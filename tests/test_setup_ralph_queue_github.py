@@ -552,8 +552,10 @@ def test_protection_applied_to_main_and_ralph_queue(monkeypatch):
         def get(self, path):
             # All GETs succeed (repo, refs, contents) — protection-only happy path.
             return {"object": {"sha": "abc"}}
+
         def post(self, path, json_body=None):
             return {}
+
         def put(self, path, json_body=None):
             if "/protection" in path:
                 protected.append(path)
@@ -608,9 +610,11 @@ def test_full_run_idempotent_on_second_invocation(monkeypatch):
         def get(self, path):
             # Everything exists already (repo, refs, README, .ralph/ skeleton, config.toml)
             return {"object": {"sha": "abc"}}
+
         def post(self, path, json_body=None):
             posts.append(path)
             return {}
+
         def put(self, path, json_body=None):
             puts.append(path)
             return {}
@@ -625,9 +629,7 @@ def test_full_run_idempotent_on_second_invocation(monkeypatch):
     assert posts == []
     # No content PUTs (README + skeleton + config.toml already exist)
     content_puts = [p for p in puts if "/contents/" in p]
-    assert content_puts == [], (
-        f"Expected zero content PUTs on re-run, got: {content_puts}"
-    )
+    assert content_puts == [], f"Expected zero content PUTs on re-run, got: {content_puts}"
     # Protection PUTs are skipped because --no-protection
     protection_puts = [p for p in puts if "/protection" in p]
     assert protection_puts == []

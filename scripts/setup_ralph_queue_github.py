@@ -238,9 +238,7 @@ def _put_content(
     return True
 
 
-def _seed_main_readme(
-    client: GhClient, owner: str, repo: str, *, dry_run: bool
-) -> bool:
+def _seed_main_readme(client: GhClient, owner: str, repo: str, *, dry_run: bool) -> bool:
     readme = (
         f"# {repo}\n\n"
         "Queue repo for ralph-executor. Queue state lives on the `ralph-queue` branch.\n"
@@ -414,13 +412,9 @@ def main(argv: list[str] | None = None) -> int:
         # Seed main README (idempotent — skipped if README.md present)
         _seed_main_readme(client, owner, args.repo, dry_run=args.dry_run)
         # Seed .ralph/ skeleton on queue_branch (idempotent per file)
-        _seed_ralph_skeleton(
-            client, owner, args.repo, args.branch, dry_run=args.dry_run
-        )
+        _seed_ralph_skeleton(client, owner, args.repo, args.branch, dry_run=args.dry_run)
         # Seed .ralph/config.toml stub on queue_branch (idempotent)
-        _seed_ralph_config_stub(
-            client, owner, args.repo, args.branch, dry_run=args.dry_run
-        )
+        _seed_ralph_config_stub(client, owner, args.repo, args.branch, dry_run=args.dry_run)
 
         # Protection-handling precedence: --no-protection always wins (even
         # under --dry-run), then --dry-run, then the real PUT. Keeping the

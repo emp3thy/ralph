@@ -301,20 +301,19 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
         print(f"queue_branch already set to {existing_branch} in {user_config_path()}")
     else:
         queue_branch_default = "ralph-queue"
-        if assume_yes:
-            chosen_branch: str | None = queue_branch_default
-        else:
-            chosen_branch = _prompt_queue_branch(queue_branch_default)
-            if chosen_branch is None:
+        chosen_branch: str = queue_branch_default
+        if not assume_yes:
+            prompted = _prompt_queue_branch(queue_branch_default)
+            if prompted is None:
                 # Closed/piped stdin during the prompt — fall back to
                 # the default rather than leaving the knob unset. Unlike
                 # queue_repo (no sensible per-machine fallback), the
                 # branch name has an obvious universal default.
                 print(
-                    f"WARNING: queue_branch prompt closed; defaulting to "
-                    f"{queue_branch_default!r}."
+                    f"WARNING: queue_branch prompt closed; defaulting to {queue_branch_default!r}."
                 )
-                chosen_branch = queue_branch_default
+            else:
+                chosen_branch = prompted
         try:
             branch_cfg = write_queue_branch(chosen_branch)
         except OSError as exc:

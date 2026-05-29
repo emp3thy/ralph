@@ -341,8 +341,7 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         "iteration must push the claim commit to upstream ralph-queue"
     )
     assert main_after == main_before, (
-        f"main must NOT advance during the iteration (before={main_before}, "
-        f"after={main_after})"
+        f"main must NOT advance during the iteration (before={main_before}, after={main_after})"
     )
 
     # Tip-advance alone could be satisfied by a bogus push (e.g. an empty
@@ -356,6 +355,8 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         capture_output=True,
         text=True,
         check=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     expected_subject = f"chore(ralph-queue): move {pbi_id} from inbox to current"
     assert subject == expected_subject, (

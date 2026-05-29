@@ -330,6 +330,7 @@ def test_read_frontmatter_handles_crlf_line_endings(tmp_path: Path) -> None:
 
 def test_resolve_queue_branch_cli_value():
     from scripts.queue_writer import resolve_queue_branch
+
     assert resolve_queue_branch("custom-branch") == "custom-branch"
 
 
@@ -339,9 +340,7 @@ def test_resolve_queue_branch_user_toml(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".ralph").mkdir()
-    (home / ".ralph" / "config.toml").write_text(
-        'queue_branch = "from-toml"\n', encoding="utf-8"
-    )
+    (home / ".ralph" / "config.toml").write_text('queue_branch = "from-toml"\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
 
@@ -365,6 +364,7 @@ def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
     from scripts.queue_writer import acquire_queue_clone
 
     captured = {}
+
     def fake_ensure(workspace_root, queue_repo, queue_branch, *, timeout=120.0):
         captured["queue_branch"] = queue_branch
         return workspace_root / "queue"

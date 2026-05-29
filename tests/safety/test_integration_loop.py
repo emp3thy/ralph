@@ -114,7 +114,13 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
     cfg = ExecutorConfig(
         repo_path=clone,
         queue_repo=f"file://{bare.as_posix()}",
-        queue_branch="ralph-queue",
+        # NOTE: the bare remote seeded above only carries ``main``, so this
+        # fixture stays on ``main`` for the queue branch. The production
+        # default is ``ralph-queue`` — exercised by
+        # ``tests/executor/test_loop_integration.py``, which builds a
+        # dual-branch bare. See the matching comment in
+        # ``tests/executor/conftest.py``.
+        queue_branch="main",
         main_branch="main",
         max_attempts=3,
         log_level=20,

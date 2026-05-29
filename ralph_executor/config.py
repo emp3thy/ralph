@@ -577,13 +577,9 @@ def load_config() -> ExecutorConfig:
     )
     queue_branch = queue_branch.strip()
     if not queue_branch:
-        raise ConfigError(
-            f"{queue_branch_source}: queue_branch must be a non-empty branch name"
-        )
+        raise ConfigError(f"{queue_branch_source}: queue_branch must be a non-empty branch name")
     if queue_branch == "HEAD":
-        raise ConfigError(
-            f"{queue_branch_source}: queue_branch must be a branch name, not 'HEAD'"
-        )
+        raise ConfigError(f"{queue_branch_source}: queue_branch must be a branch name, not 'HEAD'")
     if queue_branch.startswith("refs/heads/"):
         raise ConfigError(
             f"{queue_branch_source}: queue_branch must not include the 'refs/heads/' "

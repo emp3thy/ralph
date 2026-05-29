@@ -161,9 +161,7 @@ def test_read_queue_branch_returns_value(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     (home / ".ralph").mkdir()
-    (home / ".ralph" / "config.toml").write_text(
-        'queue_branch = "my-branch"\n', encoding="utf-8"
-    )
+    (home / ".ralph" / "config.toml").write_text('queue_branch = "my-branch"\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))  # Windows
 
