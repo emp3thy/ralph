@@ -170,6 +170,10 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
         value = cli_value.strip()
         if not value:
             raise QueueWriterError("--queue-branch must be a non-empty string")
+        if value == "HEAD" or value.startswith("refs/heads/"):
+            raise QueueWriterError(
+                f"--queue-branch must be a plain branch name (got {cli_value!r})"
+            )
         return value
     from ralph_executor.config import ConfigError
     from ralph_executor.user_config import read_queue_branch
@@ -178,7 +182,14 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
         from_toml = read_queue_branch()
     except ConfigError as exc:
         raise QueueWriterError(str(exc)) from exc
-    return from_toml if from_toml is not None else DEFAULT_QUEUE_BRANCH
+    if from_toml is None:
+        return DEFAULT_QUEUE_BRANCH
+    if from_toml == "HEAD" or from_toml.startswith("refs/heads/"):
+        raise QueueWriterError(
+            f"queue_branch in ~/.ralph/config.toml must be a plain branch name "
+            f"(got {from_toml!r})"
+        )
+    return from_toml
 
 
 def is_path_in_head(repo: Path, rel_path: str) -> bool:

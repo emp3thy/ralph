@@ -360,6 +360,50 @@ def test_resolve_queue_branch_default(tmp_path, monkeypatch):
     assert resolve_queue_branch(None) == "ralph-queue"
 
 
+def test_resolve_queue_branch_rejects_head_cli(tmp_path, monkeypatch):
+    from scripts.queue_writer import QueueWriterError, resolve_queue_branch
+
+    with pytest.raises(QueueWriterError, match="plain branch name"):
+        resolve_queue_branch("HEAD")
+
+
+def test_resolve_queue_branch_rejects_refs_prefix_cli(tmp_path, monkeypatch):
+    from scripts.queue_writer import QueueWriterError, resolve_queue_branch
+
+    with pytest.raises(QueueWriterError, match="plain branch name"):
+        resolve_queue_branch("refs/heads/foo")
+
+
+def test_resolve_queue_branch_rejects_head_toml(tmp_path, monkeypatch):
+    from scripts.queue_writer import QueueWriterError, resolve_queue_branch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text('queue_branch = "HEAD"\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    with pytest.raises(QueueWriterError, match="plain branch name"):
+        resolve_queue_branch(None)
+
+
+def test_resolve_queue_branch_rejects_refs_prefix_toml(tmp_path, monkeypatch):
+    from scripts.queue_writer import QueueWriterError, resolve_queue_branch
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ralph").mkdir()
+    (home / ".ralph" / "config.toml").write_text(
+        'queue_branch = "refs/heads/foo"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    with pytest.raises(QueueWriterError, match="plain branch name"):
+        resolve_queue_branch(None)
+
+
 def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
     from scripts.queue_writer import acquire_queue_clone
 
