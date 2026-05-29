@@ -147,7 +147,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--queue-branch",
         metavar="BRANCH",
-        help="Override the queue_branch from ~/.ralph/config.toml for this run (default: ralph-queue).",
+        help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     return parser.parse_args(argv)
 

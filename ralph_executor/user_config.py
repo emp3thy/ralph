@@ -149,7 +149,8 @@ def read_queue_branch() -> str | None:
         return None
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError(
-            f"{user_config_path()}: queue_branch must be a non-empty string, got {type(raw).__name__}"
+            f"{user_config_path()}: queue_branch must be a non-empty string, "
+            f"got {type(raw).__name__}"
         )
     return raw.strip()
 

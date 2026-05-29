@@ -302,7 +302,9 @@ def test_protection_payload_shape(env: None, capsys: pytest.CaptureFixture[str])
     assert len(put_calls) == 2
 
     # ralph-queue payload: no PR requirement, no force-push, no deletion.
-    queue_calls = [c for c in put_calls if c.request.url.endswith("/branches/ralph-queue/protection")]
+    queue_calls = [
+        c for c in put_calls if c.request.url.endswith("/branches/ralph-queue/protection")
+    ]
     assert len(queue_calls) == 1
     queue_body = json.loads(queue_calls[0].request.body)
     assert queue_body["enforce_admins"] is True
@@ -596,7 +598,7 @@ def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_full_run_idempotent_on_second_invocation(monkeypatch):
-    """Re-running the script on a fully-provisioned repo is a no-op (except protection re-applies)."""
+    """Re-running on a fully-provisioned repo is a no-op (except protection re-applies)."""
     from scripts import setup_ralph_queue_github as setup
 
     posts: list[str] = []
