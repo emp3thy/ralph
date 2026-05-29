@@ -186,8 +186,7 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
         return DEFAULT_QUEUE_BRANCH
     if from_toml == "HEAD" or from_toml.startswith("refs/heads/"):
         raise QueueWriterError(
-            f"queue_branch in ~/.ralph/config.toml must be a plain branch name "
-            f"(got {from_toml!r})"
+            f"queue_branch in ~/.ralph/config.toml must be a plain branch name (got {from_toml!r})"
         )
     return from_toml
 
