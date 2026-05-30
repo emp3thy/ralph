@@ -516,6 +516,44 @@ def test_reproduce_file_body_embedded_verbatim(
     assert "_Not provided_" not in repro_md
 
 
+def test_reproduce_file_empty_still_uses_raw_mode(
+    new_mod: ModuleType,
+    queue_env: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty --reproduce-file must NOT fall back to the structured template.
+
+    Regression: a falsy raw_body check sent empty files down the
+    _Not provided_ path even though the user explicitly supplied --reproduce-file.
+    """
+    workspace, queue_repo = queue_env
+    _set_git_identity(monkeypatch)
+    rc = new_mod.main(
+        _common_argv(workspace, queue_repo)
+        + [
+            "--title",
+            "Empty repro file",
+            "--type",
+            "bug",
+            "--target-repo",
+            TARGET,
+            "--body-file",
+            str(_write_inline(tmp_path, "b.md", "x")),
+            "--reproduce-file",
+            str(_write_inline(tmp_path, "r-empty.md", "   \n   ")),
+        ]
+    )
+    assert rc == 0
+    verify = _verify_clone(tmp_path, queue_repo)
+    repro_md = (verify / ".ralph" / "inbox" / "EMPTY-REPRO-FILE" / "REPRODUCE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "_Not provided_" not in repro_md
+    assert "## Environment" not in repro_md
+    assert "# Reproduce: Empty repro file" in repro_md
+
+
 def test_missing_body_file_exits_2_cleanly(
     new_mod: ModuleType,
     queue_env: tuple[Path, str],

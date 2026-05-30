@@ -192,15 +192,16 @@ def _resolve_required(
 
 def _build_reproduce_inputs(args: argparse.Namespace) -> dict[str, str]:
     # --reproduce-file: embed file verbatim as REPRODUCE.md body (see SKILL.md
-    # "read REPRODUCE.md body from file"). `raw_body` signals writer to skip
-    # the structured-sections template.
+    # "read REPRODUCE.md body from file"). Presence of the `raw_body` KEY
+    # (not its truthiness) signals writer to skip the structured-sections
+    # template — an empty/whitespace-only file still means "use raw mode",
+    # not "fall back to _Not provided_".
     if args.reproduce_file is not None:
         body = _read_body_file(args.reproduce_file).strip()
         return {"raw_body": body, "environment": "", "steps": "", "expected": "", "actual": ""}
     if args.non_interactive:
         raise SystemExit(_fail("bug PBIs require --reproduce-file under --non-interactive"))
     return {
-        "raw_body": "",
         "environment": _multiline_prompt("Environment"),
         "steps": _multiline_prompt("Steps"),
         "expected": _multiline_prompt("Expected"),

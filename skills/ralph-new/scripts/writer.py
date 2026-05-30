@@ -120,7 +120,7 @@ def write_pbi_dir(
             acceptance_criteria=bug_inputs["acceptance_criteria"],
         )
         repro = bug_inputs["reproduce"]
-        if repro.get("raw_body"):
+        if "raw_body" in repro:
             repro_text = templates.render_reproduce_md_raw(
                 title=bug_inputs["title"],
                 body=repro["raw_body"],
