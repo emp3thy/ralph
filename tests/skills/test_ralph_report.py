@@ -545,3 +545,35 @@ def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: Mo
     assert not th.is_alive(), "report.main did not return after idle timeout"
     assert rc_holder.get("rc") == 0
     assert (info_dir / "server-stopped").is_file()
+
+
+def test_end_to_end_renders_all_panels(tmp_path: Path, server_mod: ModuleType) -> None:
+    """Drive the full stack: real git init → queue worktree → server → fetch / → assert panels."""
+    import urllib.request
+
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", str(repo)], check=True)
+    (repo / "README.md").write_text("seed", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed")
+
+    queue_wt = repo / ".ralph-work" / "queue"
+    (queue_wt / ".ralph").mkdir(parents=True)
+    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
+        (queue_wt / ".ralph" / state).mkdir()
+    _write_pbi(queue_wt / ".ralph" / "current", "PBI-WORKING-ON")
+    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-QUEUED")
+
+    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=5)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/") as resp:
+            body = resp.read().decode("utf-8")
+        assert resp.status == 200
+    finally:
+        handle.shutdown()
+        handle.thread.join(timeout=5)
+
+    for marker in ("Current", "Blocked", "Inbox", "Pending PR", "Done", "Activity timeline"):
+        assert marker in body, f"missing section heading: {marker}"
+    assert "PBI-WORKING-ON" in body
+    assert "PBI-QUEUED" in body
