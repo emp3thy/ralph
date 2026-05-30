@@ -42,10 +42,16 @@ _ENTRY_FILES: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class MetaCycleSentinel:
-    """A ``META-cycle-*.md`` sentinel file under ``.ralph/blocked/``."""
+    """A ``META-cycle-*.md`` sentinel file under ``.ralph/blocked/``.
+
+    Only the filename is retained — the underlying file may live in a
+    materialised temp directory (``_load_via_git_show`` path) that the
+    loader deletes on return, so holding a ``Path`` would dangle. The
+    renderer only ever reads the filename, so the on-disk content is
+    not needed past load time.
+    """
 
     filename: str
-    path: Path
 
 
 @dataclass
@@ -71,7 +77,7 @@ def _collect_meta_cycle_sentinels(blocked_dir: Path) -> list[MetaCycleSentinel]:
     sentinels: list[MetaCycleSentinel] = []
     for child in sorted(blocked_dir.iterdir()):
         if child.is_file() and child.name.startswith("META-cycle-") and child.suffix == ".md":
-            sentinels.append(MetaCycleSentinel(filename=child.name, path=child))
+            sentinels.append(MetaCycleSentinel(filename=child.name))
     return sentinels
 
 
@@ -123,9 +129,7 @@ def _load_via_git_show(repo_path: Path) -> Snapshot:
                 state,
                 enumerate_state(staging, state, repo_name=repo_path.name),
             )
-        snap.meta_cycle_sentinels = _materialise_meta_sentinels(
-            repo_path, staging / ".ralph" / "blocked"
-        )
+        snap.meta_cycle_sentinels = _list_meta_sentinels(repo_path)
     finally:
         # Best-effort cleanup; ignore Windows-handle quirks on rmtree.
         shutil.rmtree(staging, ignore_errors=True)
@@ -187,23 +191,14 @@ def _materialise_pbi(repo_path: Path, state: str, pbi_id: str, target_dir: Path)
             (pbi_dir / entry_name).write_text(proc.stdout, encoding="utf-8")
 
 
-def _materialise_meta_sentinels(repo_path: Path, target_dir: Path) -> list[MetaCycleSentinel]:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    sentinels: list[MetaCycleSentinel] = []
-    for name in _ls_tree_dirs(repo_path, f"{_QUEUE_REF}:.ralph/blocked"):
-        if not _is_meta_cycle_sentinel(name):
-            continue
-        proc = subprocess.run(
-            ["git", "-C", str(repo_path), "show", f"{_QUEUE_REF}:.ralph/blocked/{name}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if proc.returncode != 0:
-            continue
-        path = target_dir / name
-        path.write_text(proc.stdout, encoding="utf-8")
-        sentinels.append(MetaCycleSentinel(filename=name, path=path))
-    return sentinels
+def _list_meta_sentinels(repo_path: Path) -> list[MetaCycleSentinel]:
+    """Enumerate META-cycle sentinel filenames from the queue ref.
+
+    No file content is needed downstream — the renderer only shows the
+    filename — so we skip the previous git-show-then-write dance.
+    """
+    return [
+        MetaCycleSentinel(filename=name)
+        for name in _ls_tree_dirs(repo_path, f"{_QUEUE_REF}:.ralph/blocked")
+        if _is_meta_cycle_sentinel(name)
+    ]
