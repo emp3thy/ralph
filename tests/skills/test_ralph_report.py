@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -40,6 +41,11 @@ def snapshot() -> ModuleType:
 @pytest.fixture(scope="module")
 def git_walker() -> ModuleType:
     return _load("ralph_report_git_walker", "git_walker.py")
+
+
+@pytest.fixture(scope="module")
+def render() -> ModuleType:
+    return _load("ralph_report_render", "render.py")
 
 
 def _write_pbi(
@@ -325,3 +331,102 @@ def test_walk_log_returns_empty_when_ref_absent(tmp_path: Path, git_walker: Modu
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True)
     assert git_walker.walk_log(repo_path=repo) == []
+
+
+def test_render_page_contains_each_section_heading(
+    tmp_path: Path, snapshot: ModuleType, render: ModuleType
+) -> None:
+    repo = tmp_path / "repo"
+    queue_wt = repo / ".ralph-work" / "queue"
+    (queue_wt / ".ralph").mkdir(parents=True)
+    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
+        (queue_wt / ".ralph" / state).mkdir()
+    _write_pbi(queue_wt / ".ralph" / "current", "PBI-CUR")
+    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-IN")
+
+    snap = snapshot.load_snapshot(repo_path=repo)
+    html = render.render_page(
+        repo_path=repo,
+        snapshot=snap,
+        events=[],
+        now=datetime(2026, 5, 28, 10, 42, 13, tzinfo=UTC),
+    )
+
+    assert html.startswith("<!DOCTYPE html>")
+    for marker in ("Current", "Blocked", "Inbox", "Pending PR", "Done", "Activity timeline"):
+        assert marker in html, f"missing section heading: {marker}"
+    assert "PBI-CUR" in html
+    assert "PBI-IN" in html
+    assert "F5" in html
+    # Bootstrap is loaded via <link rel=stylesheet href=...>, not <script src=...>.
+    # The plan's verbatim assertion used ``src=`` which would never match the
+    # ``<link href=...>`` element — drop the attribute and assert the CDN URL.
+    assert "cdn.jsdelivr.net/npm/bootstrap@5" in html
+
+
+def test_render_page_renders_timeline_event_labels(
+    tmp_path: Path,
+    snapshot: ModuleType,
+    git_walker: ModuleType,
+    render: ModuleType,
+) -> None:
+    repo = tmp_path / "repo"
+    queue_wt = repo / ".ralph-work" / "queue"
+    (queue_wt / ".ralph").mkdir(parents=True)
+    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
+        (queue_wt / ".ralph" / state).mkdir()
+
+    now = datetime(2026, 5, 28, 12, 0, 0, tzinfo=UTC)
+    when = datetime(2026, 5, 28, 11, 30, 0, tzinfo=UTC)
+    events = [
+        git_walker.TimelineEvent(
+            kind="shipped", pbi_id="PBI-SHIPPED-A", commit_sha="abc1234", when=when
+        ),
+        git_walker.TimelineEvent(
+            kind="cycle_trip",
+            pbi_id="META-cycle-20260528T110000Z",
+            commit_sha="def5678",
+            when=when,
+        ),
+        git_walker.TimelineEvent(
+            kind="pr_opened", pbi_id="PBI-OPENED-B", commit_sha="9876543", when=when
+        ),
+    ]
+    snap = snapshot.load_snapshot(repo_path=repo)
+    html = render.render_page(repo_path=repo, snapshot=snap, events=events, now=now)
+
+    # Done panel surfaces the shipped event (filtered from the full set).
+    assert "PBI-SHIPPED-A" in html
+    assert "30m ago" in html  # _format_age — 30 min between when and now
+    # Timeline shows ALL three with their human labels.
+    assert "cycle-trip" in html
+    assert "META-cycle-20260528T110000Z" in html
+    assert "PR opened" in html
+    assert "PBI-OPENED-B" in html
+    # The cycle_trip kind keeps its dramatic CSS class.
+    assert "text-danger fw-bold" in html
+
+
+def test_render_page_falls_back_when_pbi_row_is_error(
+    tmp_path: Path, snapshot: ModuleType, render: ModuleType
+) -> None:
+    """A malformed PBI under .ralph/current surfaces as PBIRowError; the
+    renderer must still emit a row (with the directory name + error
+    message) rather than raise.
+    """
+    repo = tmp_path / "repo"
+    cur = repo / ".ralph-work" / "queue" / ".ralph" / "current" / "PBI-BROKEN"
+    cur.mkdir(parents=True)
+    # No PBI.md / BUG.md / FEEDBACK.md → enumerate_state returns PBIRowError.
+    (cur / "HISTORY.md").write_text("<!-- broken -->\n", encoding="utf-8")
+
+    snap = snapshot.load_snapshot(repo_path=repo)
+    html = render.render_page(
+        repo_path=repo,
+        snapshot=snap,
+        events=[],
+        now=datetime(2026, 5, 28, 10, 42, 13, tzinfo=UTC),
+    )
+
+    assert "PBI-BROKEN" in html
+    assert "text-danger small" in html
