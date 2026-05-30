@@ -9,6 +9,12 @@ Design and plans:
 - Design: `docs/superpowers/specs/2026-05-23-ralph-v1-per-repo-loop-design.md`
 - Orchestrator plan: `docs/superpowers/plans/2026-05-24-00-orchestrator.md`
 
+## Architecture & setup
+
+- **Architecture overview:** [`docs/runbooks/ralph-architecture.md`](docs/runbooks/ralph-architecture.md) — the three pieces (executor source, queue repo, workspace), data flow, branch model.
+- **Setup guide:** [`docs/runbooks/ralph-setup.md`](docs/runbooks/ralph-setup.md) — install, init, full config + CLI reference.
+- **Queue repo provisioning:** [`docs/runbooks/ralph-queue-setup.md`](docs/runbooks/ralph-queue-setup.md) — `setup_ralph_queue_github.py` deep dive.
+
 ## Prerequisites
 
 - Python 3.12+
