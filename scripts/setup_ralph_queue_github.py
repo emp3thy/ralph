@@ -114,7 +114,11 @@ def _ensure_repo_exists(
         )
         return False  # do NOT POST in dry-run mode
     print(f"creating {owner}/{repo}...", file=sys.stderr)
-    payload = {"name": repo, "private": True, "auto_init": True}
+    # auto_init=False: GitHub's auto-init would commit a default README on main,
+    # which then short-circuits _seed_main_readme via _content_exists and prevents
+    # the custom README from landing. With auto_init=False, the first _put_content
+    # PUT on main creates both the branch and the README in one commit.
+    payload = {"name": repo, "private": True, "auto_init": False}
     if org is not None:
         client.post(f"/orgs/{org}/repos", json_body=payload)
     else:

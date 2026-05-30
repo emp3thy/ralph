@@ -614,6 +614,34 @@ def test_cli_queue_branch_rejects_empty(
         _apply_overrides(cfg, args)
 
 
+def test_cli_queue_branch_rejects_empty_string(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch '' raises ConfigError instead of silently no-op'ing.
+
+    Regression for BugBot finding: the override guard used truthiness
+    (``if args.queue_branch:``) so an empty string fell through and the
+    cfg.queue_branch from TOML/env was kept silently.
+    """
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="non-empty"):
+        _apply_overrides(cfg, args)
+
+
 def test_cli_queue_branch_rejects_head(
     cfg_for_repo: ExecutorConfig,
 ) -> None:

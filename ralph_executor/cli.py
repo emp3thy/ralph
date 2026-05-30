@@ -370,7 +370,10 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
             raise ConfigError(f"--queue-repo: {exc}") from exc
         queue_repo = args.queue_repo
         changed = True
-    if getattr(args, "queue_branch", None):
+    if getattr(args, "queue_branch", None) is not None:
+        # `is not None` (not truthiness): `--queue-branch ""` must reach the
+        # validator below so the empty-string ConfigError surfaces instead of
+        # silently no-op'ing.
         stripped = args.queue_branch.strip()
         if not stripped:
             raise ConfigError("--queue-branch must be a non-empty branch name")

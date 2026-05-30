@@ -599,6 +599,55 @@ def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     assert any(path.endswith("/contents/.ralph/config.toml") for path, _ in puts)
 
 
+def test_fresh_repo_gets_custom_readme(monkeypatch):
+    """When the repo is newly created, the custom README content actually
+    lands on main. Regression for BugBot finding: ``auto_init=True`` made
+    GitHub commit a default README, which then short-circuited
+    ``_seed_main_readme`` via the ``_content_exists`` guard.
+    """
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[tuple[str, dict[str, Any]]] = []
+
+    repo_created = {"done": False}
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            # Repo absent on first GET, present after creation
+            if path == "/repos/test/queue" and not repo_created["done"]:
+                raise setup.GhError(404, "not found", path)
+            if "/contents/README.md" in path:
+                raise setup.GhError(404, "not found", path)
+            if "/contents/.ralph" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            if path == "/user/repos":
+                repo_created["done"] = True
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append((path, json_body or {}))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    readme_puts = [p for p, _ in puts if p.endswith("/contents/README.md")]
+    assert len(readme_puts) == 1, f"expected exactly one README PUT, got: {readme_puts}"
+    # Verify the body content matches the spec
+    import base64
+
+    readme_payload = next(body for path, body in puts if path.endswith("/contents/README.md"))
+    content_b64 = readme_payload["content"]
+    decoded = base64.b64decode(content_b64).decode("utf-8")
+    assert "Queue repo for ralph-executor" in decoded
+
+
 def test_full_run_idempotent_on_second_invocation(monkeypatch):
     """Re-running on a fully-provisioned repo is a no-op (except protection re-applies)."""
     from scripts import setup_ralph_queue_github as setup
