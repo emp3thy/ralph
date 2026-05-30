@@ -778,7 +778,7 @@ def test_base_branch_and_branch_flags_thread_through(monkeypatch):
         f"expected protection PUT on /branches/master/protection; got {protected}"
     )
     assert not any(p.endswith("/branches/main/protection") for p in protected), (
-        f"protection must not target /branches/main/protection when --base-branch=master; got {protected}"
+        f"protection must not target main when --base-branch=master; got {protected}"
     )
     # The queue branch protection also follows --branch.
     assert any(p.endswith("/branches/wq/protection") for p in protected), (
