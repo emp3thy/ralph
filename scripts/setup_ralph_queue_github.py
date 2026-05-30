@@ -115,13 +115,14 @@ def _ensure_repo_exists(
     except GhError as exc:
         if exc.status_code != 404:
             raise
+    target = f"organisation {org!r}" if org is not None else f"user {owner!r}"
     if dry_run:
         print(
-            f"DRY-RUN would create {owner}/{repo} (private)",
+            f"DRY-RUN would create {owner}/{repo} (private) under {target}",
             file=sys.stderr,
         )
         return False  # do NOT POST in dry-run mode
-    print(f"creating {owner}/{repo}...", file=sys.stderr)
+    print(f"creating {owner}/{repo} (private) under {target}...", file=sys.stderr)
     # auto_init=False: GitHub's auto-init would commit a default README on main,
     # which then short-circuits _seed_main_readme via _content_exists and prevents
     # the custom README from landing. With auto_init=False, the first _put_content
@@ -484,14 +485,35 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         else:
-            print(f"applying branch protection on {args.base_branch}...", file=sys.stderr)
-            _apply_main_protection(client, owner, args.repo, args.base_branch)
-            print(
-                f"applying branch protection on {args.branch}...",
-                file=sys.stderr,
-            )
-            _apply_queue_branch_protection(client, owner, args.repo, args.branch)
-            protection_applied = True
+            try:
+                print(f"applying branch protection on {args.base_branch}...", file=sys.stderr)
+                _apply_main_protection(client, owner, args.repo, args.base_branch)
+                print(
+                    f"applying branch protection on {args.branch}...",
+                    file=sys.stderr,
+                )
+                _apply_queue_branch_protection(client, owner, args.repo, args.branch)
+                protection_applied = True
+            except GhError as exc:
+                # GitHub Free + private repo: branch protection requires Pro / Team /
+                # Enterprise. The API returns 403 with the literal phrase "Upgrade to
+                # GitHub Pro". Treat that single case as a soft failure so the rest of
+                # the bootstrap (which already succeeded above) is not rolled back —
+                # the operator can either upgrade, make the repo public, or re-run
+                # with --no-protection later. Any other 403 (PAT scope, ACL) is
+                # still fatal: we re-raise so the operator hits the existing
+                # troubleshooting paths.
+                if exc.status_code == 403 and "Upgrade to GitHub Pro" in str(exc):
+                    print(
+                        "WARNING: branch protection unavailable on this plan "
+                        "(GitHub Free + private repo requires Pro). Continuing "
+                        "with protection_applied=false. Re-run with "
+                        "--no-protection to suppress this warning, or make the "
+                        "repo public to enable protection.",
+                        file=sys.stderr,
+                    )
+                else:
+                    raise
 
         result = SetupResult(
             owner=owner,

@@ -15,7 +15,7 @@ bottom of this file.
 
 ```bash
 GH_TOKEN=<token> GH_OWNER=<owner> \
-    uv run python scripts/setup_ralph_queue_github.py --repo <repo-name>
+    uv run python -m scripts.setup_ralph_queue_github --repo <repo-name>
 ```
 
 Creates (idempotent on re-run):
@@ -136,7 +136,7 @@ Use `--dry-run` to preview what would change without mutating anything:
 
 ```bash
 GH_TOKEN=<token> GH_OWNER=<owner> \
-    uv run python scripts/setup_ralph_queue_github.py --repo <repo-name> --dry-run
+    uv run python -m scripts.setup_ralph_queue_github --repo <repo-name> --dry-run
 ```
 
 ## Verification
@@ -180,6 +180,7 @@ Re-running the helper script should report `branch_existed: true`,
 | `GitHub 404 from .../repos/<owner>/<repo>: Not Found` | `--repo` name does not match a repo accessible to `GH_TOKEN`, OR `GH_OWNER` is wrong. | Confirm with `gh repo list <owner>`. |
 | `GitHub 401 from ...: Bad credentials` | `GH_TOKEN` is expired or missing the `repo` scope. | Regenerate the PAT with `repo` scope (or, for fine-grained, *Contents: R/W* + *Administration: R/W* on the target repo). |
 | `GitHub 403 from .../protection: ...Resource not accessible by integration` | Fine-grained PAT lacks *Administration: Read and write*. | Edit the PAT, grant administration write, re-run. |
+| `GitHub 403 from .../protection: ...Upgrade to GitHub Pro or make this repository public to enable this feature.` | Branch protection on a private repo requires GitHub Pro / Team / Enterprise. | Re-run with `--no-protection`, or make the repo public (`gh repo edit <owner>/<repo> --visibility public`). The script now downgrades to a warning and exits 0 automatically. |
 | `GitHub 422 from .../git/refs: Reference already exists` after a clean exit | A concurrent setup run created `ralph-queue` between this script's GET-ref and POST-ref. | Re-run; the second run's GET will see the ref and skip creation. |
 | Helper script exits with `error: environment variable GH_TOKEN is required` | Shell didn't have `GH_TOKEN` exported. | Export `GH_TOKEN` and `GH_OWNER` in the same shell before running. |
 | Executor crashes with `queue_repo not configured` | `~/.ralph/config.toml` missing or lacks `queue_repo`. | Run `ralph-executor init`, or add `queue_repo = "<url>"` to that file by hand. |
