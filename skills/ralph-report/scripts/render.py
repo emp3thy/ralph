@@ -203,6 +203,10 @@ def _panel(title: str, count: int, classes: str, body: str) -> str:
 
 def _format_age(delta: timedelta) -> str:
     seconds = int(delta.total_seconds())
+    if seconds <= 0:
+        # Clamp future-dated events (clock skew on the source repo) so we
+        # don't render "-3600s" in the dashboard.
+        return "0s"
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:

@@ -319,8 +319,12 @@ def test_walk_log_picks_up_scripted_commits(tmp_path: Path, git_walker: ModuleTy
     assert "added" in kinds
     assert "claimed" in kinds
     assert "cycle_trip" in kinds
-    # persist-iteration subjects must be filtered out
-    assert all(e.kind != "persist" for e in events)
+    # persist-iteration commits must NOT emit any event. Only 4 commits
+    # were scripted (add / claim / persist / cycle-trip), and persist is
+    # the only one that should be filtered out — so we expect exactly 3
+    # events, none of them attributable to the persist commit.
+    assert len(events) == 3
+    assert set(kinds) == {"added", "claimed", "cycle_trip"}
     # The added/claimed PBI ids carry through
     added_ids = [e.pbi_id for e in events if e.kind == "added"]
     assert added_ids == ["EXECUTOR-EXIT-WHEN-IDLE-DEFAULT"]

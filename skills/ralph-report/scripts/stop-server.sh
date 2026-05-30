@@ -10,6 +10,15 @@ fi
 
 REPO="$1"
 INFO="$REPO/.ralph-work/report/server-info"
+STOPPED="$REPO/.ralph-work/report/server-stopped"
+
+if [[ -f "$STOPPED" ]]; then
+  # Server exited naturally (idle timeout). server-info still on disk but
+  # the PID may now belong to an unrelated process the OS reused — don't
+  # signal it.
+  echo "stop-server.sh: already stopped (server-stopped present)"
+  exit 0
+fi
 
 if [[ ! -f "$INFO" ]]; then
   echo "stop-server.sh: $INFO not found; server may already be stopped" >&2
