@@ -373,9 +373,37 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
+        # Seed main README FIRST. For a freshly-created repo (auto_init=False),
+        # main does not exist yet — _put_content on a non-existent branch creates
+        # both the file and the branch in one commit. Seeding here also ensures
+        # _read_branch_tip below finds a tip on the next line. Idempotent for
+        # already-provisioned repos: _content_exists short-circuits.
+        _seed_main_readme(client, owner, args.repo, dry_run=args.dry_run)
+
         print(f"reading tip of {args.base_branch}...", file=sys.stderr)
         base_sha = _read_branch_tip(client, owner, args.repo, args.base_branch)
         if base_sha is None:
+            # Under --dry-run on a fresh repo, _seed_main_readme is a no-op
+            # ("would PUT") so main has no tip — accept this and skip the
+            # downstream branch + protection steps with a dry-run summary.
+            if args.dry_run:
+                print(
+                    f"DRY-RUN: {args.base_branch!r} has no tip; would have been "
+                    f"created by README seed. Skipping branch creation + protection.",
+                    file=sys.stderr,
+                )
+                result = SetupResult(
+                    owner=owner,
+                    repo=args.repo,
+                    branch_name=args.branch,
+                    branch_base_sha="",
+                    branch_created=False,
+                    branch_existed=False,
+                    protection_applied=False,
+                    dry_run=True,
+                )
+                print(json.dumps(asdict(result), indent=2, sort_keys=True))
+                return 0
             return _fail(f"base branch {args.base_branch!r} has no tip in {owner}/{args.repo}")
 
         print(
@@ -413,8 +441,6 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         raise
 
-        # Seed main README (idempotent — skipped if README.md present)
-        _seed_main_readme(client, owner, args.repo, dry_run=args.dry_run)
         # Seed .ralph/ skeleton on queue_branch (idempotent per file)
         _seed_ralph_skeleton(client, owner, args.repo, args.branch, dry_run=args.dry_run)
         # Seed .ralph/config.toml stub on queue_branch (idempotent)

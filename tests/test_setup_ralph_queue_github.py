@@ -648,6 +648,79 @@ def test_fresh_repo_gets_custom_readme(monkeypatch):
     assert "Queue repo for ralph-executor" in decoded
 
 
+def test_fresh_repo_seeds_main_before_reading_tip(monkeypatch):
+    """Regression for BugBot round 3: with auto_init=False, main does not exist
+    after repo creation. The script must PUT README.md before _read_branch_tip,
+    so main is created in time for its tip to be read.
+
+    Simulates GitHub realistically: ref lookups for main return 404 until the
+    README PUT lands; ref lookups for ralph-queue return 404 until that branch
+    is created.
+    """
+    from scripts import setup_ralph_queue_github as setup
+
+    state = {
+        "repo_created": False,
+        "main_seeded": False,
+        "ralph_queue_created": False,
+    }
+    puts: list[tuple[str, dict[str, Any]]] = []
+    call_order: list[str] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            call_order.append(f"GET {path}")
+            if path == "/repos/test/queue" and not state["repo_created"]:
+                raise setup.GhError(404, "not found", path)
+            # ref lookups: main 404 until seeded, ralph-queue 404 until created
+            if "/git/ref/heads/main" in path:
+                if not state["main_seeded"]:
+                    raise setup.GhError(404, "not found", path)
+                return {"object": {"sha": "main-sha"}}
+            if "/git/ref/heads/ralph-queue" in path:
+                if not state["ralph_queue_created"]:
+                    raise setup.GhError(404, "not found", path)
+                return {"object": {"sha": "rq-sha"}}
+            # contents: everything absent (fresh repo)
+            if "/contents/" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            call_order.append(f"POST {path}")
+            if path == "/user/repos":
+                state["repo_created"] = True
+            if path.endswith("/git/refs"):
+                state["ralph_queue_created"] = True
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            call_order.append(f"PUT {path}")
+            if path.endswith("/contents/README.md"):
+                state["main_seeded"] = True
+            puts.append((path, json_body or {}))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0, f"expected rc=0 on fresh repo provisioning; got {rc}. Call order: {call_order}"
+    # README PUT must happen BEFORE any GET that reads main's tip in
+    # _read_branch_tip — otherwise the script would have aborted earlier.
+    readme_put_idx = next(
+        i for i, c in enumerate(call_order) if c.startswith("PUT ") and "/contents/README.md" in c
+    )
+    main_tip_get_idx = next(
+        i for i, c in enumerate(call_order) if c.startswith("GET ") and "/git/ref/heads/main" in c
+    )
+    assert readme_put_idx < main_tip_get_idx, (
+        f"README PUT (idx {readme_put_idx}) must precede main tip GET (idx {main_tip_get_idx}). "
+        f"Call order: {call_order}"
+    )
+
+
 def test_full_run_idempotent_on_second_invocation(monkeypatch):
     """Re-running on a fully-provisioned repo is a no-op (except protection re-applies)."""
     from scripts import setup_ralph_queue_github as setup
