@@ -476,3 +476,103 @@ def test_parent_id_threaded_into_frontmatter(
     verify = _verify_clone(tmp_path, queue_repo)
     text = (verify / ".ralph" / "inbox" / "CHILD-PBI" / "BUG.md").read_text(encoding="utf-8")
     assert "parent_id: EPIC-PARENT" in text
+
+
+def test_reproduce_file_body_embedded_verbatim(
+    new_mod: ModuleType,
+    queue_env: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--reproduce-file content becomes REPRODUCE.md body, not dumped into Environment."""
+    workspace, queue_repo = queue_env
+    _set_git_identity(monkeypatch)
+    repro_body = "## Steps\n1. open page\n\n## Expected\nlogin ok\n\n## Actual\ntimeout\n"
+    rc = new_mod.main(
+        _common_argv(workspace, queue_repo)
+        + [
+            "--title",
+            "Repro verbatim",
+            "--type",
+            "bug",
+            "--target-repo",
+            TARGET,
+            "--body-file",
+            str(_write_inline(tmp_path, "b.md", "x")),
+            "--reproduce-file",
+            str(_write_inline(tmp_path, "r.md", repro_body)),
+        ]
+    )
+    assert rc == 0
+    verify = _verify_clone(tmp_path, queue_repo)
+    repro_md = (verify / ".ralph" / "inbox" / "REPRO-VERBATIM" / "REPRODUCE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "# Reproduce: Repro verbatim" in repro_md
+    assert "## Steps\n1. open page" in repro_md
+    assert "## Expected\nlogin ok" in repro_md
+    assert "## Actual\ntimeout" in repro_md
+    assert "## Environment" not in repro_md
+    assert "_Not provided_" not in repro_md
+
+
+def test_missing_body_file_exits_2_cleanly(
+    new_mod: ModuleType,
+    queue_env: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nonexistent --body-file returns 2 with a clean error, not a traceback."""
+    workspace, queue_repo = queue_env
+    _set_git_identity(monkeypatch)
+    missing = tmp_path / "does-not-exist.md"
+    with pytest.raises(SystemExit) as exc_info:
+        new_mod.main(
+            _common_argv(workspace, queue_repo)
+            + [
+                "--title",
+                "Missing body",
+                "--type",
+                "feature",
+                "--target-repo",
+                TARGET,
+                "--body-file",
+                str(missing),
+            ]
+        )
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "cannot read" in err.lower() or "not found" in err.lower()
+
+
+def test_missing_reproduce_file_exits_2_cleanly(
+    new_mod: ModuleType,
+    queue_env: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nonexistent --reproduce-file returns 2 with a clean error."""
+    workspace, queue_repo = queue_env
+    _set_git_identity(monkeypatch)
+    missing = tmp_path / "no-repro.md"
+    with pytest.raises(SystemExit) as exc_info:
+        new_mod.main(
+            _common_argv(workspace, queue_repo)
+            + [
+                "--title",
+                "Missing repro",
+                "--type",
+                "bug",
+                "--target-repo",
+                TARGET,
+                "--body-file",
+                str(_write_inline(tmp_path, "b.md", "x")),
+                "--reproduce-file",
+                str(missing),
+            ]
+        )
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "cannot read" in err.lower() or "not found" in err.lower()

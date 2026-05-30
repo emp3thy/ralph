@@ -120,13 +120,19 @@ def write_pbi_dir(
             acceptance_criteria=bug_inputs["acceptance_criteria"],
         )
         repro = bug_inputs["reproduce"]
-        repro_text = templates.render_reproduce_md(
-            title=bug_inputs["title"],
-            environment=repro["environment"],
-            steps=repro["steps"],
-            expected=repro["expected"],
-            actual=repro["actual"],
-        )
+        if repro.get("raw_body"):
+            repro_text = templates.render_reproduce_md_raw(
+                title=bug_inputs["title"],
+                body=repro["raw_body"],
+            )
+        else:
+            repro_text = templates.render_reproduce_md(
+                title=bug_inputs["title"],
+                environment=repro["environment"],
+                steps=repro["steps"],
+                expected=repro["expected"],
+                actual=repro["actual"],
+            )
         (pbi_dir / "BUG.md").write_text(bug_text, encoding="utf-8")
         (pbi_dir / "REPRODUCE.md").write_text(repro_text, encoding="utf-8")
     else:

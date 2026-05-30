@@ -69,6 +69,16 @@ def render_reproduce_md(
     )
 
 
+def render_reproduce_md_raw(*, title: str, body: str) -> str:
+    """Render REPRODUCE.md with file-supplied body embedded verbatim.
+
+    Used when --reproduce-file supplies the full REPRODUCE.md body; the
+    file is assumed to already carry whatever structure the author wants
+    (its own ## sections etc.).
+    """
+    return f"# Reproduce: {title}\n\n{body.rstrip()}\n"
+
+
 def render_pbi_md(
     *,
     frontmatter: str,
