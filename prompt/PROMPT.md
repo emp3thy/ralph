@@ -392,6 +392,40 @@ yourself to a higher bar of charity than the medium might invite.
 - Code in fenced blocks longer than three lines (link to the file
   instead).
 
+## Recording learnings (better-memory)
+
+This iteration is one-shot: you have no memory across iterations except what you write to better-memory. The executor sets `BETTER_MEMORY_PROJECT` so your observations and retrievals scope correctly to the PBI's target repo — call the tools directly, don't pass `project=`.
+
+### At iteration start
+
+Before reading any PBI files, run both of these:
+
+1. `mcp__better-memory__memory_retrieve` with a broad `query` describing the PBI's surface (e.g. the PBI title + the component or theme). Returns target-repo observations and reflections bucketed by `do` / `dont` / `neutral`.
+2. `mcp__better-memory__knowledge_search` with a `query` describing the workflow context (e.g. `"ralph iteration"`, `"git worktree"`, `"PR review thread"`). Standards (cross-project workflow rules under `knowledge-base/standards/`) always surface regardless of project. Pass `project` if you also want project-specific knowledge surfaced.
+
+Read both before deciding how to approach the PBI. Memory may be stale — if a recalled fact conflicts with what you see now, trust current state and let the synthesis layer correct the memory later.
+
+### Inline triggers — observe AS the iteration progresses
+
+Do not batch observations at the end. Write each one immediately, as the trigger fires:
+
+- **After `REPRODUCE.md` confirms the failure signature.** If the reproduction signal is non-obvious (specific input, environment variable, race condition, ordering), call `mcp__better-memory__memory_observe` with `outcome="neutral"` recording how you triggered the failure.
+- **After you identify the root cause in `HISTORY.md`.** Call `memory_observe` with `outcome="failure"` recording the cause and the diagnostic path that surfaced it. Include component / file paths in `component`.
+- **After a fix commit lands** that represents a non-obvious gotcha, dependency, or convention. Call `memory_observe` with `outcome="failure"` recording what would have surprised a future reader.
+- **After a BugBot or reviewer-fix commit.** (Global CLAUDE.md mandatory trigger.) Call `memory_observe` with `outcome="failure"` recording the gap the fix closed — the fix's existence proves it was non-obvious. Do this BEFORE moving on to the next reviewer comment.
+- **Before this iteration exits** (success, push-and-PR, or classify-as-still-going). Sweep your commits and `HISTORY.md` for anything not yet recorded — the iteration may not return, so the sweep is your backstop. If a fact is already covered by an existing observation you retrieved at iteration start, skip it.
+
+### What NOT to record
+
+- Step-by-step iteration progress (`HISTORY.md` is the right home for that).
+- Routine PBI mechanics (claiming, committing, opening a PR).
+- Anything already documented in CLAUDE.md or PROMPT.md.
+- Speculation — only record facts the iteration actually proved.
+
+### Observation field defaults
+
+Always set `outcome` explicitly. Fill `component` (the subsystem / module / package name) and `theme` (e.g. `bug`, `decision`, `gotcha`, `dependency`) when applicable. Do not embed the project name in `content` — the env-var scoping handles that.
+
 ## What you never do
 
 These are hard rules. Violating one is a STUCK.md trigger or a halt.

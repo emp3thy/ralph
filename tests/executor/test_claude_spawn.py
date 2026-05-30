@@ -150,6 +150,92 @@ def test_spawn_omits_gh_owner_when_target_info_absent(
     assert "GH_OWNER" not in env
 
 
+def test_spawn_sets_better_memory_project_env_from_target_info(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+) -> None:
+    """env['BETTER_MEMORY_PROJECT'] = pbi.target_info.name so subagent
+    observations land in the target_repo's project scope rather than the
+    worktree-derived cwd project."""
+    import json
+    from dataclasses import replace
+
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    pbi = replace(
+        pbi,
+        target_info=TargetRepoInfo(host="github.com", owner="orgA", name="growatt-monitor"),
+    )
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert env["BETTER_MEMORY_PROJECT"] == "growatt-monitor"
+
+
+def test_spawn_omits_better_memory_project_when_target_info_absent(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without pbi.target_info (legacy single-target mode), the env var
+    must NOT be set — the subprocess falls back to cwd-derived project
+    resolution, which is correct behaviour for that mode."""
+    import json
+
+    monkeypatch.delenv("BETTER_MEMORY_PROJECT", raising=False)
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    assert pbi.target_info is None
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert "BETTER_MEMORY_PROJECT" not in env
+
+
+def test_spawn_strips_inherited_better_memory_project_when_target_info_absent(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: BETTER_MEMORY_PROJECT inherited from ralph's parent env
+    must NOT leak into the subagent under legacy (target_info=None) mode
+    — otherwise the subagent's observations land in whatever project
+    name the operator happens to have set for ralph itself."""
+    import json
+
+    monkeypatch.setenv("BETTER_MEMORY_PROJECT", "ralph-itself")
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    assert pbi.target_info is None
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert "BETTER_MEMORY_PROJECT" not in env
+
+
 def test_classify_pr_created_when_pr_url_provided(tmp_path: Path) -> None:
     """pr_url is the source of truth — set by spawn_claude_p via the
     real gh CLI call. classify_outcome itself just maps the answer."""
