@@ -452,8 +452,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fail(str(exc))
 
     # --- git add / commit / push ---------------------------------
+    # Scope `git add` to the PBI dir we just wrote — `-A` would silently
+    # pick up any pre-existing uncommitted state in the queue clone
+    # (e.g. orphan files from a previous run that crashed after write
+    # but before commit) and bundle them into this commit.
     try:
-        _git(queue_clone, "add", "-A")
+        _git(queue_clone, "add", "--", str(pbi_dir))
         _git(queue_clone, "commit", "-m", f"chore(queue): add {pbi_id}")
         if not args.no_push:
             _git(queue_clone, "push", "origin", queue_branch)
