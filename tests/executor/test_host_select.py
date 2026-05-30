@@ -206,26 +206,20 @@ def test_verify_auth_env_error_message_names_all_missing_vars(
 
 
 def _make_fake_skill_source(skills_root: Path, host: str) -> None:
-    """Build a synthetic ``skills/`` tree with the per-host skill dirs.
+    """Build a synthetic ``skills/`` tree with the per-host PR skill dir.
 
-    Layout mirrors the real Phase 1 / Phase 2 structure: each skill
-    directory has a ``scripts/`` subdir with one script, a SKILL.md,
-    and a marker file so tests can prove the copy preserved contents.
+    Each skill directory has a ``scripts/`` subdir with one script, a
+    SKILL.md, and a marker file so tests can prove the copy preserved
+    contents.
     """
     pr_src = skills_root / f"pr-{host}"
-    wi_src = skills_root / f"workitem-fetch-{host}"
     (pr_src / "scripts").mkdir(parents=True)
     (pr_src / "SKILL.md").write_text(f"# pr-{host} skill\n", encoding="utf-8")
     (pr_src / "scripts" / "create_pr.py").write_text(f"# create-pr for {host}\n", encoding="utf-8")
     (pr_src / "marker.txt").write_text(host, encoding="utf-8")
 
-    (wi_src / "scripts").mkdir(parents=True)
-    (wi_src / "SKILL.md").write_text(f"# workitem-fetch-{host} skill\n", encoding="utf-8")
-    (wi_src / "scripts" / "fetch.py").write_text(f"# fetch for {host}\n", encoding="utf-8")
-    (wi_src / "marker.txt").write_text(host, encoding="utf-8")
 
-
-def test_stage_skills_copies_github_pair_to_canonical_names(
+def test_stage_skills_copies_github_pr_to_canonical_name(
     tmp_path: Path,
 ) -> None:
     skills_root = tmp_path / "skills"
@@ -240,11 +234,9 @@ def test_stage_skills_copies_github_pair_to_canonical_names(
     ) == "# pr-github skill\n"
     assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
     assert (claude_skills_dir / "pr" / "marker.txt").read_text(encoding="utf-8") == "github"
-    assert (claude_skills_dir / "workitem-fetch" / "SKILL.md").is_file()
-    assert (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").is_file()
 
 
-def test_stage_skills_copies_ado_pair_to_canonical_names(
+def test_stage_skills_copies_ado_pr_to_canonical_name(
     tmp_path: Path,
 ) -> None:
     skills_root = tmp_path / "skills"
@@ -255,9 +247,6 @@ def test_stage_skills_copies_ado_pair_to_canonical_names(
     stage_skills("ado", skills_root, claude_skills_dir)
 
     assert (claude_skills_dir / "pr" / "marker.txt").read_text(encoding="utf-8") == "ado"
-    assert (claude_skills_dir / "workitem-fetch" / "marker.txt").read_text(
-        encoding="utf-8"
-    ) == "ado"
 
 
 def test_stage_skills_is_idempotent(tmp_path: Path) -> None:
@@ -293,41 +282,13 @@ def test_stage_skills_missing_pr_source_raises_clear_error(
     skills_root = tmp_path / "skills"
     claude_skills_dir = tmp_path / "claude_skills"
     claude_skills_dir.mkdir()
-    # Only the workitem-fetch source exists; pr-github is missing.
-    (skills_root / "workitem-fetch-github" / "scripts").mkdir(parents=True)
-    (skills_root / "workitem-fetch-github" / "scripts" / "fetch.py").write_text(
-        "# fetch\n", encoding="utf-8"
-    )
+    skills_root.mkdir()  # empty — no per-host dirs
 
     with pytest.raises(HostSelectionError) as excinfo:
         stage_skills("github", skills_root, claude_skills_dir)
     msg = str(excinfo.value)
     assert "pr-github" in msg
     assert str(skills_root) in msg
-
-
-def test_stage_skills_missing_workitem_fetch_source_is_tolerated(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """workitem-fetch-<host>/ is OPTIONAL (Plan 3 deferred). Missing dir
-    must emit a warning and skip -- NOT raise. The executor only needs
-    pr/; only supervisor skills consume workitem-fetch/.
-    """
-    import logging
-
-    skills_root = tmp_path / "skills"
-    claude_skills_dir = tmp_path / "claude_skills"
-    claude_skills_dir.mkdir()
-    (skills_root / "pr-ado" / "scripts").mkdir(parents=True)
-    (skills_root / "pr-ado" / "scripts" / "create_pr.py").write_text(
-        "# create-pr\n", encoding="utf-8"
-    )
-
-    with caplog.at_level(logging.WARNING, logger="ralph_executor.host_select"):
-        stage_skills("ado", skills_root, claude_skills_dir)
-    assert any("workitem-fetch-ado" in rec.message for rec in caplog.records)
-    assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
 
 
 def test_stage_skills_unknown_host_raises(tmp_path: Path) -> None:
@@ -339,33 +300,16 @@ def test_verify_staged_happy_path(tmp_path: Path) -> None:
     claude_skills_dir = tmp_path / "claude_skills"
     (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
     (claude_skills_dir / "pr" / "scripts" / "create_pr.py").write_text("# stub\n", encoding="utf-8")
-    (claude_skills_dir / "workitem-fetch" / "scripts").mkdir(parents=True)
-    (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").write_text(
-        "# stub\n", encoding="utf-8"
-    )
     verify_staged(claude_skills_dir)  # must not raise
 
 
 def test_verify_staged_missing_pr_script_raises(tmp_path: Path) -> None:
     claude_skills_dir = tmp_path / "claude_skills"
-    (claude_skills_dir / "workitem-fetch" / "scripts").mkdir(parents=True)
-    (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").write_text("", encoding="utf-8")
+    claude_skills_dir.mkdir()
     with pytest.raises(HostSelectionError) as excinfo:
         verify_staged(claude_skills_dir)
     msg = str(excinfo.value)
     assert "pr/scripts/create_pr.py" in msg
-
-
-def test_verify_staged_missing_workitem_fetch_script_is_tolerated(
-    tmp_path: Path,
-) -> None:
-    """workitem-fetch/ is optional (Plan 3 deferred). Verify must NOT
-    require workitem-fetch/scripts/fetch.py -- only pr/scripts/create_pr.py.
-    """
-    claude_skills_dir = tmp_path / "claude_skills"
-    (claude_skills_dir / "pr" / "scripts").mkdir(parents=True)
-    (claude_skills_dir / "pr" / "scripts" / "create_pr.py").write_text("", encoding="utf-8")
-    verify_staged(claude_skills_dir)  # must not raise
 
 
 # --- prepare_host_environment ----------------------------------------
@@ -388,7 +332,6 @@ def test_prepare_host_environment_github_end_to_end(
     )
     assert result == "github"
     assert (claude_skills_dir / "pr" / "scripts" / "create_pr.py").is_file()
-    assert (claude_skills_dir / "workitem-fetch" / "scripts" / "fetch.py").is_file()
 
 
 def test_prepare_host_environment_ado_end_to_end(
@@ -481,6 +424,28 @@ def test_prepare_host_environment_uses_env_default_paths(
     result = prepare_host_environment()
     assert result == "github"
     assert (claude_skills_dir / "pr" / "SKILL.md").is_file()
+
+
+def test_workitem_fetch_no_longer_staged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After ralph-new lands, host_select must not stage workitem-fetch/.
+
+    Only pr/ ships to the Claude skills dir; ralph-add (the sole consumer
+    of workitem-fetch/) is retired in the same PR.
+    """
+    skills_root = tmp_path / "skills"
+    claude_skills_dir = tmp_path / "claude_skills"
+    _make_fake_skill_source(skills_root, "github")
+
+    monkeypatch.setenv("RALPH_GIT_HOST", "github")
+    monkeypatch.setenv("GH_TOKEN", "ghp_test")
+    monkeypatch.setenv("GH_OWNER", "emp3thy")
+
+    prepare_host_environment(
+        skills_root=skills_root,
+        claude_skills_dir=claude_skills_dir,
+    )
+    assert (claude_skills_dir / "pr").is_dir()
+    assert not (claude_skills_dir / "workitem-fetch").exists()
 
 
 def test_prepare_host_environment_kwargs_override_env(
