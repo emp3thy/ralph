@@ -29,7 +29,15 @@ PID="$(python -c "import json, sys; print(json.load(open(sys.argv[1]))['pid'])" 
 
 if kill -0 "$PID" 2>/dev/null; then
   kill "$PID"
+  # Python's default SIGTERM disposition terminates the process before
+  # it can run report.py's cleanup, so we write the sentinel from here.
+  # Without this, a second stop-server.sh invocation would skip the
+  # server-stopped guard and could signal a reused PID.
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STOPPED"
   echo "stop-server.sh: sent SIGTERM to pid $PID"
 else
+  # PID is gone — write the sentinel so a future invocation doesn't
+  # re-attempt the kill against whatever now owns that PID.
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STOPPED"
   echo "stop-server.sh: pid $PID not running"
 fi
