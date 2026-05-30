@@ -430,3 +430,55 @@ def test_render_page_falls_back_when_pbi_row_is_error(
 
     assert "PBI-BROKEN" in html
     assert "text-danger small" in html
+
+
+@pytest.fixture(scope="module")
+def server_mod() -> ModuleType:
+    # ``server.py`` itself loads its siblings (snapshot, git_walker, render)
+    # via importlib at import time, so this single ``_load`` call is enough.
+    return _load("ralph_report_server", "server.py")
+
+
+def test_server_serves_html_and_health(tmp_path: Path, server_mod: ModuleType) -> None:
+    import urllib.error
+    import urllib.request
+
+    repo = tmp_path / "repo"
+    queue_wt = repo / ".ralph-work" / "queue"
+    (queue_wt / ".ralph").mkdir(parents=True)
+    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
+        (queue_wt / ".ralph" / state).mkdir()
+    _write_pbi(queue_wt / ".ralph" / "current", "PBI-CUR")
+
+    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=60)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/") as resp:
+            body = resp.read().decode("utf-8")
+            assert resp.status == 200
+        assert "PBI-CUR" in body
+        assert body.startswith("<!DOCTYPE html>")
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/health") as health:
+            assert health.status == 200
+            payload = health.read().decode("utf-8")
+            assert '"ok": true' in payload
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/nope")
+        assert excinfo.value.code == 404
+    finally:
+        handle.shutdown()
+        handle.thread.join(timeout=5)
+
+
+def test_server_idle_timer_shuts_down(tmp_path: Path, server_mod: ModuleType) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".ralph-work" / "queue" / ".ralph").mkdir(parents=True)
+
+    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=1)
+    try:
+        # No request → idle timer fires after ~1s and shuts the server down.
+        handle.thread.join(timeout=5)
+        assert not handle.thread.is_alive()
+    finally:
+        handle.shutdown()
