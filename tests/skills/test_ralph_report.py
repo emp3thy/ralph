@@ -10,6 +10,7 @@ with a synthetic top-level name — the same pattern that
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -100,8 +101,82 @@ def test_snapshot_collects_meta_cycle_sentinels(tmp_path: Path, snapshot: Module
     assert [s.filename for s in snap.meta_cycle_sentinels] == ["META-cycle-20260527T221018Z.md"]
 
 
-def test_snapshot_raises_when_queue_worktree_absent(tmp_path: Path, snapshot: ModuleType) -> None:
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.stdout
+
+
+def _init_bare_with_queue(tmp_path: Path) -> Path:
+    """Seed a bare repo with a populated ``ralph-queue`` branch.
+
+    Returns the path to a fresh clone that has NO queue worktree, so
+    ``load_snapshot`` is forced through the git-show fallback.
+    """
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
+
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(bare), str(seed)], check=True)
+    _git(seed, "checkout", "-b", "ralph-queue")
+    inbox = seed / ".ralph" / "inbox" / "PBI-FALLBACK"
+    inbox.mkdir(parents=True)
+    (inbox / "PBI.md").write_text(
+        """---
+id: PBI-FALLBACK
+type: feature
+status: inbox
+severity: normal
+attempts: 0
+created_at: 2026-05-28T00:00:00+00:00
+updated_at: 2026-05-28T00:00:00+00:00
+target_repo: https://github.com/example/test
+---
+
+# Fallback PBI
+""",
+        encoding="utf-8",
+    )
+    (inbox / "HISTORY.md").write_text("<!-- history -->\n", encoding="utf-8")
+    blocked = seed / ".ralph" / "blocked"
+    blocked.mkdir(parents=True)
+    (blocked / "META-cycle-20260528T000000Z.md").write_text("sentinel\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed")
+    _git(seed, "push", "origin", "ralph-queue")
+
+    consumer = tmp_path / "consumer"
+    subprocess.run(["git", "clone", str(bare), str(consumer)], check=True)
+    _git(consumer, "fetch", "origin", "ralph-queue")
+    return consumer
+
+
+def test_snapshot_falls_back_to_git_show_when_no_queue_worktree(
+    tmp_path: Path, snapshot: ModuleType
+) -> None:
+    consumer = _init_bare_with_queue(tmp_path)
+    snap = snapshot.load_snapshot(repo_path=consumer)
+    assert [r.pbi_id for r in snap.inbox] == ["PBI-FALLBACK"]
+    assert [s.filename for s in snap.meta_cycle_sentinels] == ["META-cycle-20260528T000000Z.md"]
+    assert snap.current == []
+    assert snap.done == []
+
+
+def test_snapshot_returns_empty_when_neither_worktree_nor_queue_ref(
+    tmp_path: Path, snapshot: ModuleType
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    with pytest.raises(snapshot.SnapshotError):
-        snapshot.load_snapshot(repo_path=repo)
+    snap = snapshot.load_snapshot(repo_path=repo)
+    assert snap.current == []
+    assert snap.inbox == []
+    assert snap.pending_pr == []
+    assert snap.blocked == []
+    assert snap.done == []
+    assert snap.meta_cycle_sentinels == []
