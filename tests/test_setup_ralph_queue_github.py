@@ -721,6 +721,71 @@ def test_fresh_repo_seeds_main_before_reading_tip(monkeypatch):
     )
 
 
+def test_base_branch_and_branch_flags_thread_through(monkeypatch):
+    """When --base-branch master --branch wq is passed, the README PUT must
+    target branch=master, the protection PUT must hit /branches/master/protection,
+    and the README content must reference the configured queue branch ("wq")
+    rather than the hardcoded "ralph-queue".
+
+    Regression for BugBot findings PRRT_kwDOSnF2Ks6F2-J8 (MEDIUM: hardcoded main)
+    and PRRT_kwDOSnF2Ks6F2-J9 (LOW: hardcoded ralph-queue in README content).
+    """
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[tuple[str, dict[str, Any]]] = []
+    protected: list[str] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            # Pretend repo + refs exist; README + .ralph absent so PUTs fire.
+            if "/contents/README.md" in path or "/contents/.ralph" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append((path, json_body or {}))
+            if "/protection" in path:
+                protected.append(path)
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--base-branch", "master", "--branch", "wq"])
+    assert rc == 0
+
+    # README PUT goes to branch=master in the JSON body.
+    readme_put = next(body for path, body in puts if path.endswith("/contents/README.md"))
+    assert readme_put["branch"] == "master", (
+        f"README PUT should target branch=master, got {readme_put['branch']!r}"
+    )
+
+    # README content mentions the configured queue branch "wq", not "ralph-queue".
+    import base64
+
+    decoded = base64.b64decode(readme_put["content"]).decode("utf-8")
+    assert "`wq` branch" in decoded, f"README should mention 'wq branch', got: {decoded!r}"
+    assert "ralph-queue" not in decoded, (
+        f"README should not contain hardcoded 'ralph-queue', got: {decoded!r}"
+    )
+
+    # Protection PUT goes to /branches/master/protection (not /branches/main/).
+    assert any(p.endswith("/branches/master/protection") for p in protected), (
+        f"expected protection PUT on /branches/master/protection; got {protected}"
+    )
+    assert not any(p.endswith("/branches/main/protection") for p in protected), (
+        f"protection must not target /branches/main/protection when --base-branch=master; got {protected}"
+    )
+    # The queue branch protection also follows --branch.
+    assert any(p.endswith("/branches/wq/protection") for p in protected), (
+        f"expected protection PUT on /branches/wq/protection; got {protected}"
+    )
+
+
 def test_full_run_idempotent_on_second_invocation(monkeypatch):
     """Re-running on a fully-provisioned repo is a no-op (except protection re-applies)."""
     from scripts import setup_ralph_queue_github as setup

@@ -166,8 +166,8 @@ def _base_protection_payload() -> dict:
     }
 
 
-def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
-    """main branch protection: require PR (1 approval), no force-push, no deletion.
+def _apply_main_protection(client: GhClient, owner: str, repo: str, branch: str) -> None:
+    """Base-branch protection: require PR (1 approval), no force-push, no deletion.
 
     See the module docstring for the rationale on ``enforce_admins``
     (plan-level enforcement on personal repos) and ``restrictions``
@@ -180,7 +180,7 @@ def _apply_main_protection(client: GhClient, owner: str, repo: str) -> None:
         "required_approving_review_count": 1,
     }
     client.put(
-        f"/repos/{owner}/{repo}/branches/main/protection",
+        f"/repos/{owner}/{repo}/branches/{branch}/protection",
         json_body=payload,
     )
 
@@ -242,17 +242,25 @@ def _put_content(
     return True
 
 
-def _seed_main_readme(client: GhClient, owner: str, repo: str, *, dry_run: bool) -> bool:
+def _seed_main_readme(
+    client: GhClient,
+    owner: str,
+    repo: str,
+    *,
+    base_branch: str,
+    queue_branch: str,
+    dry_run: bool,
+) -> bool:
     readme = (
         f"# {repo}\n\n"
-        "Queue repo for ralph-executor. Queue state lives on the `ralph-queue` branch.\n"
+        f"Queue repo for ralph-executor. Queue state lives on the `{queue_branch}` branch.\n"
     )
     return _put_content(
         client,
         owner,
         repo,
         "README.md",
-        branch="main",
+        branch=base_branch,
         content_bytes=readme.encode("utf-8"),
         message="docs: seed README",
         dry_run=dry_run,
@@ -378,7 +386,14 @@ def main(argv: list[str] | None = None) -> int:
         # both the file and the branch in one commit. Seeding here also ensures
         # _read_branch_tip below finds a tip on the next line. Idempotent for
         # already-provisioned repos: _content_exists short-circuits.
-        _seed_main_readme(client, owner, args.repo, dry_run=args.dry_run)
+        _seed_main_readme(
+            client,
+            owner,
+            args.repo,
+            base_branch=args.base_branch,
+            queue_branch=args.branch,
+            dry_run=args.dry_run,
+        )
 
         print(f"reading tip of {args.base_branch}...", file=sys.stderr)
         base_sha = _read_branch_tip(client, owner, args.repo, args.base_branch)
@@ -455,12 +470,12 @@ def main(argv: list[str] | None = None) -> int:
             print("skipping branch protection (--no-protection)", file=sys.stderr)
         elif args.dry_run:
             print(
-                f"DRY-RUN would PUT protection on main and {args.branch}",
+                f"DRY-RUN would PUT protection on {args.base_branch} and {args.branch}",
                 file=sys.stderr,
             )
         else:
-            print("applying branch protection on main...", file=sys.stderr)
-            _apply_main_protection(client, owner, args.repo)
+            print(f"applying branch protection on {args.base_branch}...", file=sys.stderr)
+            _apply_main_protection(client, owner, args.repo, args.base_branch)
             print(
                 f"applying branch protection on {args.branch}...",
                 file=sys.stderr,
