@@ -350,8 +350,7 @@ def test_protection_403_upgrade_to_pro_continues_clean(
         MAIN_PROTECTION_URL,
         json={
             "message": (
-                "Upgrade to GitHub Pro or make this repository public to enable "
-                "this feature."
+                "Upgrade to GitHub Pro or make this repository public to enable this feature."
             ),
             "documentation_url": "https://docs.github.com/...",
             "status": "403",
