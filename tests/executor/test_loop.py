@@ -270,7 +270,7 @@ def test_iterate_once_skips_uncommitted_inbox_dir_then_claims_after_commit(
 ) -> None:
     """Regression: BUG-CLAIM-RACE-UNCOMMITTED-INBOX-DIR.
 
-    An external writer (operator running ``ralph-add``, a second ralph
+    An external writer (operator running ``ralph-new``, a second ralph
     session) wrote a new inbox PBI dir into the queue clone's working
     tree but has not yet committed it on the queue branch when the
     executor's next sweep tick fires. ``_list_pbis`` picks the dir up

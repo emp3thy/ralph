@@ -108,7 +108,7 @@ each one focused.
 | Information | Lives in | Why |
 |---|---|---|
 | "How Ralph works in general" — the loop, the read order, the safety lines, the PR shipping protocol | `prompt/PROMPT.md` | Stable across PBIs and services. |
-| "What this specific PBI is asking for" — context, acceptance criteria, the step-by-step plan | `.ralph/current/<PBI-id>/PBI.md` and `PLAN.md` (or BUG/REPRODUCE, or FEEDBACK) | Per-PBI. Written by humans (`ralph-add`) or by the sweep (feedback). |
+| "What this specific PBI is asking for" — context, acceptance criteria, the step-by-step plan | `.ralph/current/<PBI-id>/PBI.md` and `PLAN.md` (or BUG/REPRODUCE, or FEEDBACK) | Per-PBI. Written by humans (`ralph-new`) or by the sweep (feedback). |
 | "How THIS service works" — key modules, log format, common gotchas | `docs/INVESTIGATE.md` in the service repo | Per-service. Written by the service's engineers. |
 
 If you find yourself adding per-service content to `PROMPT.md`, stop

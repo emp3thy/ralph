@@ -1,12 +1,10 @@
 """``host_staging`` check for ``ralph-doctor``.
 
-Verifies the executor's ``host_select.py`` staging step produced skill
-directories that match the active ``RALPH_GIT_HOST``. Reads the YAML
-frontmatter of ``<skills_dir>/pr/SKILL.md`` and
-``<skills_dir>/workitem-fetch/SKILL.md`` and asserts the frontmatter
-``name:`` value equals ``pr-<host>`` and ``workitem-fetch-<host>``
-respectively. Either skill missing or mismatched → fail. This check is
-host-agnostic and always runs.
+Verifies the executor's ``host_select.py`` staging step produced the
+``pr`` skill directory matching the active ``RALPH_GIT_HOST``. Reads
+the YAML frontmatter of ``<skills_dir>/pr/SKILL.md`` and asserts the
+frontmatter ``name:`` value equals ``pr-<host>``. Missing or mismatched
+→ fail. This check is host-agnostic and always runs.
 
 Inlines a minimal YAML-frontmatter parser. Claude Code's frontmatter
 format is a strict scalar-only subset of YAML and ``host_staging`` only
@@ -59,7 +57,7 @@ else:
     CheckResult = _checks_pkg.CheckResult
 
 
-REQUIRED_STAGED_SKILLS: tuple[str, ...] = ("pr", "workitem-fetch")
+REQUIRED_STAGED_SKILLS: tuple[str, ...] = ("pr",)
 KNOWN_HOSTS: tuple[str, ...] = ("github", "ado")
 
 _NAME_LINE_RE = re.compile(r"^name\s*:\s*(.+?)\s*$")
@@ -173,11 +171,7 @@ def check(context: CheckContext) -> CheckResult:
         name="host_staging",
         severity="error",
         status="pass",
-        message=(
-            f"Staged 'pr' and 'workitem-fetch' skills match "
-            f"RALPH_GIT_HOST={git_host} (pr-{git_host}, "
-            f"workitem-fetch-{git_host})."
-        ),
+        message=(f"Staged 'pr' skill matches RALPH_GIT_HOST={git_host} (pr-{git_host})."),
         details={
             "checked": list(REQUIRED_STAGED_SKILLS),
             "git_host": git_host,

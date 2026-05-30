@@ -37,7 +37,7 @@ distinct pieces.
 
 | Repo / path | Role | Contents |
 |---|---|---|
-| `emp3thy/ralph` | Executor source. Built into the `ralph-executor` Python package and the container image. | `ralph_executor/` (loop, config, sweep, host_select), `skills/` (operator skills + staged `pr-<host>` / `workitem-fetch-<host>`), `scripts/setup_ralph_queue_github.py`, `Dockerfile`, `pyproject.toml`. |
+| `emp3thy/ralph` | Executor source. Built into the `ralph-executor` Python package and the container image. | `ralph_executor/` (loop, config, sweep, host_select), `skills/` (operator skills + staged `pr-<host>`), `scripts/setup_ralph_queue_github.py`, `Dockerfile`, `pyproject.toml`. |
 | `emp3thy/ralph-queue` | Queue state. Holds the PBI lifecycle on the `ralph-queue` branch. `main` is protected and used only for the README. | `.ralph/inbox/`, `.ralph/current/`, `.ralph/pending-pr/`, `.ralph/blocked/`, `.ralph/archive/`, `.ralph/done/`, plus an optional `.ralph/config.toml` for per-queue knobs. |
 | `~/ralph-workspaces/<env>/` | Per-machine workspace. Created by the executor at runtime; never checked into git. | `queue/` — clone of `ralph-queue` (always on `cfg.queue_branch`). `clones/<owner>-<name>/` — one clone per `target_repo` ralph has seen; each holds per-PBI worktrees under `.ralph-work/<PBI-id>/`. |
 
@@ -46,7 +46,7 @@ distinct pieces.
 | Component | Where it runs | What it touches |
 |---|---|---|
 | `ralph-executor` (loop) | Workstation, container, or pod. Single process per workspace. | Reads/writes `<workspace>/queue/.ralph/`. Clones each PBI's `target_repo` into `<workspace>/clones/...`. Spawns `claude -p` inside a per-PBI worktree. Pushes back to the queue repo and opens PRs on each target repo. |
-| Operator skills (`ralph-add`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-status`) | Operator's shell, any time. | Direct read/write on `<workspace>/queue/.ralph/`. **Never** touch any target repo. Commit + push to the queue repo (except `ralph-status`, which is read-only). |
+| Operator skills (`ralph-new`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-status`) | Operator's shell, any time. | Direct read/write on `<workspace>/queue/.ralph/`. **Never** touch any target repo. Commit + push to the queue repo (except `ralph-status`, which is read-only). |
 | `scripts/setup_ralph_queue_github.py` | Operator's shell, once per queue. | One-shot provisioning. Creates the GitHub repo (if absent), seeds `.ralph/` on `ralph-queue`, applies branch protection on `main` and `ralph-queue`. See `docs/runbooks/ralph-queue-setup.md`. |
 
 ## Data flow per iteration
@@ -98,7 +98,7 @@ The exact GitHub API payloads and PAT scopes are documented in
   executor baked into the image. At pod start it only needs to clone
   the queue repo, not the executor source. The two artefacts version
   independently.
-- **Stable operator surface.** `ralph-add`, `ralph-cancel`, etc. talk
+- **Stable operator surface.** `ralph-new`, `ralph-cancel`, etc. talk
   to the queue clone regardless of which executor build is running, so
   operator workflows do not break when the executor is rebuilt.
 

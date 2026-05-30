@@ -1,5 +1,5 @@
 {
-  "_comment": "Ralph v1 baked settings.json. DO NOT add interactive permissions here. dangerouslySkipPermissions is intentional and is paired with an explicit permissions.allow list for every tool Ralph might call. The Skill(pr) and Skill(workitem-fetch) entries are the canonical staged names; the Dockerfile copies the chosen host's skill directory into those canonical paths so this settings.json is host-agnostic.",
+  "_comment": "Ralph v1 baked settings.json. DO NOT add interactive permissions here. dangerouslySkipPermissions is intentional and is paired with an explicit permissions.allow list for every tool Ralph might call. The Skill(pr) entry is the canonical staged name; the Dockerfile copies the chosen host's pr skill directory into that canonical path so this settings.json is host-agnostic.",
   "dangerouslySkipPermissions": true,
   "model": "claude-opus-4-7",
   "permissions": {
@@ -15,8 +15,7 @@
       "WebFetch",
       "WebSearch",
       "Skill(pr)",
-      "Skill(workitem-fetch)",
-      "Skill(ralph-add)",
+      "Skill(ralph-new)",
       "Skill(ralph-status)",
       "Skill(ralph-cancel)",
       "Skill(ralph-promote)",

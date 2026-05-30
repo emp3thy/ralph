@@ -4,9 +4,8 @@ Lives at ``~/.ralph/config.toml`` and holds *per-machine* knobs:
 
   ``ralph_home``         -- directory under which every per-repo ralph
                             workspace lives (referenced by ``--workspace NAME``)
-  ``skills_root``        -- source ``skills/`` tree containing
-                            ``pr-<host>/`` and ``workitem-fetch-<host>/``
-  ``claude_skills_dir``  -- where staged ``pr/`` + ``workitem-fetch/`` end up
+  ``skills_root``        -- source ``skills/`` tree containing ``pr-<host>/``
+  ``claude_skills_dir``  -- where staged ``pr/`` ends up
                             (defaults to ``~/.claude/skills``)
 
 Written by ``ralph-executor init`` and read at runtime by the workspace

@@ -53,13 +53,13 @@ def test_dockerfile_fails_on_empty_ralph_git_host(parser: DockerfileParser) -> N
 
 def test_dockerfile_copies_host_specific_skills(parser: DockerfileParser) -> None:
     contents = DOCKERFILE.read_text(encoding="utf-8")
-    # Each host's skills must be copied twice — once to /opt/ralph/skills
+    # The pr skill must be copied twice — once to /opt/ralph/skills
     # (audit) and once to /home/ralph/.claude/skills (canonical name,
     # under the ralph user's home so the runtime UID can traverse).
     assert "skills/pr-${RALPH_GIT_HOST}/" in contents
-    assert "skills/workitem-fetch-${RALPH_GIT_HOST}/" in contents
     assert "/home/ralph/.claude/skills/pr/" in contents
-    assert "/home/ralph/.claude/skills/workitem-fetch/" in contents
+    # workitem-fetch retired by ralph-new; must not be staged.
+    assert "workitem-fetch" not in contents
 
 
 def test_runtime_image_runs_as_non_root(parser: DockerfileParser) -> None:

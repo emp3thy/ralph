@@ -2,7 +2,7 @@
 
 The queue repo holds your ralph queue state: PBIs in
 `.ralph/{inbox,current,pending-pr,blocked,archive,done}/`. The executor and
-operator skills (`ralph-add`, `ralph-cancel`, `ralph-promote`, `ralph-triage`,
+operator skills (`ralph-new`, `ralph-cancel`, `ralph-promote`, `ralph-triage`,
 `ralph-status`) read and write this repo on a working branch (`ralph-queue`
 by default), while `main` stays protected and clean.
 
@@ -87,7 +87,7 @@ The `queue_branch` value resolves in this order (highest precedence first):
 5. The hard-coded default `"ralph-queue"`
    (`DEFAULT_QUEUE_BRANCH` in `ralph_executor/config.py`).
 
-Operator skills (`ralph-add`, `ralph-cancel`, `ralph-promote`,
+Operator skills (`ralph-new`, `ralph-cancel`, `ralph-promote`,
 `ralph-triage`, `ralph-status`) only read steps 1, 4, and 5 — they
 intentionally bypass `RALPH_QUEUE_BRANCH` and the per-repo TOML so the
 operator surface stays on stable rails (skills run outside an executor

@@ -2,11 +2,11 @@
 
 Asserts that ``settings.json["permissions"]["allow"]`` covers the seven
 tools the executor needs (``Bash``, ``Edit``, ``Write``, ``Read``,
-``Grep``, ``Glob``, ``Skill``) and the two host-pure skills the executor
-stages (``pr``, ``workitem-fetch``). An entry covers a tool if it is
-the global wildcard ``*``, exactly the tool name, or ``Tool(...)`` with
-any inner pattern. A skill is covered by ``*``, the bare ``Skill``
-key, ``Skill(*)``, or ``Skill(<skill_name>)``.
+``Grep``, ``Glob``, ``Skill``) and the host-pure ``pr`` skill the
+executor stages. An entry covers a tool if it is the global wildcard
+``*``, exactly the tool name, or ``Tool(...)`` with any inner pattern.
+A skill is covered by ``*``, the bare ``Skill`` key, ``Skill(*)``, or
+``Skill(<skill_name>)``.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ REQUIRED_TOOLS: tuple[str, ...] = (
     "Glob",
     "Skill",
 )
-REQUIRED_SKILLS: tuple[str, ...] = ("pr", "workitem-fetch")
+REQUIRED_SKILLS: tuple[str, ...] = ("pr",)
 
 
 def _load_allow_list(path: Path) -> list[str] | None:

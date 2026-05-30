@@ -37,7 +37,7 @@ data:
 # The data MUST match /etc/ralph/.claude/settings.json in the
 # image. Plan 12 task "Bake settings.json" creates both from the
 # same source. This ConfigMap is host-agnostic — it uses the
-# canonical Skill(pr) and Skill(workitem-fetch) entries.
+# canonical Skill(pr) entry.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -49,7 +49,7 @@ metadata:
 data:
   settings.json: |
     {
-      "_comment": "Mirror of /etc/ralph/.claude/settings.json baked into the image. Host-agnostic — uses canonical Skill(pr)/Skill(workitem-fetch) entries.",
+      "_comment": "Mirror of /etc/ralph/.claude/settings.json baked into the image. Host-agnostic — uses canonical Skill(pr) entry.",
       "dangerouslySkipPermissions": true,
       "model": "claude-opus-4-7",
       "permissions": {
@@ -65,8 +65,7 @@ data:
           "WebFetch",
           "WebSearch",
           "Skill(pr)",
-          "Skill(workitem-fetch)",
-          "Skill(ralph-add)",
+          "Skill(ralph-new)",
           "Skill(ralph-status)",
           "Skill(ralph-cancel)",
           "Skill(ralph-promote)",

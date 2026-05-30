@@ -8,17 +8,17 @@ there is no host-agnostic image.
 
 **Phase 1 — GitHub (at home / dogfooding):**
   Use this if Ralph will operate on GitHub repos. The image tag
-  will be `ralph-executor:<ver>-github`. The skills baked in are
-  `pr-github` and `workitem-fetch-github`. The auth secrets you
-  need are `ANTHROPIC_API_KEY`, `GH_TOKEN`, `GH_OWNER`. Continue
-  to the [Phase 1 path](#phase-1--github-deployment) below.
+  will be `ralph-executor:<ver>-github`. The skill baked in is
+  `pr-github`. The auth secrets you need are `ANTHROPIC_API_KEY`,
+  `GH_TOKEN`, `GH_OWNER`. Continue to the
+  [Phase 1 path](#phase-1--github-deployment) below.
 
 **Phase 2 — ADO (at work / production):**
   Use this if Ralph will operate on Azure DevOps repos. The image
-  tag will be `ralph-executor:<ver>-ado`. The skills baked in are
-  `pr-ado` and `workitem-fetch-ado`. The auth secrets you need
-  are `ANTHROPIC_API_KEY`, `ADO_PAT`, `ADO_ORG_URL`, `ADO_PROJECT`.
-  Continue to the [Phase 2 path](#phase-2--ado-deployment) below.
+  tag will be `ralph-executor:<ver>-ado`. The skill baked in is
+  `pr-ado`. The auth secrets you need are `ANTHROPIC_API_KEY`,
+  `ADO_PAT`, `ADO_ORG_URL`, `ADO_PROJECT`. Continue to the
+  [Phase 2 path](#phase-2--ado-deployment) below.
 
 Both phases share the SAME Dockerfile, manifests, and runbook
 steps — only the `--host` build arg and the auth secret keys
@@ -59,9 +59,8 @@ Recommend Deployment for the first ROSA rollout.
 ## Phase 1 — GitHub deployment
 
 This is the "at home" path. It is the recommended first
-deployment because the Phase 1 skills (`pr-github`,
-`workitem-fetch-github`) are delivered by Plans 5 and 3 and
-are immediately available.
+deployment because the Phase 1 skill (`pr-github`) is delivered
+by Plan 5 and is immediately available.
 
 ### Phase 1: building the image
 
@@ -147,9 +146,8 @@ Common failures:
 
 ## Phase 2 — ADO deployment
 
-This is the "at work" path. It requires Plans 2/3/5 Phase 2 to
-have completed (`pr-ado` and `workitem-fetch-ado` skill
-directories must exist on disk).
+This is the "at work" path. It requires Plans 2/5 Phase 2 to
+have completed (`pr-ado` skill directory must exist on disk).
 
 ### Phase 2: building the image
 

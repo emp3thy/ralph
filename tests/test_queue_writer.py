@@ -1,8 +1,8 @@
 """Unit tests for the shared queue-writer helpers.
 
-These helpers back the four supervisor skills (``ralph-add``,
-``ralph-cancel``, ``ralph-promote``, ``ralph-triage``) and own all
-filesystem + git mutations on the queue clone's ``main`` branch.
+These helpers back the supervisor skills (``ralph-cancel``,
+``ralph-promote``, ``ralph-triage``) and own all filesystem + git
+mutations on the queue clone's ``main`` branch.
 
 Every test builds a local bare repo + working clone in ``tmp_path`` so
 pushes are real (to a real local remote) and there is no network.
