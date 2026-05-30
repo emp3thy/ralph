@@ -459,8 +459,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         return _fail(
-            f"git command failed (exit {exc.returncode}): "
-            f"{' '.join(exc.cmd)}\n{stderr}" if stderr
+            f"git command failed (exit {exc.returncode}): {' '.join(exc.cmd)}\n{stderr}"
+            if stderr
             else f"git command failed (exit {exc.returncode}): {' '.join(exc.cmd)}"
         )
 
