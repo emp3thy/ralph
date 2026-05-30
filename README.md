@@ -71,19 +71,28 @@ You will be prompted for the following values:
 | `queue_repo` | HTTPS URL of the queue repo holding `.ralph/` state | `https://github.com/emp3thy/ralph-queue` |
 | `queue_branch` | Branch on `queue_repo` that holds `.ralph/` state. Default `ralph-queue`. Override with TOML, `RALPH_QUEUE_BRANCH`, or `--queue-branch`. | `ralph-queue` |
 
-For scripted setup:
+`init` only accepts two flags: `--ralph-home PATH` (skip the ralph_home
+prompt) and `--yes` (non-interactive: OS default for `ralph_home`, default
+`queue_branch`, and SKIP the `queue_repo` prompt with a warning — there is
+no sensible default to write). All other keys are collected via interactive
+prompts or written manually to the TOML.
+
+For fully scripted setup (CI, pods), write `~/.ralph/config.toml`
+directly instead:
 
 ```bash
-uv run ralph-executor init \
-  --ralph-home /opt/ralph \
-  --workspace-root /opt/ralph/workspaces \
-  --queue-repo https://github.com/emp3thy/ralph-queue \
-  --yes
+mkdir -p ~/.ralph
+cat > ~/.ralph/config.toml <<'EOF'
+ralph_home = "/opt/ralph"
+workspace_root = "/opt/ralph/workspaces"
+queue_repo = "https://github.com/emp3thy/ralph-queue"
+queue_branch = "ralph-queue"
+EOF
 ```
 
-`init` smoke-tests the queue URL by attempting a clone. If your network
-or auth is flaky it will print a warning but still write the config —
-the executor will retry on its next iteration.
+The interactive `init` smoke-tests the queue URL by attempting a clone.
+If your network or auth is flaky it will print a warning but still write
+the config — the executor will retry on its next iteration.
 
 ## Working the queue
 
