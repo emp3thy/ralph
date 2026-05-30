@@ -57,12 +57,19 @@ One command:
 
 ```bash
 GH_TOKEN=<token> GH_OWNER=<owner> \
-    uv run python scripts/setup_ralph_queue_github.py --repo ralph-queue
+    uv run python -m scripts.setup_ralph_queue_github --repo ralph-queue
 ```
 
-This creates the GitHub repository (private), seeds `.ralph/` on the
-`ralph-queue` branch, and applies branch protection on both `main` and
-`ralph-queue`. Idempotent — re-running is a no-op.
+This creates the GitHub repository (private, under the user named in
+`$GH_OWNER`; pass `--org <name>` to create under an organisation
+instead), seeds `.ralph/` on the `ralph-queue` branch, and applies
+branch protection on both `main` and `ralph-queue`. Idempotent —
+re-running is a no-op.
+
+> **GitHub Free + private repos:** branch protection on a private repo
+> requires GitHub Pro / Team / Enterprise. On Free, the script logs a
+> warning, leaves the repo unprotected, and exits 0; pass
+> `--no-protection` explicitly to suppress the warning.
 
 The full deep dive (PAT scopes, override precedence, troubleshooting
 table, dry-run mode, Azure DevOps Phase 2) lives in
@@ -89,6 +96,41 @@ uv run ralph-executor init --ralph-home /opt/ralph --yes
 queue prompt and the branch prompt — `queue_branch` falls back to
 `"ralph-queue"`, and `queue_repo` must be added manually to
 `~/.ralph/config.toml` afterwards.
+
+## 4a. Configure git host
+
+The executor needs `git_host` plus host-specific auth before it will
+start. Two mandatory pieces:
+
+1. Set `git_host` (and on GitHub, `gh_owner`) in
+   `<repo>/.ralph/config.toml`. The `<repo>` is the directory the
+   executor is invoked from (or pointed at via `--repo` / `--workspace`).
+   The file is git-ignored by default, so this is a per-clone
+   per-machine knob:
+
+   ```toml
+   # <repo>/.ralph/config.toml
+   git_host = "github"
+   gh_owner = "<your-github-username-or-org>"
+   ```
+
+   Alternatively export `RALPH_GIT_HOST=github` and `GH_OWNER=<owner>`
+   in the executor's environment.
+
+2. Export the host auth token in the same shell that runs the executor:
+
+   ```bash
+   export GH_TOKEN="$(gh auth token)"   # GitHub
+   # or
+   export ADO_PAT=<personal-access-token>   # Azure DevOps
+   ```
+
+   `GH_TOKEN` / `ADO_PAT` are env-only by policy — never write them to
+   TOML.
+
+Without these the executor exits with
+`error: git host is required but unset...` or
+`error: git_host=github but required auth value(s) missing or blank: GH_TOKEN`.
 
 ## 5. Config reference: `~/.ralph/config.toml`
 

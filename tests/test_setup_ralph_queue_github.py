@@ -333,6 +333,65 @@ def test_protection_payload_shape(env: None, capsys: pytest.CaptureFixture[str])
 
 
 @responses.activate
+def test_protection_403_upgrade_to_pro_continues_clean(
+    env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub Free + private repo: protection PUT returns 403 with
+    ``Upgrade to GitHub Pro`` — script must warn, set protection_applied=false,
+    and exit 0. Repo + branch + seed steps already succeeded; rolling those
+    back would be worse than leaving the repo unprotected."""
+    _register_repo_lookup()
+    _register_main_tip()
+    _register_queue_branch_absent()
+    _register_queue_branch_create()
+    _register_seed_endpoints()
+    responses.add(
+        responses.PUT,
+        MAIN_PROTECTION_URL,
+        json={
+            "message": (
+                "Upgrade to GitHub Pro or make this repository public to enable "
+                "this feature."
+            ),
+            "documentation_url": "https://docs.github.com/...",
+            "status": "403",
+        },
+        status=403,
+    )
+
+    exit_code = setup_ralph_queue_github.main(["--repo", REPO])
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["protection_applied"] is False
+    assert "Upgrade to GitHub Pro" in captured.err or "branch protection" in captured.err.lower()
+
+
+@responses.activate
+def test_protection_403_other_message_still_fails(
+    env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Any 403 that is NOT the Pro-upgrade message stays fatal. PAT-scope and
+    ACL errors must still surface so the operator hits the existing
+    troubleshooting paths."""
+    _register_repo_lookup()
+    _register_main_tip()
+    _register_queue_branch_absent()
+    _register_queue_branch_create()
+    _register_seed_endpoints()
+    responses.add(
+        responses.PUT,
+        MAIN_PROTECTION_URL,
+        json={"message": "Resource not accessible by integration"},
+        status=403,
+    )
+
+    exit_code = setup_ralph_queue_github.main(["--repo", REPO])
+    assert exit_code == 2
+
+
+@responses.activate
 def test_network_error_exits_nonzero(env: None, capsys: pytest.CaptureFixture[str]) -> None:
     """Network-level errors (ConnectionError, Timeout) must produce a clean
     exit code 2, not an unhandled traceback."""
