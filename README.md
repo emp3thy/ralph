@@ -120,18 +120,21 @@ Filters:
 - `--target-repo <url>` — narrow to one target.
 - `--json` — machine-readable.
 
-### Add a PBI: `ralph-add`
+### Add a PBI: `ralph-new`
 
 ```bash
-uv run python skills/ralph-add/scripts/add.py \
+uv run python skills/ralph-new/scripts/new.py \
   --target-repo https://github.com/emp3thy/svc-auth \
-  --pbi-id WI-1234 \
   --title "Add /healthz endpoint" \
   --type feature \
   --severity normal
 ```
 
-The skill writes the PBI to the queue clone's `inbox/` and pushes.
+The skill slugifies the title to a PBI id, writes the canonical PBI
+directory shape into the queue clone's `inbox/`, commits
+`chore(queue): add <id>`, and pushes. Interactive prompts gather any
+missing required fields unless `--non-interactive` is passed. See
+`docs/runbooks/ralph-setup.md` for the full flag table.
 
 ### Cancel a PBI: `ralph-cancel`
 

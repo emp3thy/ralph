@@ -141,8 +141,8 @@ Per-machine knobs. Source: `ralph_executor/user_config.py`. Written by
 |---|---|---|---|---|---|
 | `ralph_home` | string (path) | no | — | `$RALPH_HOME` | Root directory used to resolve `--workspace NAME` to `$RALPH_HOME/NAME`. Stored as a string; `~` is expanded. |
 | `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue/`. Also readable from the per-queue TOML — the executor reads either. |
-| `skills_root` | string (path) | no | source-checkout default | `$RALPH_SKILLS_ROOT` | Source `skills/` tree used by `host_select.prepare_host_environment` to find `pr-<host>/` and `workitem-fetch-<host>/`. |
-| `claude_skills_dir` | string (path) | no | `~/.claude/skills` | `$RALPH_CLAUDE_SKILLS_DIR` | Destination directory where staged `pr/` and `workitem-fetch/` end up for the spawned Claude subprocess. |
+| `skills_root` | string (path) | no | source-checkout default | `$RALPH_SKILLS_ROOT` | Source `skills/` tree used by `host_select.prepare_host_environment` to find `pr-<host>/`. |
+| `claude_skills_dir` | string (path) | no | `~/.claude/skills` | `$RALPH_CLAUDE_SKILLS_DIR` | Destination directory where staged `pr/` ends up for the spawned Claude subprocess. |
 | `queue_repo` | string (URL) | yes (or set per-repo TOML / `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue/`. |
 | `queue_branch` | string | no | `ralph-queue` | `$RALPH_QUEUE_BRANCH` (executor only — skills do not read this env) | Branch on `queue_repo` that holds `.ralph/` state. |
 
@@ -288,24 +288,35 @@ and `--dry-run`. Operator skills read `queue_branch` from
 `$RALPH_QUEUE_BRANCH` and the per-repo TOML so the operator surface
 stays on stable rails.
 
-### `ralph-add`
+### `ralph-new`
 
-`skills/ralph-add/scripts/add.py`. Host-agnostic orchestrator: fetches
-a work item via the staged `workitem-fetch/` skill and submits it as a
-PBI to the queue clone.
+`skills/ralph-new/scripts/new.py`. The single submission surface for
+PBIs — supersedes `ralph-add`. Authors a well-formed PBI directly into
+the queue with no GitHub-issue round-trip.
 
 | Flag | Required | Description |
 |---|---|---|
-| `--work-item ID` | yes | Work item id (host-specific). |
-| `--target-repo URL` | yes | HTTPS URL of the repo this PBI applies to. Written to `target_repo` frontmatter. Must be `https://<host>/<owner>/<name>`. |
-| `--severity {critical,high,normal,low}` | no | Override severity returned by the fetcher. |
-| `--expand-children` | no | Write one PBI per child instead of one for the parent. |
-| `--via-mcp` | no | Reserved for v2. Raises `NotImplementedError` in v1. |
+| `--title TEXT` | yes (prompt or flag) | PBI title; slugified to PBI id. |
+| `--type {bug,feature}` | yes | PBI type. |
+| `--severity {critical,high,normal,low}` | no (default `normal`) | Triage lane. |
+| `--target-repo URL` | yes | HTTPS owner/name URL of the target service repo. |
+| `--depends-on ID` | no (repeatable) | Validated for syntax AND existence in the queue. |
+| `--parent-id ID` | no | Epic link. |
+| `--id SLUG` | no | Override auto-generated slug. |
+| `--spec-path PATH` | no | Feature: docs/superpowers/specs path. |
+| `--plan-path PATH` | no | Feature: docs/superpowers/plans path; blank renders TODO stub. |
+| `--body-file PATH` | no | Read entry-file body from file; skips per-section prompts. |
+| `--reproduce-file PATH` | no | Bug: read REPRODUCE.md body from file. |
+| `--non-interactive` | no | Refuse prompts; missing required field exits 2. |
 | `--no-push` | no | Commit but do not push. |
-| `--dry-run` | no | Compute without mutating. |
-| `--workspace PATH` | no | Override `workspace_root` from `~/.ralph/config.toml`. |
-| `--queue-repo URL` | no | Override `queue_repo` from `~/.ralph/config.toml`. |
-| `--queue-branch BRANCH` | no | Override `queue_branch` from `~/.ralph/config.toml`. |
+| `--dry-run` | no | Print envelope; no clone / write / commit. |
+| `--check-depends-on` | no | Under `--dry-run`, force clone for existence check. |
+| `--workspace PATH` | no | Override `workspace_root`. |
+| `--queue-repo URL` | no | Override `queue_repo`. |
+| `--queue-branch BRANCH` | no | Override `queue_branch`. |
+
+The full design lives at
+[`docs/superpowers/specs/2026-05-30-ralph-new-design.md`](../superpowers/specs/2026-05-30-ralph-new-design.md).
 
 ### `ralph-cancel`
 
@@ -395,9 +406,13 @@ end-to-end.
 1. Add an inbox PBI for some target repo you control:
 
    ```bash
-   uv run python skills/ralph-add/scripts/add.py \
-       --work-item WI-1 \
-       --target-repo https://github.com/<owner>/<repo>
+   uv run python skills/ralph-new/scripts/new.py \
+       --non-interactive \
+       --title "Smoke test PBI" \
+       --type bug \
+       --target-repo https://github.com/<owner>/<repo> \
+       --body-file /tmp/smoke-body.md \
+       --reproduce-file /tmp/smoke-repro.md
    ```
 
 2. Confirm it lands in the queue:
@@ -406,7 +421,7 @@ end-to-end.
    uv run python skills/ralph-status/scripts/status.py
    ```
 
-   You should see `STATE = inbox` for `WI-1`.
+   You should see `STATE = inbox` for `SMOKE-TEST-PBI`.
 
 3. Run the executor for one iteration:
 

@@ -13,7 +13,7 @@ reads (never writes) the queue state from the **single queue clone** at
 `<workspace_root>/queue/` and renders it as a terminal-friendly table
 grouped by the PBI's `target_repo` field. The data source is the
 `.ralph/` directory on the queue clone's `main` branch — exactly the
-same tree `ralph-add`, `ralph-cancel`, `ralph-promote`, and
+same tree `ralph-new`, `ralph-cancel`, `ralph-promote`, and
 `ralph-triage` write to.
 
 For each invocation, the skill:
