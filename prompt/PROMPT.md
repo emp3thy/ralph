@@ -43,10 +43,11 @@ worktree.
 The `type` frontmatter field on the PBI entry file dictates which files
 to read and in what order.
 
-Every PBI's frontmatter also carries a `target_repo` field — an HTTPS
-URL of the repo the PBI applies to (e.g.
-`https://github.com/emp3thy/ralph`). This is informational metadata for
-now; the loop does not yet act on it.
+Every PBI's frontmatter MUST carry a `target_repo` field — an HTTPS URL
+of the repo this PBI applies to (e.g. `https://github.com/emp3thy/ralph`).
+This is the canonical source of truth for which repo to operate on. The
+executor clones `target_repo` into the multi-repo workspace at claim time;
+your current working directory for this iteration is that clone.
 
 **All PBI types — always read first, in this order:**
 
