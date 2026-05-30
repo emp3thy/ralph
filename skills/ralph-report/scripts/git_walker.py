@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -69,7 +69,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], EventKind], ...] = (
 
 _META_CYCLE_RE = re.compile(r"^\.ralph/blocked/META-cycle-[^/]+\.md$")
 _SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
-_EPOCH = datetime.fromtimestamp(0)
+_EPOCH = datetime.fromtimestamp(0, tz=UTC)
 
 
 def parse_commit_subject(subject: str) -> TimelineEvent | None:
