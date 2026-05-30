@@ -548,6 +548,12 @@ def spawn_claude_p(
     # configured for ralph itself. None in legacy single-target mode.
     if pbi.target_info is not None:
         env["GH_OWNER"] = pbi.target_info.owner
+        # Per-PBI better-memory project scope so the subagent's observations
+        # land in the target repo's project rather than the cwd-derived
+        # worktree path. Requires BETTER_MEMORY_PROJECT support in
+        # better-memory's project resolver (see better-memory PR
+        # memory-project-env-override).
+        env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout
