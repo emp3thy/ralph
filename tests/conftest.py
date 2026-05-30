@@ -33,9 +33,7 @@ def queue_env(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     bare = tmp_path / "queue.git"
     seed = tmp_path / "queue-seed"
     workspace = tmp_path / "ws"
-    subprocess.run(
-        ["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True
-    )
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
     subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
     _git(seed, "config", "user.email", "seed@example.com")
     _git(seed, "config", "user.name", "Seed")

@@ -631,9 +631,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Sync TOML-sourced project identifiers / alerting into the process
     # env BEFORE host_select runs. host_select.verify_auth_env and the
-    # pr-<host> + workitem-fetch-<host> skills all read these by name
-    # from the environment; this single bridge lets operators write
-    # them once in `.ralph/config.toml` instead of exporting per shell.
+    # pr-<host> skill read these by name from the environment; this
+    # single bridge lets operators write them once in
+    # `.ralph/config.toml` instead of exporting per shell.
     # Skips empty values so existing env values aren't clobbered with "".
     for name, value in (
         ("GH_OWNER", cfg.gh_owner),

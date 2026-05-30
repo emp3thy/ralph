@@ -72,7 +72,6 @@ _GOOD_ALLOW: list[str] = [
     "Grep(*)",
     "Glob(*)",
     "Skill(pr)",
-    "Skill(workitem-fetch)",
     "Skill(ralph-doctor)",
 ]
 
@@ -198,17 +197,11 @@ def _build_skills_dir(
 
     other = "ado" if host == "github" else "github"
     pr_name = f"pr-{other}" if stage_mismatch else f"pr-{host}"
-    wif_name = f"workitem-fetch-{host}"
 
     if missing_skill != "pr":
         pr_dir = skills_dir / "pr"
         pr_dir.mkdir(parents=True, exist_ok=True)
         (pr_dir / "SKILL.md").write_text(_frontmatter(pr_name), encoding="utf-8")
-
-    if missing_skill != "workitem-fetch":
-        wif_dir = skills_dir / "workitem-fetch"
-        wif_dir.mkdir(parents=True, exist_ok=True)
-        (wif_dir / "SKILL.md").write_text(_frontmatter(wif_name), encoding="utf-8")
 
     if include_ask_user_question:
         ask_dir = skills_dir / "asks-questions"
@@ -670,7 +663,6 @@ class TestPermissionsCheck:
                         "Grep(*)",
                         "Glob(*)",
                         "Skill(pr)",
-                        "Skill(workitem-fetch)",
                     ]
                 },
                 "hooks": {},
@@ -821,7 +813,7 @@ class TestSkillsCheck:
         _write_settings(settings, GOOD_SETTINGS)
         skills_dir = _build_skills_dir(tmp_path, host="github")
         # Copy the actual ralph-doctor skill alongside the synthetic
-        # pr/workitem-fetch dirs.
+        # pr dir.
         shutil.copytree(REPO_ROOT / "skills" / "ralph-doctor", skills_dir / "ralph-doctor")
         ctx = _make_context(settings, skills_dir)
         result = mod.check(ctx)
@@ -963,7 +955,6 @@ class TestHostStagingCheck:
         result = mod.check(ctx)
         assert result.status == "pass"
         assert "pr-github" in result.message
-        assert "workitem-fetch-github" in result.message
 
     def test_ado_staged_correctly_passes(self, tmp_path: Path) -> None:
         mod = _load_check_module("host_staging")
@@ -997,19 +988,6 @@ class TestHostStagingCheck:
         assert result.status == "fail"
         assert "pr/SKILL.md" in result.message or "pr\\SKILL.md" in result.message
         assert "not found" in result.message.lower()
-
-    def test_missing_workitem_fetch_skill_fails(self, tmp_path: Path) -> None:
-        mod = _load_check_module("host_staging")
-        settings = tmp_path / "settings.json"
-        _write_settings(settings, GOOD_SETTINGS)
-        skills_dir = _build_skills_dir(tmp_path, host="github", missing_skill="workitem-fetch")
-        ctx = _make_context(settings, skills_dir, git_host="github")
-        result = mod.check(ctx)
-        assert result.status == "fail"
-        assert (
-            "workitem-fetch/SKILL.md" in result.message
-            or "workitem-fetch\\SKILL.md" in result.message
-        )
 
     def test_malformed_frontmatter_fails(self, tmp_path: Path) -> None:
         mod = _load_check_module("host_staging")

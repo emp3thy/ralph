@@ -41,8 +41,7 @@ def test_permissions_allow_lists_every_required_tool(settings: dict[str, Any]) -
         "Task",
         "TodoWrite",
         "Skill(pr)",
-        "Skill(workitem-fetch)",
-        "Skill(ralph-add)",
+        "Skill(ralph-new)",
         "Skill(ralph-status)",
         "Skill(ralph-cancel)",
         "Skill(ralph-promote)",
@@ -53,16 +52,18 @@ def test_permissions_allow_lists_every_required_tool(settings: dict[str, Any]) -
     assert not missing, f"missing permissions.allow entries: {missing}"
 
 
-def test_pr_and_workitem_fetch_use_canonical_names(settings: dict[str, Any]) -> None:
-    """The image bakes the host-specific skills into canonical
-    paths (skills/pr/, skills/workitem-fetch/), so settings.json
-    MUST use the canonical names not the host-suffixed ones."""
+def test_pr_uses_canonical_name(settings: dict[str, Any]) -> None:
+    """The image bakes the host-specific pr skill into the canonical
+    path (skills/pr/), so settings.json MUST use the canonical name
+    not the host-suffixed one. workitem-fetch is retired by ralph-new
+    so its allow entry must not appear."""
     perms = settings.get("permissions", {})
     allow = set(perms.get("allow", []))
     assert "Skill(pr)" in allow
-    assert "Skill(workitem-fetch)" in allow
     assert "Skill(pr-github)" not in allow
     assert "Skill(pr-ado)" not in allow
+    assert "Skill(workitem-fetch)" not in allow
+    assert "Skill(ralph-add)" not in allow
 
 
 def test_deny_list_blocks_obvious_footguns(settings: dict[str, Any]) -> None:
