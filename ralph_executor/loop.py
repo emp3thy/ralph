@@ -300,7 +300,7 @@ def _persist_iteration_writes(
         # origin/main instead of failing the push outright. The
         # caller (iterate_once) catches PushRebaseConflict and converts
         # it to a recoverable LoopResult so the loop keeps running.
-        git_ops.push_with_rebase(queue_repo, remote="origin", branch="main")
+        git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
         if event_log is not None:
             files = git_ops.diff_names(queue_repo, head_before, head_after)
             if files:
@@ -316,8 +316,12 @@ def _persist_iteration_writes(
 
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
-    log.debug("refreshing queue clone for %s", cfg.queue_repo)
-    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo)
+    log.debug(
+        "refreshing queue clone for %s (branch=%s)",
+        cfg.queue_repo,
+        cfg.queue_branch,
+    )
+    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo, cfg.queue_branch)
 
 
 def _feature_branch_name(pbi: PBI) -> str:

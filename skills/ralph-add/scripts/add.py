@@ -37,6 +37,7 @@ from scripts.queue_writer import (  # noqa: E402
     acquire_queue_clone,
     commit_paths,
     push,
+    resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
 )
@@ -142,6 +143,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--queue-repo",
         help="Override queue_repo from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-branch",
+        metavar="BRANCH",
+        help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     return parser.parse_args(argv)
 
@@ -455,9 +461,10 @@ def main(argv: list[str] | None = None) -> int:
 
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_branch = resolve_queue_branch(args.queue_branch)
 
         if not args.dry_run:
-            queue_clone = acquire_queue_clone(workspace_root, queue_repo)
+            queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
         else:
             # Dry-run still needs a path to anchor reported pbi_path against,
             # but must NOT touch the network or filesystem. Use a synthetic
@@ -551,8 +558,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         if not args.dry_run and not args.no_push:
-            print("pushing main to origin...", file=sys.stderr)
-            push(queue_clone, "main")
+            print(f"pushing {queue_branch} to origin...", file=sys.stderr)
+            push(queue_clone, queue_branch)
             pushed = True
 
         assert first_pbi_for_report is not None

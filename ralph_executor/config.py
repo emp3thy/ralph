@@ -40,6 +40,7 @@ from ralph_executor.url_utils import parse_target_repo
 # tomllib.load returns dict[str, Any] for any parseable TOML document.
 
 DEFAULT_MAIN_BRANCH = "main"
+DEFAULT_QUEUE_BRANCH = "ralph-queue"
 # Counts only FAILED iterations (stuck / error) — partial is multi-step
 # progress and doesn't decrement the budget. 20 gives a long plan plenty
 # of room to surface a genuinely stuck loop without false-tripping.
@@ -126,6 +127,10 @@ _TOML_KNOWN_KEYS = frozenset(
         # executor clones it into ``<workspace_root>/queue/`` and reads /
         # writes ``.ralph/`` from that clone.
         "queue_repo",
+        # Branch on the queue repo that holds .ralph/ state. Default
+        # "ralph-queue". Operators wanting the post-split shipped behaviour
+        # (state on main) override with queue_branch = "main".
+        "queue_branch",
         "main_branch",
         "max_attempts",
         "log_level",
@@ -204,6 +209,10 @@ class ExecutorConfig:
     # this into ``<workspace_root>/queue/`` once and pulls on subsequent
     # iterations; every queue mutation pushes back to its ``main`` branch.
     queue_repo: str
+    # Branch on queue_repo that holds .ralph/ state. Default "ralph-queue"
+    # (see DEFAULT_QUEUE_BRANCH). The executor's queue clone is permanently
+    # on this branch; every clone / pull / push uses it.
+    queue_branch: str
     main_branch: str
     max_attempts: int
     log_level: int
@@ -550,6 +559,32 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_MAIN_BRANCH,
         source_label=source_label,
     )
+    queue_branch_value = toml_overrides.get("queue_branch")
+    queue_branch_source = source_label
+    if queue_branch_value is None:
+        from ralph_executor.user_config import read_queue_branch, user_config_path
+
+        user_queue_branch = read_queue_branch()
+        if user_queue_branch is not None:
+            queue_branch_value = user_queue_branch
+            queue_branch_source = str(user_config_path())
+    queue_branch = _resolve_str(
+        name="queue_branch",
+        env_name="RALPH_QUEUE_BRANCH",
+        toml_value=queue_branch_value,
+        default=DEFAULT_QUEUE_BRANCH,
+        source_label=queue_branch_source,
+    )
+    queue_branch = queue_branch.strip()
+    if not queue_branch:
+        raise ConfigError(f"{queue_branch_source}: queue_branch must be a non-empty branch name")
+    if queue_branch == "HEAD":
+        raise ConfigError(f"{queue_branch_source}: queue_branch must be a branch name, not 'HEAD'")
+    if queue_branch.startswith("refs/heads/"):
+        raise ConfigError(
+            f"{queue_branch_source}: queue_branch must not include the 'refs/heads/' "
+            f"prefix (got {queue_branch!r})"
+        )
     max_attempts = _resolve_int(
         name="max_attempts",
         env_name="RALPH_MAX_ATTEMPTS",
@@ -756,6 +791,7 @@ def load_config() -> ExecutorConfig:
     return ExecutorConfig(
         repo_path=repo_path,
         queue_repo=queue_repo,
+        queue_branch=queue_branch,
         main_branch=main_branch,
         max_attempts=max_attempts,
         log_level=log_level,

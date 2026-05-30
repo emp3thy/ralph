@@ -9,6 +9,7 @@ PR-skill scripts directory) is honoured.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -58,7 +59,6 @@ def _cfg_with_sweep_knobs(
 
 def _populate_inbox_via_git(fake_repo: Path, pbi_id: str = "WI-INTEG") -> None:
     """Stage a sample PBI on the queue clone's ``main`` and push to origin."""
-    import subprocess
 
     def _git(*args: str) -> None:
         subprocess.run(
@@ -175,3 +175,191 @@ def test_sweep_skipped_when_pr_skill_scripts_dir_missing(
 
     iterate_once(cfg)
     assert captured == [], "sweep must skip when the PR-skill scripts directory is missing"
+
+
+# ---------------------------------------------------------------------------
+# Task 11: queue_branch configurable — assert pushes target ralph-queue.
+# ---------------------------------------------------------------------------
+
+
+def _git_capture(cwd: Path, *args: str) -> str:
+    """Run ``git`` in ``cwd`` and return stdout (raises on non-zero)."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.stdout
+
+
+def _build_dual_branch_queue(tmp_path: Path) -> tuple[Path, Path]:
+    """Build a bare remote with ``main`` AND ``ralph-queue`` plus a queue clone.
+
+    The bare repo has:
+      * ``main`` — a single root commit (no ``.ralph/``).
+      * ``ralph-queue`` — the ``.ralph/`` skeleton seeded on top of main.
+
+    The local clone is checked out on ``ralph-queue`` (the queue branch
+    the loop pulls / pushes against).
+
+    Returns ``(bare_path, clone_path)``.
+    """
+    bare = tmp_path / "queue.git"
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    clone = workspace / "queue"
+    seed = tmp_path / "seed"
+
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(seed)],
+        check=True,
+        capture_output=True,
+    )
+    _git_capture(seed, "config", "user.email", "test@example.com")
+    _git_capture(seed, "config", "user.name", "Test User")
+    _git_capture(seed, "commit", "--allow-empty", "-m", "chore: initial main commit")
+    _git_capture(seed, "remote", "add", "origin", str(bare))
+    # Push main BEFORE seeding ralph-queue so main lands as a single
+    # root commit and stays that way.
+    _git_capture(seed, "push", "-u", "origin", "main")
+
+    # Now create ralph-queue branched off main and seed the skeleton.
+    _git_capture(seed, "checkout", "-b", "ralph-queue")
+    (seed / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
+    _git_capture(seed, "add", ".gitignore")
+    _git_capture(seed, "commit", "-m", "chore: gitignore .ralph/state/")
+    for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
+        (seed / ".ralph" / sub).mkdir(parents=True)
+        (seed / ".ralph" / sub / ".gitkeep").write_text("", encoding="utf-8")
+    _git_capture(seed, "add", ".ralph")
+    _git_capture(seed, "commit", "-m", "chore(queue): bootstrap .ralph/ tree")
+    _git_capture(seed, "push", "-u", "origin", "ralph-queue")
+
+    # Clone the bare on the ralph-queue branch — mirrors what
+    # ensure_queue_clone does for production deployments.
+    subprocess.run(
+        ["git", "clone", "-b", "ralph-queue", str(bare), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    _git_capture(clone, "config", "user.email", "test@example.com")
+    _git_capture(clone, "config", "user.name", "Test User")
+    return bare, clone
+
+
+def test_loop_persists_to_ralph_queue_branch_by_default(
+    tmp_path: Path,
+    fake_claude_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """A full iteration pushes to ``ralph-queue`` when queue_branch is the default.
+
+    Builds a bare remote with both ``main`` and ``ralph-queue`` branches,
+    seeds an inbox PBI on ``ralph-queue``, runs one iteration of the loop
+    with ``cfg.queue_branch="ralph-queue"``, and asserts:
+      * upstream ``ralph-queue`` tip ADVANCED (claim push landed),
+      * upstream ``main`` tip is UNCHANGED.
+    """
+    bare, clone = _build_dual_branch_queue(tmp_path)
+
+    # Override the autouse ``_fake_ensure_target_clone`` so it routes to
+    # our purpose-built queue clone rather than the global ``fake_repo``
+    # fixture (which we deliberately did NOT request).
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=clone)
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
+
+    # Seed an inbox PBI on ralph-queue and push it to the bare.
+    pbi_id = "WI-QB-1"
+    write_sample_pbi(clone, pbi_id=pbi_id)
+    _git_capture(clone, "add", f".ralph/inbox/{pbi_id}")
+    _git_capture(clone, "commit", "-m", f"inbox: {pbi_id}")
+    _git_capture(clone, "push", "origin", "ralph-queue")
+
+    # Snapshot upstream tips BEFORE the iteration.
+    ralph_queue_before = _git_capture(bare, "rev-parse", "ralph-queue").strip()
+    main_before = _git_capture(bare, "rev-parse", "main").strip()
+    assert ralph_queue_before != main_before, "fixture must diverge ralph-queue from main"
+
+    # Build cfg targeting the bare on ralph-queue.
+    cfg = ExecutorConfig(
+        repo_path=clone,
+        queue_repo=f"file://{bare.as_posix()}",
+        queue_branch="ralph-queue",
+        main_branch="main",
+        max_attempts=3,
+        log_level=20,
+        iteration_sleep_seconds=0.0,
+        claude_binary=str(fake_claude_binary),
+        claude_permission_mode="bypassPermissions",
+        anthropic_api_key="fake-key",
+        git_host="github",
+        gh_owner="",
+        ado_org_url="",
+        ado_project="",
+        halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
+        use_worktrees=True,
+        bot_author_email="",
+        stale_days=3,
+        bash_max_timeout_ms=900_000,
+        workspace_root=tmp_path / "ws",
+        claude_session_timeout_seconds=1200,
+        same_file_min_prs=10,
+        same_file_window_hours=24.0,
+    )
+
+    # Stub Claude (it isn't spawned on the claim iteration anyway, but
+    # keep the path symmetrical with the other tests in this file).
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+
+    # Drive one iteration: empty current → sweep skipped (no
+    # bot_author_email) → pick inbox PBI → claim, which calls
+    # ``move_inbox_to_current`` → ``push_with_rebase(branch=cfg.queue_branch)``.
+    result = iterate_once(cfg)
+    assert result.outcome == "claimed", f"expected claim, got {result.outcome!r}"
+
+    # Assert upstream state: ralph-queue advanced, main unchanged.
+    ralph_queue_after = _git_capture(bare, "rev-parse", "ralph-queue").strip()
+    main_after = _git_capture(bare, "rev-parse", "main").strip()
+    assert ralph_queue_after != ralph_queue_before, (
+        "iteration must push the claim commit to upstream ralph-queue"
+    )
+    assert main_after == main_before, (
+        f"main must NOT advance during the iteration (before={main_before}, after={main_after})"
+    )
+
+    # Tip-advance alone could be satisfied by a bogus push (e.g. an empty
+    # commit). Pin the new ralph-queue tip's commit subject to what
+    # ``move_inbox_to_current`` produces — i.e. the inbox→current claim
+    # commit for this PBI. See ``ralph_executor/queue/movements.py``:
+    # ``_move`` formats ``{commit_prefix}: move {pbi.id} from {src} to {dst}``
+    # and ``move_inbox_to_current`` sets ``commit_prefix="chore(ralph-queue)"``.
+    subject = subprocess.run(
+        ["git", "-C", str(bare), "log", "-1", "--format=%s", "ralph-queue"],
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout.strip()
+    expected_subject = f"chore(ralph-queue): move {pbi_id} from inbox to current"
+    assert subject == expected_subject, (
+        f"ralph-queue tip subject must be the claim commit "
+        f"(expected={expected_subject!r}, got={subject!r})"
+    )

@@ -569,6 +569,125 @@ def test_main_queue_repo_flag_overrides_cfg(
     assert seen[0].queue_repo == "https://github.com/example/override"
 
 
+def test_cli_queue_branch_override_lands_on_cfg(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch on the CLI overrides cfg.queue_branch via _apply_overrides."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="override-branch",
+        watch=False,
+    )
+    new_cfg = _apply_overrides(cfg, args)
+    assert new_cfg.queue_branch == "override-branch"
+
+
+def test_cli_queue_branch_rejects_empty(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch '   ' (whitespace-only) raises ConfigError."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="   ",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="non-empty"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_queue_branch_rejects_empty_string(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch '' raises ConfigError instead of silently no-op'ing.
+
+    Regression for BugBot finding: the override guard used truthiness
+    (``if args.queue_branch:``) so an empty string fell through and the
+    cfg.queue_branch from TOML/env was kept silently.
+    """
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="non-empty"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_queue_branch_rejects_head(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch HEAD raises ConfigError (not a plain branch name)."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="HEAD",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="plain branch name"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_queue_branch_rejects_refs_prefix(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--queue-branch refs/heads/foo raises ConfigError (not a plain branch name)."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, queue_branch="ralph-queue")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch="refs/heads/foo",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="plain branch name"):
+        _apply_overrides(cfg, args)
+
+
 def test_main_rejects_watch_with_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -630,3 +749,88 @@ def test_public_reexports_are_stable() -> None:
     assert callable(run_loop)
     assert callable(main)
     assert callable(prepare_host_environment)
+
+
+def test_init_prompts_for_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ralph-executor init` prompts for queue_branch (default ralph-queue)
+    after queue_repo. Blank input → default persisted to ``~/.ralph/config.toml``.
+    """
+    import builtins
+
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    # Stub the network smoke-check so the test doesn't hit the wire.
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: True,
+    )
+
+    # The interactive flow calls input() three times in order:
+    #   1. ralph_home prompt (blank → OS default)
+    #   2. queue_repo prompt (valid URL accepted)
+    #   3. queue_branch prompt (blank → default "ralph-queue")
+    answers = iter(
+        [
+            "",
+            "https://github.com/test/queue",
+            "",
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    rc = cli.main(["init"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "ralph-queue"
+
+
+def test_init_persists_non_default_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-blank answer at the queue_branch prompt is persisted verbatim."""
+    import builtins
+
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    monkeypatch.setattr(
+        "ralph_executor.setup_cmds._smoke_clone_queue_repo",
+        lambda _url, *, timeout=10.0: True,
+    )
+
+    answers = iter(
+        [
+            "",
+            "https://github.com/test/queue",
+            "custom-queue-branch",
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    rc = cli.main(["init"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "custom-queue-branch"
+
+
+def test_init_assume_yes_writes_default_queue_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--yes` skips the prompt and writes the default ``ralph-queue``."""
+    from ralph_executor import user_config
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    target = tmp_path / "dev" / "ralph"
+
+    rc = cli.main(["init", "--ralph-home", str(target), "--yes"])
+    assert rc == 0
+    assert user_config.read_queue_branch() == "ralph-queue"

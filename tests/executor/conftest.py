@@ -217,6 +217,16 @@ def cfg_for_repo(
     return ExecutorConfig(
         repo_path=fake_repo,
         queue_repo=f"file://{bare.as_posix()}",
+        # NOTE: the ``fake_repo`` seed pushes a single ``main`` branch to
+        # the bare remote, so unit tests in this suite stay on ``main``
+        # for the queue branch. The production default is ``ralph-queue``
+        # — exercised end-to-end by
+        # ``test_loop_integration.test_loop_persists_to_ralph_queue_branch_by_default``
+        # which builds its own dual-branch bare. Flipping the fixture
+        # globally is mechanically too disruptive (it cascades into
+        # ~50 tests across executor/loop, movements, claude_spawn,
+        # git_ops that hard-code ``main``).
+        queue_branch="main",
         main_branch="main",
         max_attempts=3,
         log_level=20,  # logging.INFO

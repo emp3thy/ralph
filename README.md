@@ -56,13 +56,14 @@ subcommand creates it interactively:
 uv run ralph-executor init
 ```
 
-You will be prompted for three values:
+You will be prompted for the following values:
 
 | Key | What it is | Example |
 |---|---|---|
 | `ralph_home` | Root for legacy single-checkout state (kept for compatibility) | `~/dev/ralph` |
 | `workspace_root` | Where ralph clones the queue and target repos | `~/ralph-workspaces` |
 | `queue_repo` | HTTPS URL of the queue repo holding `.ralph/` state | `https://github.com/emp3thy/ralph-queue` |
+| `queue_branch` | Branch on `queue_repo` that holds `.ralph/` state. Default `ralph-queue`. Override with TOML, `RALPH_QUEUE_BRANCH`, or `--queue-branch`. | `ralph-queue` |
 
 For scripted setup:
 

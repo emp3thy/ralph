@@ -70,21 +70,21 @@ def ensure_git_repo(repo: Path) -> None:
         raise QueueWriterError(f"{repo} is not a git repository (no .git/ directory)")
 
 
-def acquire_queue_clone(workspace_root: Path, queue_repo: str, *, timeout: float = 120.0) -> Path:
+def acquire_queue_clone(
+    workspace_root: Path,
+    queue_repo: str,
+    queue_branch: str,
+    *,
+    timeout: float = 120.0,
+) -> Path:
     """Idempotent queue clone for operator skills.
 
-    Thin wrapper around ``ralph_executor.queue_clone.ensure_queue_clone``
-    so skills can import a stable surface from this module without taking
-    a dependency on the executor package layout directly. On first call
-    the queue repo is cloned to ``<workspace_root>/queue``; on subsequent
-    calls the existing clone is fetched and fast-forwarded on ``main``.
-
-    Re-raises ``QueueCloneError`` (clone/fetch network or auth failures)
-    as ``QueueWriterError`` so that skills only need to handle one
-    exception type from this module — the contract documented above.
+    Mirrors ``ralph_executor.queue_clone.ensure_queue_clone``. The branch
+    is forwarded unchanged; the operator's ``~/.ralph/config.toml`` knob is
+    resolved by the caller via ``resolve_queue_branch``.
     """
     try:
-        return ensure_queue_clone(workspace_root, queue_repo, timeout=timeout)
+        return ensure_queue_clone(workspace_root, queue_repo, queue_branch, timeout=timeout)
     except QueueCloneError as exc:
         raise QueueWriterError(str(exc)) from exc
 
@@ -148,6 +148,45 @@ def resolve_queue_repo(cli_value: str | None = None) -> str:
         raise QueueWriterError(
             "queue_repo not configured: pass --queue-repo or set "
             "'queue_repo' in ~/.ralph/config.toml (e.g. via `ralph-executor init`)"
+        )
+    return from_toml
+
+
+DEFAULT_QUEUE_BRANCH = "ralph-queue"
+
+
+def resolve_queue_branch(cli_value: str | None = None) -> str:
+    """Resolve ``queue_branch`` for operator skills.
+
+    Order: explicit CLI value → ``queue_branch`` in ``~/.ralph/config.toml``
+    → default ``"ralph-queue"``. Unlike ``resolve_queue_repo`` there IS a
+    silent default — every queue repo has a branch, and the default matches
+    the spec.
+
+    ``ConfigError`` from a malformed user TOML is re-raised as
+    ``QueueWriterError`` so the skill surface stays single-typed.
+    """
+    if cli_value is not None:
+        value = cli_value.strip()
+        if not value:
+            raise QueueWriterError("--queue-branch must be a non-empty string")
+        if value == "HEAD" or value.startswith("refs/heads/"):
+            raise QueueWriterError(
+                f"--queue-branch must be a plain branch name (got {cli_value!r})"
+            )
+        return value
+    from ralph_executor.config import ConfigError
+    from ralph_executor.user_config import read_queue_branch
+
+    try:
+        from_toml = read_queue_branch()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+    if from_toml is None:
+        return DEFAULT_QUEUE_BRANCH
+    if from_toml == "HEAD" or from_toml.startswith("refs/heads/"):
+        raise QueueWriterError(
+            f"queue_branch in ~/.ralph/config.toml must be a plain branch name (got {from_toml!r})"
         )
     return from_toml
 

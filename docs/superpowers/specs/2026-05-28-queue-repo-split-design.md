@@ -215,3 +215,24 @@ None remaining at design time. The four sub-decisions surfaced during brainstorm
 4. Operator deletes the old `ralph-queue` branch on `emp3thy/ralph` (`gh api -X DELETE ...`) and removes the stale `.ralph-work/queue/` worktree.
 
 Both PBIs target `emp3thy/ralph` (executor source repo). Their feature branches `ralph/EXECUTOR-QUEUE-REPO-SPLIT` and `ralph/SKILLS-QUEUE-CLONE-MIGRATION` follow the existing convention.
+
+---
+
+## Addendum (2026-05-29): `queue_branch` re-introduced
+
+PBI #48 deleted the `queue_branch` field on `ExecutorConfig` and hardcoded
+`"main"` everywhere the queue clone is touched. The follow-up spec
+`docs/superpowers/specs/2026-05-28-queue-branch-configurable-design.md`
+restores it as a configurable knob, default `"ralph-queue"`.
+
+Why:
+- `main` of a queue repo accumulates a persist commit per iteration plus
+  every PBI move. With state on `main`, branch-protection rules either
+  block the executor or are loosened to the point of being decorative.
+- Keeping `main` protected and clean (with PR-required updates) while
+  the executor pushes to `ralph-queue` matches the operator-protection
+  intent without changing the executor's data flow.
+
+Migration: pre-split deployments running on `main` set
+`queue_branch = "main"` in their TOML. Fresh deployments using
+`scripts/setup_ralph_queue_github.py` get the new shape end-to-end.

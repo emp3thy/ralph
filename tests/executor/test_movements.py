@@ -225,6 +225,34 @@ def test_move_raises_uncommitted_source_when_dir_not_in_index(
     assert pbi_dir.is_dir()
 
 
+def test_move_pushes_to_configured_queue_branch(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_move's final push_with_rebase targets cfg.queue_branch, not hardcoded 'main'."""
+    import dataclasses
+
+    from ralph_executor.queue import movements as movements_mod
+
+    _populate_inbox(fake_repo)
+    # Override the conftest's queue_branch="main" so the assertion is
+    # meaningful. ExecutorConfig is frozen so use dataclasses.replace.
+    # We also stub push_with_rebase since the bare remote only has main.
+    cfg = dataclasses.replace(cfg_for_repo, queue_branch="ralph-queue")
+    source = FilesystemQueueSource(cfg)
+    pbi = source.inbox_pbis()[0]
+
+    pushed_branches: list[str] = []
+
+    def fake_push(repo: Path, *, remote: str, branch: str) -> None:
+        pushed_branches.append(branch)
+
+    monkeypatch.setattr(movements_mod.git_ops, "push_with_rebase", fake_push)
+
+    move_inbox_to_current(cfg, pbi)
+
+    assert pushed_branches == ["ralph-queue"]
+
+
 def test_move_inbox_to_current_survives_concurrent_remote_advance(
     cfg_for_repo: ExecutorConfig, fake_repo: Path, tmp_path: Path
 ) -> None:

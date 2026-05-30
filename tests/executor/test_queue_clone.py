@@ -35,7 +35,7 @@ def test_first_call_clones(tmp_path: Path) -> None:
     remote = _make_bare_remote(tmp_path)
     workspace = tmp_path / "ws"
 
-    path = ensure_queue_clone(workspace, f"file://{remote.as_posix()}")
+    path = ensure_queue_clone(workspace, f"file://{remote.as_posix()}", "main")
 
     assert path == workspace / "queue"
     assert (path / ".git").exists()
@@ -46,7 +46,7 @@ def test_second_call_fetches_and_pulls(tmp_path: Path) -> None:
     remote = _make_bare_remote(tmp_path)
     workspace = tmp_path / "ws"
 
-    path = ensure_queue_clone(workspace, f"file://{remote.as_posix()}")
+    path = ensure_queue_clone(workspace, f"file://{remote.as_posix()}", "main")
 
     push_src = tmp_path / "push_src"
     subprocess.run(
@@ -59,12 +59,60 @@ def test_second_call_fetches_and_pulls(tmp_path: Path) -> None:
     _git(push_src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "second")
     _git(push_src, "push", "origin", "main")
 
-    ensure_queue_clone(workspace, f"file://{remote.as_posix()}")
+    ensure_queue_clone(workspace, f"file://{remote.as_posix()}", "main")
     assert (path / "new.md").exists()
 
 
 def test_bad_url_raises_queue_clone_error(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     with pytest.raises(QueueCloneError) as exc:
-        ensure_queue_clone(workspace, "file:///definitely/not/a/repo")
+        ensure_queue_clone(workspace, "file:///definitely/not/a/repo", "main")
     assert "queue" in str(exc.value).lower()
+
+
+def test_ensure_queue_clone_uses_branch_flag_on_clone(tmp_path, monkeypatch):
+    """First-run clone uses `git clone -b <queue_branch> <url> <dest>`."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured_args: list[list[str]] = []
+
+    def fake_run(argv, capture_output, timeout):  # noqa: ARG001
+        captured_args.append(argv)
+        # Simulate the clone creating .git
+        if argv[0] == "git" and "clone" in argv:
+            dest = Path(argv[-1])
+            (dest / ".git").mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("ralph_executor.queue_clone.run_text", fake_run)
+
+    ensure_queue_clone(workspace, "https://github.com/test/queue", "ralph-queue")
+
+    clone_cmd = next(a for a in captured_args if "clone" in a)
+    assert "-b" in clone_cmd
+    assert "ralph-queue" in clone_cmd
+    # ordering: ... clone -b <branch> <url> <dest>
+    b_idx = clone_cmd.index("-b")
+    assert clone_cmd[b_idx + 1] == "ralph-queue"
+
+
+def test_ensure_queue_clone_pulls_configured_branch(tmp_path, monkeypatch):
+    """Refresh pull uses `git pull --ff-only origin <queue_branch>`."""
+    workspace = tmp_path / "workspace"
+    dest = workspace / "queue"
+    (dest / ".git").mkdir(parents=True)
+
+    captured_args: list[list[str]] = []
+
+    def fake_run(argv, capture_output, timeout):  # noqa: ARG001
+        captured_args.append(argv)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("ralph_executor.queue_clone.run_text", fake_run)
+
+    ensure_queue_clone(workspace, "https://github.com/test/queue", "ralph-queue")
+
+    pull_cmd = next(a for a in captured_args if "pull" in a)
+    # ['git', '-C', <dest>, 'pull', '--ff-only', 'origin', 'ralph-queue']
+    assert "ralph-queue" in pull_cmd
+    assert pull_cmd[-2:] == ["origin", "ralph-queue"]

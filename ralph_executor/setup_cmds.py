@@ -21,9 +21,11 @@ from ralph_executor.config import ConfigError, validate_repo_path
 from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
+    read_queue_branch,
     read_queue_repo,
     read_ralph_home,
     user_config_path,
+    write_queue_branch,
     write_queue_repo,
     write_ralph_home,
 )
@@ -177,6 +179,22 @@ def _prompt_queue_repo() -> str | None:
         return raw
 
 
+def _prompt_queue_branch(default: str) -> str | None:
+    """Prompt for the queue branch name with a default; None on EOF.
+
+    Blank input → accept the default. EOFError (closed stdin) → return
+    None so the caller can warn and write the default itself rather
+    than blocking on a non-tty / piped session.
+    """
+    print(f"Queue branch [{default}]: ", end="", flush=True)
+    try:
+        raw = input().strip()
+    except EOFError:
+        print("")
+        return None
+    return raw or default
+
+
 def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
     """Best-effort reachability check for ``url``: ``git ls-remote --heads``.
 
@@ -273,6 +291,39 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
                 return 2
             print(f"queue_repo = {chosen_queue}")
             print(f"wrote {queue_cfg}")
+
+    # queue_branch (Task 10): per-operator branch override, default
+    # "ralph-queue". Mirrors queue_repo handling — prompt after
+    # queue_repo, idempotent on re-run, --yes writes the default
+    # non-interactively, EOF on stdin falls back to the default.
+    existing_branch = read_queue_branch()
+    if existing_branch is not None:
+        print(f"queue_branch already set to {existing_branch} in {user_config_path()}")
+    else:
+        queue_branch_default = "ralph-queue"
+        chosen_branch: str = queue_branch_default
+        if not assume_yes:
+            prompted = _prompt_queue_branch(queue_branch_default)
+            if prompted is None:
+                # Closed/piped stdin during the prompt — fall back to
+                # the default rather than leaving the knob unset. Unlike
+                # queue_repo (no sensible per-machine fallback), the
+                # branch name has an obvious universal default.
+                print(
+                    f"WARNING: queue_branch prompt closed; defaulting to {queue_branch_default!r}."
+                )
+            else:
+                chosen_branch = prompted
+        try:
+            branch_cfg = write_queue_branch(chosen_branch)
+        except OSError as exc:
+            print(
+                f"error: cannot write queue_branch to user config: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"queue_branch = {chosen_branch}")
+        print(f"wrote {branch_cfg}")
 
     # Best-effort tool checks. Warn, never abort: an operator might be
     # setting up on a host where claude is installed under a non-default

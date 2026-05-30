@@ -545,6 +545,7 @@ class TestEvaluateAll:
             return ExecutorConfig(
                 repo_path=tmp_path,
                 queue_repo="https://github.com/example/queue",
+                queue_branch="ralph-queue",
                 main_branch="main",
                 max_attempts=3,
                 log_level=20,
