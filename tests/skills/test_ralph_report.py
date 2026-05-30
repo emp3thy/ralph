@@ -37,6 +37,11 @@ def snapshot() -> ModuleType:
     return _load("ralph_report_snapshot", "snapshot.py")
 
 
+@pytest.fixture(scope="module")
+def git_walker() -> ModuleType:
+    return _load("ralph_report_git_walker", "git_walker.py")
+
+
 def _write_pbi(
     state_dir: Path,
     pbi_id: str,
@@ -180,3 +185,143 @@ def test_snapshot_returns_empty_when_neither_worktree_nor_queue_ref(
     assert snap.blocked == []
     assert snap.done == []
     assert snap.meta_cycle_sentinels == []
+
+
+@pytest.mark.parametrize(
+    "subject,expected_kind,expected_id",
+    [
+        (
+            "chore(queue): add EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+            "added",
+            "EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+        ),
+        (
+            "chore(ralph-queue): move EXECUTOR-EXIT-WHEN-IDLE-DEFAULT from inbox to current",
+            "claimed",
+            "EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+        ),
+        (
+            "feat(ralph-queue): move RALPH-MULTI-REPO-CHECKOUT from current to pending-pr",
+            "pr_opened",
+            "RALPH-MULTI-REPO-CHECKOUT",
+        ),
+        (
+            "chore(ralph-queue): move RALPH-MULTI-REPO-CHECKOUT from pending-pr to done",
+            "shipped",
+            "RALPH-MULTI-REPO-CHECKOUT",
+        ),
+        (
+            "chore(ralph-queue): move STAGE-B-PLAN-13 from current to blocked",
+            "blocked",
+            "STAGE-B-PLAN-13",
+        ),
+    ],
+)
+def test_parse_commit_subject_known_patterns(
+    subject: str, expected_kind: str, expected_id: str, git_walker: ModuleType
+) -> None:
+    event = git_walker.parse_commit_subject(subject)
+    assert event is not None
+    assert event.kind == expected_kind
+    assert event.pbi_id == expected_id
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "chore(queue): persist iteration writes for EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+        "docs(spec): drop ralph-status 'risk'; surface skill in README",
+        "fix(cycle-detector): raise WHACK_A_MOLE_MIN_OPENS from 3 to 12",
+        # Real verbatim subject from origin/ralph-queue that the loose
+        # ``add (?P<id>[A-Za-z0-9_-]+)`` regex would false-match on
+        # ``target_repo``. The tighter ``[A-Z][A-Z0-9-]*`` rejects it.
+        (
+            "chore(queue): add target_repo + set status=inbox "
+            "on BUG-CLAIM-RACE BUG.md (followup to ba7f862)"
+        ),
+        # Real verbatim subject — archive operations are not in the kept grammar.
+        "chore(queue): archive STAGE-B-PLAN-13 + META-cycle artifacts",
+    ],
+)
+def test_parse_commit_subject_filtered_or_unrelated(subject: str, git_walker: ModuleType) -> None:
+    assert git_walker.parse_commit_subject(subject) is None
+
+
+def test_walk_log_picks_up_scripted_commits(tmp_path: Path, git_walker: ModuleType) -> None:
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(bare), str(seed)], check=True)
+    _git(seed, "checkout", "-b", "ralph-queue")
+    (seed / "x.txt").write_text("x", encoding="utf-8")
+    _git(seed, "add", "x.txt")
+    _git(
+        seed,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "chore(queue): add EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+    )
+    (seed / "y.txt").write_text("y", encoding="utf-8")
+    _git(seed, "add", "y.txt")
+    _git(
+        seed,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "chore(ralph-queue): move EXECUTOR-EXIT-WHEN-IDLE-DEFAULT from inbox to current",
+    )
+    (seed / "z.txt").write_text("z", encoding="utf-8")
+    _git(seed, "add", "z.txt")
+    _git(
+        seed,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "chore(queue): persist iteration writes for EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
+    )
+    blocked_dir = seed / ".ralph" / "blocked"
+    blocked_dir.mkdir(parents=True)
+    (blocked_dir / "META-cycle-20260530T120000Z.md").write_text("trip\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(
+        seed,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "chore(queue): cycle-detector trip",
+    )
+    _git(seed, "push", "origin", "ralph-queue")
+    consumer = tmp_path / "consumer"
+    subprocess.run(["git", "clone", str(bare), str(consumer)], check=True)
+    _git(consumer, "fetch", "origin", "ralph-queue")
+
+    events = git_walker.walk_log(repo_path=consumer, since="365.days.ago")
+    kinds = [e.kind for e in events]
+    assert "added" in kinds
+    assert "claimed" in kinds
+    assert "cycle_trip" in kinds
+    # persist-iteration subjects must be filtered out
+    assert all(e.kind != "persist" for e in events)
+    # The added/claimed PBI ids carry through
+    added_ids = [e.pbi_id for e in events if e.kind == "added"]
+    assert added_ids == ["EXECUTOR-EXIT-WHEN-IDLE-DEFAULT"]
+
+
+def test_walk_log_returns_empty_when_ref_absent(tmp_path: Path, git_walker: ModuleType) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True)
+    assert git_walker.walk_log(repo_path=repo) == []
