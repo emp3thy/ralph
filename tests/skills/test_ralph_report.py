@@ -482,3 +482,66 @@ def test_server_idle_timer_shuts_down(tmp_path: Path, server_mod: ModuleType) ->
         assert not handle.thread.is_alive()
     finally:
         handle.shutdown()
+
+
+@pytest.fixture(scope="module")
+def report_mod() -> ModuleType:
+    # report.py imports server.py via the same importlib loader; the
+    # sibling-cache key (``ralph_report_server``) is shared with the
+    # ``server_mod`` fixture, so loading order between the two does not
+    # matter.
+    return _load("ralph_report_report", "report.py")
+
+
+def test_report_main_rejects_missing_repo_dir(tmp_path: Path, report_mod: ModuleType) -> None:
+    rc = report_mod.main(["--repo", str(tmp_path / "does-not-exist")])
+    assert rc == 2
+
+
+def test_report_main_rejects_non_git_dir(tmp_path: Path, report_mod: ModuleType) -> None:
+    not_git = tmp_path / "not-git"
+    not_git.mkdir()
+    rc = report_mod.main(["--repo", str(not_git)])
+    assert rc == 2
+
+
+def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: ModuleType) -> None:
+    import json
+    import os
+    import threading
+    import time
+
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", str(repo)], check=True)
+
+    rc_holder: dict[str, int] = {}
+
+    def runner() -> None:
+        rc_holder["rc"] = report_mod.main(
+            ["--repo", str(repo), "--port", "0", "--idle-seconds", "1"]
+        )
+
+    th = threading.Thread(target=runner, daemon=True, name="ralph-report-runner")
+    th.start()
+
+    info_dir = repo.resolve() / ".ralph-work" / "report"
+    info_path = info_dir / "server-info"
+
+    deadline = time.monotonic() + 5.0
+    while not info_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert info_path.exists(), "server-info was not written within 5s"
+
+    payload = json.loads(info_path.read_text(encoding="utf-8"))
+    assert payload["host"] == "127.0.0.1"
+    assert isinstance(payload["port"], int)
+    assert payload["port"] > 0
+    assert payload["pid"] == os.getpid()
+    assert payload["url"].startswith("http://127.0.0.1:")
+    assert payload["url"].endswith(str(payload["port"]))
+    assert payload["started_at"].endswith("+00:00")
+
+    th.join(timeout=10)
+    assert not th.is_alive(), "report.main did not return after idle timeout"
+    assert rc_holder.get("rc") == 0
+    assert (info_dir / "server-stopped").is_file()
