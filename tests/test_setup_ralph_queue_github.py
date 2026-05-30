@@ -276,6 +276,10 @@ def test_dry_run_makes_no_mutations(env: None, capsys: pytest.CaptureFixture[str
     assert payload["dry_run"] is True
     assert payload["branch_created"] is False
     assert payload["protection_applied"] is False
+    # Happy-path dry-run on an existing repo: walked all steps, just skipped
+    # the PUTs. dry_run_skipped should NOT be True here — that's reserved
+    # for the early-exit paths (repo absent, base branch tipless).
+    assert payload["dry_run_skipped"] is False
     assert all(call.request.method == "GET" for call in responses.calls)
 
 
@@ -463,8 +467,16 @@ def test_dry_run_does_not_create_absent_repo(
     assert rc == 0
     assert ("POST", "/user/repos") not in calls
     assert not any(method == "POST" for method, _ in calls)
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
+    err = captured.err
     assert "DRY-RUN would create" in err
+    # The all-False branch_* fields are ambiguous on their own (they look
+    # like an idempotent no-op on a fully-provisioned repo). dry_run_skipped
+    # disambiguates: True here means "stopped early because repo absent".
+    payload = json.loads(captured.out)
+    assert payload["dry_run_skipped"] is True
+    assert payload["branch_created"] is False
+    assert payload["branch_existed"] is False
 
 
 def test_org_flag_uses_orgs_endpoint(

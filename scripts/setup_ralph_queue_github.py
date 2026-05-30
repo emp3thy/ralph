@@ -66,6 +66,14 @@ class SetupResult:
     branch_existed: bool
     protection_applied: bool
     dry_run: bool
+    # True when the script exited early under --dry-run without attempting
+    # downstream steps (repo absent, or base branch has no tip yet). This
+    # distinguishes "stopped early" from "idempotent no-op on existing repo"
+    # — both paths produce branch_created=False + branch_existed=False, so
+    # the field is the only way callers can tell them apart from the JSON
+    # output. Defaults to False to preserve the existing JSON shape on
+    # happy-path runs.
+    dry_run_skipped: bool = False
 
 
 def _fail(message: str) -> int:
@@ -377,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch_existed=False,
                 protection_applied=False,
                 dry_run=True,
+                dry_run_skipped=True,
             )
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
@@ -416,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
                     branch_existed=False,
                     protection_applied=False,
                     dry_run=True,
+                    dry_run_skipped=True,
                 )
                 print(json.dumps(asdict(result), indent=2, sort_keys=True))
                 return 0
