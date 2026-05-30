@@ -208,6 +208,34 @@ def test_spawn_omits_better_memory_project_when_target_info_absent(
     assert "BETTER_MEMORY_PROJECT" not in env
 
 
+def test_spawn_strips_inherited_better_memory_project_when_target_info_absent(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    fake_claude_binary: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: BETTER_MEMORY_PROJECT inherited from ralph's parent env
+    must NOT leak into the subagent under legacy (target_info=None) mode
+    — otherwise the subagent's observations land in whatever project
+    name the operator happens to have set for ralph itself."""
+    import json
+
+    monkeypatch.setenv("BETTER_MEMORY_PROJECT", "ralph-itself")
+    pbi = _setup_current_pbi(cfg_for_repo, fake_repo)
+    assert pbi.target_info is None
+
+    env_dump = tmp_path / "env.json"
+    write_claude_script(
+        fake_claude_binary,
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(env_dump)!r}).write_text(json.dumps(dict(os.environ)))\n",
+    )
+    spawn_claude_p(cfg_for_repo, pbi)
+    env = json.loads(env_dump.read_text())
+    assert "BETTER_MEMORY_PROJECT" not in env
+
+
 def test_classify_pr_created_when_pr_url_provided(tmp_path: Path) -> None:
     """pr_url is the source of truth — set by spawn_claude_p via the
     real gh CLI call. classify_outcome itself just maps the answer."""

@@ -554,6 +554,12 @@ def spawn_claude_p(
         # better-memory's project resolver (see better-memory PR
         # memory-project-env-override).
         env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
+    else:
+        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
+        # inherited from ralph's parent env so the subagent's
+        # observations don't leak into whatever project name the
+        # operator happens to have set for ralph itself.
+        env.pop("BETTER_MEMORY_PROJECT", None)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout
