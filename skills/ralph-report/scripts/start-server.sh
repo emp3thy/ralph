@@ -35,6 +35,10 @@ REPORT_DIR="$REPO/.ralph-work/report"
 mkdir -p "$REPORT_DIR"
 LOG_FILE="$REPORT_DIR/server.log"
 rm -f "$REPORT_DIR/server-stopped"
+# Force the wait loop below to block until the freshly-launched child
+# writes new connection info — otherwise a stale server-info from a
+# previous run is returned and callers get a dead PID/port.
+rm -f "$REPORT_DIR/server-info"
 
 nohup uv run python "$SCRIPT_DIR/report.py" \
   --repo "$REPO" \
