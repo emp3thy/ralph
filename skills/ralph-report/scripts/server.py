@@ -60,12 +60,16 @@ class ServerHandle:
     _cancel_idle: Any
 
     def shutdown(self) -> None:
-        """Idempotent: cancel idle timer, stop serve_forever, close socket."""
+        """Idempotent: cancel idle timer, stop serve_forever.
+
+        Socket close is handled by the ``serve()`` daemon thread's
+        ``finally`` block — calling ``server_close()`` here as well would
+        close the socket a second time.
+        """
         cancel = self._cancel_idle
         if cancel is not None:
             cancel()
         self.server.shutdown()
-        self.server.server_close()
 
 
 def start_server(

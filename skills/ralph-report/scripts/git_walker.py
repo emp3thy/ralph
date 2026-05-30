@@ -127,7 +127,11 @@ def walk_log(
     current_header: tuple[str, datetime] | None = None
     for raw in result.stdout.splitlines():
         if not raw.strip():
-            current_header = None
+            # Blank lines separate the commit-header line from the
+            # name-status block — DO NOT reset current_header here, or
+            # subsequent name-status rows are dropped and cycle_trip
+            # events are never emitted. current_header is naturally
+            # overwritten when the next commit-header line is parsed.
             continue
         parts = raw.split("\t")
         if _is_commit_header(parts):
