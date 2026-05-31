@@ -68,7 +68,10 @@ def test_reconcile_subcommand_calls_reconcile_all(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    # Post-T4: reconcile no longer accepts --repo; the queue clone path
+    # is derived from RALPH_WORKSPACE (set by the fake_repo_with_orphan
+    # fixture).
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     assert captured_calls == [False]
@@ -93,7 +96,7 @@ def test_reconcile_dry_run_flag_flows_through(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan), "--dry-run"])
+    exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
     assert captured_calls == [True]
@@ -113,7 +116,7 @@ def test_reconcile_subcommand_reports_no_orphans_cleanly(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -148,7 +151,7 @@ def test_reconcile_summary_counts_include_errors(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -182,7 +185,7 @@ def test_reconcile_subcommand_prints_current_section_when_stale_orphan_present(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -215,7 +218,7 @@ def test_reconcile_subcommand_current_dry_run_does_not_delete(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan), "--dry-run"])
+    exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -249,7 +252,7 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
-    exit_code = cli_main(["reconcile", "--repo", str(repo)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 2
     err = capsys.readouterr().err

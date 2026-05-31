@@ -258,16 +258,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "them to done/blocked/inbox based on PR state."
         ),
     )
-    reconcile_repo_group = reconcile_parser.add_mutually_exclusive_group()
-    reconcile_repo_group.add_argument(
-        "--repo",
-        help="Explicit path to the repo Ralph operates on.",
-    )
-    reconcile_repo_group.add_argument(
-        "--workspace",
-        metavar="NAME",
-        help="Resolve repo path against $RALPH_HOME/NAME.",
-    )
+    # ``--repo`` / ``--workspace`` removed from reconcile (T4 of
+    # KILL-RALPH-HOME). The reconcile path reads ``.ralph/`` from
+    # ``<workspace_root>/queue/``; the queue-clone root is fixed by
+    # ``workspace_root`` in ``~/.ralph/config.toml`` and there is no
+    # operator-facing knob for overriding the target repo per run.
     reconcile_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -463,16 +458,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """Handler for ``ralph-executor reconcile [--dry-run]``.
 
-    Loads the executor config (with ``--repo`` / ``--workspace`` overrides
-    via ``_apply_overrides``), resolves the PR-skill scripts directory for
-    the configured git host, builds a ``SweepContext`` and delegates to
-    ``reconcile_all``. Prints a one-line-per-orphan summary table.
+    Loads the executor config, resolves the PR-skill scripts directory
+    for the configured git host, builds a ``SweepContext`` rooted at
+    ``<workspace_root>/queue/.ralph`` and delegates to ``reconcile_all``.
+    Prints a one-line-per-orphan summary table.
 
     Returns 0 on success, 2 on config or environment errors.
     """
     try:
         cfg = load_config()
-        cfg = _apply_overrides(cfg, args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -491,8 +485,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     from ralph_executor.loop import _queue_repo_root
 
     ctx = SweepContext(
-        # Worktree-mode awareness: `.ralph/` lives in the queue worktree
-        # (not the primary checkout, which has no `.ralph/`).
+        # Worktree-mode awareness: ``.ralph/`` lives in the queue clone at
+        # ``<workspace_root>/queue/`` (not in any per-target checkout).
         queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=SweepConfig(
@@ -501,9 +495,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             stale_threshold=timedelta(days=3),
             now=datetime.now(tz=UTC),
         ),
-        # repo_name must come from the primary checkout name, not from
-        # queue_root.parent.name (which is "queue" in worktree mode).
-        repo_name=cfg.repo_path.name,
+        # Sweep is queue-only: label the context with the queue clone's
+        # directory name (always ``queue`` under ``workspace_root``).
+        repo_name=_queue_repo_root(cfg).name,
     )
 
     report = reconcile_all(ctx, dry_run=args.dry_run)
@@ -622,8 +616,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(cfg.log_level)
 
     log.info(
-        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s main=%s)",
-        cfg.repo_path,
+        "ralph-executor starting (workspace_root=%s queue_repo=%s queue_branch=%s main=%s)",
+        cfg.workspace_root,
         cfg.queue_repo,
         cfg.queue_branch,
         cfg.main_branch,
