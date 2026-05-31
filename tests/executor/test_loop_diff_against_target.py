@@ -106,9 +106,7 @@ def test_diff_names_uses_target_clone_root(
         captured_touched["touched"] = list(touched_files)
 
     monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr(
-        "ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None
-    )
+    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
 
     outcome, result = _run_ralph(cfg_for_repo, pbi)
 
@@ -171,9 +169,7 @@ def test_diff_names_skipped_when_target_info_missing(
         captured["touched"] = list(touched_files)
 
     monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr(
-        "ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None
-    )
+    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
 
     with caplog.at_level("WARNING", logger="ralph_executor.loop"):
         outcome, result = _run_ralph(cfg_for_repo, pbi)
@@ -243,9 +239,7 @@ def test_diff_names_skipped_when_clone_root_missing(
         captured["touched"] = list(touched_files)
 
     monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr(
-        "ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None
-    )
+    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
 
     with caplog.at_level("WARNING", logger="ralph_executor.loop"):
         outcome, result = _run_ralph(cfg_for_repo, pbi)
@@ -255,8 +249,7 @@ def test_diff_names_skipped_when_clone_root_missing(
     assert called["diff"] is False
     assert captured["touched"] == []
     assert any(
-        "target clone" in r.getMessage() and "missing" in r.getMessage()
-        for r in caplog.records
+        "target clone" in r.getMessage() and "missing" in r.getMessage() for r in caplog.records
     )
 
 

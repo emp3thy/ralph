@@ -528,9 +528,7 @@ class TestEvaluateAll:
     def test_aggregator_returns_empty_when_calm(self, now: datetime) -> None:
         assert evaluate_all([], now) == []
 
-    def test_aggregator_forwards_same_file_cfg_thresholds(
-        self, now: datetime
-    ) -> None:
+    def test_aggregator_forwards_same_file_cfg_thresholds(self, now: datetime) -> None:
         """``evaluate_all`` reads ``cfg.same_file_min_prs`` and
         ``cfg.same_file_window_hours`` and passes them through to the
         same_file_thrashing detector. With a lowered ``min_prs=3``, three

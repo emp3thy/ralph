@@ -45,6 +45,17 @@ def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     scripts_dir.mkdir(parents=True)
     _make_orphan(queue / "pending-pr", "ORPHAN-1")
     monkeypatch.setenv("RALPH_WORKSPACE", str(workspace))
+    # KILL-RALPH-HOME made queue_repo a user-config-only field. Redirect
+    # ``Path.home()`` to a tmp dir and write a minimal ``~/.ralph/config.toml``
+    # so ``load_config`` finds a queue_repo on hosts (CI) without one.
+    fake_home = tmp_path / "home"
+    (fake_home / ".ralph").mkdir(parents=True)
+    (fake_home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/example/queue"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
     return repo
 
 
@@ -238,9 +249,7 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     # _pr_skill_scripts_path resolves against the ralph executor source
     # tree. Stub it to an absent path so the CLI guard fails fast.
     bogus = tmp_path / "no" / "such" / "scripts"
-    monkeypatch.setattr(
-        "ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus
-    )
+    monkeypatch.setattr("ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     exit_code = cli_main(["reconcile"])

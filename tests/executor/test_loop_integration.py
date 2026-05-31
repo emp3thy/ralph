@@ -172,9 +172,7 @@ def test_sweep_skipped_when_pr_skill_scripts_dir_missing(
     # dev checkout). Stub it to a deliberately-absent path so the guard
     # fires.
     bogus = tmp_path / "no" / "such" / "scripts"
-    monkeypatch.setattr(
-        "ralph_executor.loop._pr_skill_scripts_path", lambda _cfg: bogus
-    )
+    monkeypatch.setattr("ralph_executor.loop._pr_skill_scripts_path", lambda _cfg: bogus)
 
     captured: list[SweepContext] = []
 

@@ -153,9 +153,7 @@ def test_load_config_rejects_bad_queue_repo_url(
         load_config()
 
 
-def test_load_config_accepts_queue_repo(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_load_config_accepts_queue_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ws_parent = tmp_path / "ws-parent"
     ws_parent.mkdir()
     _seed_user_config_toml(
@@ -305,9 +303,7 @@ def test_default_queue_branch_is_ralph_queue(
     assert cfg.queue_branch == "ralph-queue"
 
 
-def test_queue_branch_toml_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_queue_branch_toml_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """queue_branch in user TOML overrides the default."""
     ws_parent = tmp_path / "ws-parent"
     ws_parent.mkdir()

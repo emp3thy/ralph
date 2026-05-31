@@ -751,10 +751,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
                 )
             else:
                 clone_root = (
-                    cfg.workspace_root
-                    / "clones"
-                    / pbi.target_info.owner
-                    / pbi.target_info.name
+                    cfg.workspace_root / "clones" / pbi.target_info.owner / pbi.target_info.name
                 )
                 if not clone_root.is_dir():
                     log.warning(

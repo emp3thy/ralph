@@ -21,8 +21,7 @@ def test_warns_when_project_toml_present(
 
     messages = [r.getMessage() for r in caplog.records]
     assert any(
-        "project TOML" in m and "is not supported" in m and str(cfg_file) in m
-        for m in messages
+        "project TOML" in m and "is not supported" in m and str(cfg_file) in m for m in messages
     )
 
 

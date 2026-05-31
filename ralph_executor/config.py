@@ -331,9 +331,7 @@ def _load_user_toml_overrides() -> Mapping[str, Any]:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{cfg_file}: invalid TOML: {exc}") from exc
     silent_allowlist = {"ralph_home", "skills_root", "claude_skills_dir"}
-    unknown = sorted(
-        k for k in data if k not in _TOML_KNOWN_KEYS and k not in silent_allowlist
-    )
+    unknown = sorted(k for k in data if k not in _TOML_KNOWN_KEYS and k not in silent_allowlist)
     for key in unknown:
         log.warning("%s: unknown key %r (ignored)", cfg_file, key)
     return {k: v for k, v in data.items() if k in _TOML_KNOWN_KEYS}
@@ -506,8 +504,7 @@ def load_config() -> ExecutorConfig:
         )
     if not isinstance(queue_repo_value, str):
         raise ConfigError(
-            f"{source_label}: queue_repo must be a string, "
-            f"got {type(queue_repo_value).__name__}"
+            f"{source_label}: queue_repo must be a string, got {type(queue_repo_value).__name__}"
         )
     try:
         parse_target_repo(queue_repo_value)

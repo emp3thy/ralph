@@ -1,4 +1,5 @@
 """Tests for the one-time stale-`ralph_home` warning in user_config."""
+
 from pathlib import Path
 
 import pytest
