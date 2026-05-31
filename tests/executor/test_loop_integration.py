@@ -104,7 +104,11 @@ def test_sweep_runs_when_current_is_empty(
     assert len(captured) == 1, "sweep must run exactly once when current/ is empty"
     ctx = captured[0]
     assert ctx.queue_root == fake_repo / ".ralph"
-    assert ctx.ado_pr_scripts_path == fake_repo / "skills" / "pr-github" / "scripts"
+    # Post-T3: scripts path derives from the ralph executor source tree, not cfg.repo_path.
+    import ralph_executor
+
+    ralph_src = Path(ralph_executor.__file__).resolve().parent.parent
+    assert ctx.ado_pr_scripts_path == ralph_src / "skills" / "pr-github" / "scripts"
     assert ctx.config.ralph_author_email == "ralph-bot@example.com"
 
 
@@ -158,11 +162,17 @@ def test_sweep_skipped_when_author_email_missing(
 def test_sweep_skipped_when_pr_skill_scripts_dir_missing(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without the PR-skill scripts directory on disk, the sweep is skipped."""
     cfg = _cfg_with_sweep_knobs(cfg_for_repo)
-    # Deliberately do NOT create skills/pr-github/scripts/ or skills/ado-pr/scripts/.
+    # Post-T3: _pr_skill_scripts_path resolves against the ralph executor
+    # source tree (which always has skills/pr-github/scripts/ on disk in a
+    # dev checkout). Stub it to a deliberately-absent path so the guard
+    # fires.
+    bogus = tmp_path / "no" / "such" / "scripts"
+    monkeypatch.setattr("ralph_executor.loop._pr_skill_scripts_path", lambda _cfg: bogus)
 
     captured: list[SweepContext] = []
 
@@ -297,7 +307,6 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
 
     # Build cfg targeting the bare on ralph-queue.
     cfg = ExecutorConfig(
-        repo_path=clone,
         queue_repo=f"file://{bare.as_posix()}",
         queue_branch="ralph-queue",
         main_branch="main",

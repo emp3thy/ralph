@@ -2,21 +2,27 @@
 
 Lives at ``~/.ralph/config.toml`` and holds *per-machine* knobs:
 
-  ``ralph_home``         -- directory under which every per-repo ralph
-                            workspace lives (referenced by ``--workspace NAME``)
+  ``workspace_root``     -- directory under which queue clone and every
+                            target clone are materialised
+                            (``<workspace_root>/queue/``,
+                            ``<workspace_root>/clones/<owner>/<name>/``)
+  ``queue_repo``         -- HTTPS URL of the queue repo holding ``.ralph/``
+  ``queue_branch``       -- branch on the queue repo (default ``ralph-queue``)
   ``skills_root``        -- source ``skills/`` tree containing ``pr-<host>/``
   ``claude_skills_dir``  -- where staged ``pr/`` ends up
                             (defaults to ``~/.claude/skills``)
 
-Written by ``ralph-executor init`` and read at runtime by the workspace
-resolution path and ``host_select.prepare_host_environment``. The
-matching environment variables (``$RALPH_HOME``, ``$RALPH_SKILLS_ROOT``,
+Written by ``ralph-executor init`` and read at runtime by
+``ralph_executor.config.load_config`` and
+``host_select.prepare_host_environment``. The matching environment
+variables (``$RALPH_WORKSPACE``, ``$RALPH_SKILLS_ROOT``,
 ``$RALPH_CLAUDE_SKILLS_DIR``) always override the file for the daemon /
 systemd escape-hatch case.
 
 Layout intentionally minimal: this file holds *user* preferences
-(where things live on THIS machine), not *project* knobs (which live
-in ``<repo>/.ralph/config.toml`` per Plan-7 layering).
+(where things live on THIS machine). There is no project-level TOML —
+``<repo>/.ralph/config.toml`` in a target clone is ignored with a
+WARNING at iteration time.
 """
 
 from __future__ import annotations
@@ -75,14 +81,6 @@ def _read_path_key(key: str) -> Path | None:
             f"{user_config_path()}: {key} must be a non-empty string, got {type(raw).__name__}"
         )
     return Path(raw.strip()).expanduser()
-
-
-def read_ralph_home() -> Path | None:
-    """Return the ``ralph_home`` value from the user config, or None.
-
-    Errors on malformed TOML / wrong-type value / unreadable file.
-    """
-    return _read_path_key("ralph_home")
 
 
 def read_workspace_root() -> Path | None:
@@ -203,10 +201,10 @@ def _write_user_config(updates: dict[str, object]) -> Path:
 
     Reads the existing file (if any), updates the given keys, and writes
     back. Unknown / non-scalar pre-existing keys are dropped from the
-    rewritten output — same trade-off as the original
-    ``write_ralph_home`` rewrite path, but now key-merging instead of
-    whole-file-clobber so adding a new key (``queue_repo``) doesn't lose
-    the existing one (``ralph_home``).
+    rewritten output: key-merging (not whole-file clobber) preserves
+    co-existing user-level knobs (``workspace_root`` / ``queue_repo`` /
+    ``queue_branch`` / ``skills_root`` / ``claude_skills_dir``) when any
+    one of them is rewritten.
     """
     cfg_file = user_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
@@ -236,21 +234,11 @@ def _write_user_config(updates: dict[str, object]) -> Path:
     return cfg_file
 
 
-def write_ralph_home(value: Path) -> Path:
-    """Persist ``ralph_home`` to ``~/.ralph/config.toml``.
-
-    Merges with existing keys so subsequent writes of other knobs
-    (``queue_repo``, ``skills_root``, ...) survive. Returns the path
-    that was written so callers can echo it back to the user.
-    """
-    return _write_user_config({"ralph_home": str(value)})
-
-
 def write_queue_repo(url: str) -> Path:
     """Persist ``queue_repo`` to ``~/.ralph/config.toml``.
 
-    Merges with existing keys so ``ralph_home`` (and any future user-
-    level knobs) are preserved.
+    Merges with existing keys so ``workspace_root`` (and any future
+    user-level knobs) are preserved.
     """
     return _write_user_config({"queue_repo": url})
 
@@ -258,6 +246,44 @@ def write_queue_repo(url: str) -> Path:
 def write_queue_branch(branch: str) -> Path:
     """Persist ``queue_branch`` to ``~/.ralph/config.toml``.
 
-    Merges with existing keys so ``queue_repo`` / ``ralph_home`` survive.
+    Merges with existing keys so ``queue_repo`` / ``workspace_root`` survive.
     """
     return _write_user_config({"queue_branch": branch})
+
+
+def write_workspace_root(value: Path) -> Path:
+    """Persist ``workspace_root`` to ``~/.ralph/config.toml``.
+
+    Merges with existing keys so ``queue_repo`` / ``queue_branch`` /
+    other user-level knobs survive. Mirrors ``write_queue_repo`` /
+    ``write_queue_branch`` and is the single write path used by
+    ``ralph-executor init`` for the workspace_root prompt.
+    """
+    return _write_user_config({"workspace_root": str(value)})
+
+
+def _warn_stale_ralph_home_in_user_config() -> None:
+    """Emit a one-time WARNING if ``~/.ralph/config.toml`` still has ``ralph_home``.
+
+    Called once at the top of ``load_config``. The key is no longer read
+    anywhere — silent removal would leave operators wondering why their
+    ``--workspace NAME`` invocations stopped resolving. The WARNING points
+    at the file path so the operator can delete the stale line.
+    """
+    cfg_file = user_config_path()
+    if not cfg_file.is_file():
+        return
+    try:
+        with cfg_file.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, OSError):
+        # Malformed / unreadable user TOML surfaces its own ConfigError
+        # via _load_user_config when read for real keys; suppress here
+        # so the warning helper never crashes startup.
+        return
+    if "ralph_home" in data:
+        log.warning(
+            "%s: 'ralph_home' key is no longer supported and is ignored. "
+            "Delete the line; the executor uses 'workspace_root' instead.",
+            cfg_file,
+        )

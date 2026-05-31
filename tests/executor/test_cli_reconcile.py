@@ -20,10 +20,9 @@ def _make_orphan(pending_dir: Path, pbi_id: str) -> Path:
 def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Layout the queue-clone topology the post-split CLI expects.
 
-    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``
-    (not ``cfg.repo_path``), so ``RALPH_WORKSPACE`` is monkeypatched to
-    ``<tmp_path>/ws`` and the orphan is placed at
-    ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
+    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``,
+    so ``RALPH_WORKSPACE`` is monkeypatched to ``<tmp_path>/ws`` and the
+    orphan is placed at ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -38,18 +37,30 @@ def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
         'queue_repo = "https://github.com/example/queue"\n',
         encoding="utf-8",
     )
-    # Reconcile resolves the scripts dir from cfg.repo_path / skills/pr-github/scripts.
-    # The CLI rejects with exit 2 if that dir is missing, so create it (empty —
-    # reconcile_all is mocked in these tests so the script itself isn't invoked).
+    # Reconcile resolves the scripts dir from the ralph executor source tree
+    # (skills/pr-github/scripts) — the CLI rejects with exit 2 if that dir is
+    # missing under the queue clone, so create it (empty — reconcile_all is
+    # mocked in these tests so the script itself isn't invoked).
     scripts_dir = repo / "skills" / "pr-github" / "scripts"
     scripts_dir.mkdir(parents=True)
     _make_orphan(queue / "pending-pr", "ORPHAN-1")
     monkeypatch.setenv("RALPH_WORKSPACE", str(workspace))
+    # KILL-RALPH-HOME made queue_repo a user-config-only field. Redirect
+    # ``Path.home()`` to a tmp dir and write a minimal ``~/.ralph/config.toml``
+    # so ``load_config`` finds a queue_repo on hosts (CI) without one.
+    fake_home = tmp_path / "home"
+    (fake_home / ".ralph").mkdir(parents=True)
+    (fake_home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/example/queue"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
     return repo
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_subcommand_calls_reconcile_all(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -67,8 +78,9 @@ def test_reconcile_subcommand_calls_reconcile_all(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    # Reconcile derives the queue clone path from RALPH_WORKSPACE, which
+    # is set by the fake_repo_with_orphan fixture.
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     assert captured_calls == [False]
@@ -77,8 +89,8 @@ def test_reconcile_subcommand_calls_reconcile_all(
     assert "moved_to_inbox" in out
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_dry_run_flag_flows_through(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ralph_executor.sweep.types import ReconcileReport
@@ -92,15 +104,14 @@ def test_reconcile_dry_run_flag_flows_through(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan), "--dry-run"])
+    exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
     assert captured_calls == [True]
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_subcommand_reports_no_orphans_cleanly(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -112,16 +123,15 @@ def test_reconcile_subcommand_reports_no_orphans_cleanly(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "no orphans" in out
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_summary_counts_include_errors(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -147,8 +157,7 @@ def test_reconcile_summary_counts_include_errors(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -181,8 +190,7 @@ def test_reconcile_subcommand_prints_current_section_when_stale_orphan_present(
     )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan)])
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -214,8 +222,7 @@ def test_reconcile_subcommand_current_dry_run_does_not_delete(
     )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    exit_code = cli_main(["reconcile", "--repo", str(fake_repo_with_orphan), "--dry-run"])
+    exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -239,11 +246,27 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
         'queue_repo = "https://github.com/example/queue"\n',
         encoding="utf-8",
     )
-    # No skills/pr-github/scripts/ — CLI must fail fast.
+    # _pr_skill_scripts_path resolves against the ralph executor source
+    # tree. Stub it to an absent path so the CLI guard fails fast.
+    bogus = tmp_path / "no" / "such" / "scripts"
+    monkeypatch.setattr("ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
-    exit_code = cli_main(["reconcile", "--repo", str(repo)])
+    # KILL-RALPH-HOME made queue_repo a user-config-only field, so without a
+    # user TOML load_config raises before the scripts-dir guard fires. Point
+    # Path.home() at a tmp dir holding a minimal user config so the CLI gets
+    # past load_config and reaches the scripts-dir check we want to exercise.
+    fake_home = tmp_path / "home"
+    (fake_home / ".ralph").mkdir(parents=True)
+    (fake_home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/example/queue"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("RALPH_WORKSPACE", str(tmp_path / "ws"))
+    (tmp_path / "ws" / "queue").mkdir(parents=True)
+    exit_code = cli_main(["reconcile"])
 
     assert exit_code == 2
     err = capsys.readouterr().err

@@ -39,13 +39,20 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _setup_current_pbi(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> PBI:
+    from dataclasses import replace
+
     write_sample_pbi(fake_repo, pbi_id="WI-1234")
     _git(fake_repo, "add", ".ralph/inbox/WI-1234")
     _git(fake_repo, "commit", "-m", "inbox: WI-1234")
     _git(fake_repo, "push", "origin", "main")
     source = FilesystemQueueSource(cfg_for_repo)
     pbi = source.inbox_pbis()[0]
-    return move_inbox_to_current(cfg_for_repo, pbi)
+    moved = move_inbox_to_current(cfg_for_repo, pbi)
+    # T5: spawn_claude_p no longer falls back to ``cfg.repo_path`` for cwd;
+    # ``pbi.work_worktree`` must be set. In production ``_claim_pbi``
+    # populates it; here we pin it to ``fake_repo`` so existing tests
+    # exercise the same cwd they did before the refactor.
+    return replace(moved, work_worktree=fake_repo)
 
 
 def test_spawn_invokes_claude_with_pbi_context(

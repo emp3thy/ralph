@@ -5,10 +5,9 @@
 
 .DESCRIPTION
     Verifies prerequisites (uv, gh, claude, ~/.ralph/config.toml), syncs the
-    venv, and launches ralph-executor against the chosen workspace.
-
-.PARAMETER Workspace
-    Workspace name under $ralph_home. Defaults to "queue".
+    venv, and launches ralph-executor. The queue PBI's target_repo
+    frontmatter is the single source of truth for which target repo the
+    executor works on; no -Workspace parameter is needed.
 
 .PARAMETER Watch
     Pass --watch to ralph-executor (daemon mode; survives idle).
@@ -21,11 +20,11 @@
 
 .EXAMPLE
     .\scripts\start-ralph.ps1
-    .\scripts\start-ralph.ps1 -Workspace queue -Watch
+    .\scripts\start-ralph.ps1 -Watch
+    .\scripts\start-ralph.ps1 -Once
 #>
 [CmdletBinding()]
 param(
-    [string]$Workspace = 'queue',
     [switch]$Watch,
     [switch]$Once,
     [ValidateSet('DEBUG', 'INFO', 'WARNING', 'ERROR')]
@@ -67,7 +66,7 @@ Write-Host "[start-ralph] syncing venv (uv sync)..."
 & uv sync
 if ($LASTEXITCODE -ne 0) { throw "uv sync failed (exit $LASTEXITCODE)" }
 
-$cmdArgs = @('run', 'ralph-executor', '--workspace', $Workspace, '--log-level', $LogLevel)
+$cmdArgs = @('run', 'ralph-executor', '--log-level', $LogLevel)
 if ($Watch) { $cmdArgs += '--watch' }
 if ($Once)  { $cmdArgs += '--once' }
 

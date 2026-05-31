@@ -236,7 +236,6 @@ def cfg_for_repo(
     """
     bare = tmp_path / "queue.git"
     return ExecutorConfig(
-        repo_path=fake_repo,
         queue_repo=f"file://{bare.as_posix()}",
         # NOTE: the ``fake_repo`` seed pushes a single ``main`` branch to
         # the bare remote, so unit tests in this suite stay on ``main``
@@ -256,6 +255,41 @@ def cfg_for_repo(
         claude_permission_mode="bypassPermissions",
         anthropic_api_key="fake-key",
         git_host="github",
+        gh_owner="",
+        ado_org_url="",
+        ado_project="",
+        halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
+        use_worktrees=True,
+        bot_author_email="",
+        stale_days=3,
+        bash_max_timeout_ms=900_000,
+        workspace_root=tmp_path / "ws",
+        claude_session_timeout_seconds=1200,
+        same_file_min_prs=10,
+        same_file_window_hours=24.0,
+    )
+
+
+def _build_minimal_cfg(tmp_path: Path, *, git_host: str = "github") -> ExecutorConfig:
+    """Construct a minimal ExecutorConfig.
+
+    Used by tests that only need a cfg shape, not a running queue or
+    target clone. Tests that need spawning still go through
+    ``cfg_for_repo``.
+    """
+    return ExecutorConfig(
+        queue_repo="file:///tmp/bare.git",
+        queue_branch="ralph-queue",
+        main_branch="main",
+        max_attempts=3,
+        log_level=20,
+        iteration_sleep_seconds=0.0,
+        claude_binary="claude",
+        claude_permission_mode="bypassPermissions",
+        anthropic_api_key="",
+        git_host=git_host,
         gh_owner="",
         ado_org_url="",
         ado_project="",

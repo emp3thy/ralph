@@ -2,8 +2,8 @@
 
 Usage::
 
-    ralph-executor [--watch] [--once] [--iterations N]
-                   [--repo PATH | --workspace NAME] [--log-level LEVEL]
+    ralph-executor [--watch] [--once] [--iterations N] [--log-level LEVEL]
+                   [--queue-repo URL] [--queue-branch BRANCH]
     ralph-executor health --ready
     ralph-executor health --live
     ralph-executor doctor [--json]
@@ -16,25 +16,20 @@ Usage::
 * ``--once``           -- run a single iteration and exit. Alias for
                           ``--iterations 1``. Kept for backward compatibility.
 * ``--iterations N``   -- run exactly N iterations and exit.
-* ``--repo PATH``      -- explicit path to the repo Ralph operates on.
-* ``--workspace NAME`` -- resolve repo path against ``$RALPH_HOME/NAME``.
-                          Mutually exclusive with ``--repo``. Requires
-                          ``RALPH_HOME`` to be set. Convention for running
-                          multiple ralphs on one machine: keep every
-                          ralph's checkout under ``$RALPH_HOME/<name>/``.
+* ``--queue-repo URL`` -- override the queue_repo TOML value for this run.
+* ``--queue-branch B`` -- override the queue_branch TOML value for this run.
 * ``--log-level``      -- override ``RALPH_LOG_LEVEL`` for this run.
 
-Repo path resolution (highest → lowest):
-
-  1. ``--repo PATH``
-  2. ``--workspace NAME``  →  ``$RALPH_HOME/NAME``
-  3. ``RALPH_REPO_PATH`` env var
-  4. Current working directory
+The executor is queue-driven: each iteration reads the next PBI's
+``target_repo`` from frontmatter and clones (or reuses) it under
+``<workspace_root>/clones/<owner>/<name>/``. There is no operator-facing
+flag for picking the per-iteration target; the queue PBI is the single
+source of truth.
 
 Startup sequence (BEFORE the iteration loop):
 
   1. Parse argv.
-  2. ``load_config()`` -- reads RALPH_* env vars, validates the repo.
+  2. ``load_config()`` -- reads RALPH_* env vars + ``~/.ralph/config.toml``.
   3. Apply CLI overrides to the loaded config.
   4. Configure logging.
   5. ``prepare_host_environment()`` -- reads RALPH_GIT_HOST, verifies
@@ -62,7 +57,6 @@ from ralph_executor.config import (
     ConfigError,
     ExecutorConfig,
     load_config,
-    validate_repo_path,
 )
 from ralph_executor.host_select import (
     HostSelectionError,
@@ -112,19 +106,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Run exactly N iterations and exit.",
     )
-    repo_group = parser.add_mutually_exclusive_group()
-    repo_group.add_argument(
-        "--repo",
-        help=("Explicit path to the repo Ralph operates on. Overrides RALPH_REPO_PATH and cwd."),
-    )
-    repo_group.add_argument(
-        "--workspace",
-        metavar="NAME",
-        help=(
-            "Resolve repo path against $RALPH_HOME/NAME. Requires RALPH_HOME "
-            "to be set. Convention for running multiple ralphs on one host."
-        ),
-    )
+    # --repo and --workspace removed: the queue PBI's target_repo
+    # frontmatter is the only input that decides which repo the executor
+    # works on per iteration. The operator does not pre-clone target
+    # repos; the loop materialises every target under workspace_root.
     parser.add_argument(
         "--log-level",
         choices=_VALID_LOG_LEVELS,
@@ -180,54 +165,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # ``ralph-executor init``
     init_parser = subparsers.add_parser(
         "init",
-        help="Per-machine setup: pick ralph_home, write ~/.ralph/config.toml.",
-    )
-    init_parser.add_argument(
-        "--ralph-home",
-        type=Path,
-        metavar="PATH",
-        help="Skip the prompt and set ralph_home to PATH.",
+        help="Per-machine setup: pick workspace_root, write ~/.ralph/config.toml.",
     )
     init_parser.add_argument(
         "--yes",
         action="store_true",
-        help="Non-interactive: accept the OS default for ralph_home.",
+        help="Non-interactive: accept the OS default for workspace_root.",
     )
 
-    # ``ralph-executor scaffold``
-    scaffold_parser = subparsers.add_parser(
-        "scaffold",
-        help=(
-            "Per-repo setup: create ralph-queue branch with .ralph/ skeleton "
-            "(inbox, current, pending-pr, done, blocked) + commented config.toml stub. "
-            "Resolves target via the same --repo / --workspace / cwd chain as the loop."
-        ),
-    )
-    # Re-register --repo / --workspace on the subparser so they can appear
-    # AFTER the `scaffold` subcommand name (which matches the natural CLI
-    # shape `ralph-executor scaffold --repo PATH`). argparse-level mutual
-    # exclusion is preserved by the inner group.
-    scaffold_repo_group = scaffold_parser.add_mutually_exclusive_group()
-    scaffold_repo_group.add_argument(
-        "--repo",
-        help="Explicit path to the repo to scaffold.",
-    )
-    scaffold_repo_group.add_argument(
-        "--workspace",
-        metavar="NAME",
-        help="Resolve target against $RALPH_HOME/NAME (or ~/.ralph/config.toml).",
-    )
-    scaffold_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Scaffold even if ralph-queue branch already exists.",
-    )
-    scaffold_parser.add_argument(
-        "--no-config-toml",
-        dest="with_config_toml",
-        action="store_false",
-        help="Skip writing the .ralph/config.toml stub.",
-    )
+    # ``ralph-executor scaffold`` removed (KILL-RALPH-HOME T10). The
+    # queue is now bootstrapped externally via
+    # ``scripts/setup_ralph_queue_github.py``; the executor no longer
+    # offers a per-repo subcommand.
 
     # ``ralph-executor migrate-queue``
     migrate_parser = subparsers.add_parser(
@@ -258,16 +207,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "them to done/blocked/inbox based on PR state."
         ),
     )
-    reconcile_repo_group = reconcile_parser.add_mutually_exclusive_group()
-    reconcile_repo_group.add_argument(
-        "--repo",
-        help="Explicit path to the repo Ralph operates on.",
-    )
-    reconcile_repo_group.add_argument(
-        "--workspace",
-        metavar="NAME",
-        help="Resolve repo path against $RALPH_HOME/NAME.",
-    )
+    # ``--repo`` / ``--workspace`` removed from reconcile (T4 of
+    # KILL-RALPH-HOME). The reconcile path reads ``.ralph/`` from
+    # ``<workspace_root>/queue/``; the queue-clone root is fixed by
+    # ``workspace_root`` in ``~/.ralph/config.toml`` and there is no
+    # operator-facing knob for overriding the target repo per run.
     reconcile_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -286,74 +230,12 @@ def _configure_logging(level: int) -> None:
     logging.getLogger("ralph_executor").setLevel(level)
 
 
-def _scaffold_resolve_target(args: argparse.Namespace) -> Path:
-    """Resolve the scaffold target via the same chain the loop uses:
-    ``--repo`` > ``--workspace`` > ``$RALPH_REPO_PATH`` > cwd.
-
-    Unlike ``load_config``, the scaffold path is NOT required to be a
-    valid git repo yet — ``cmd_scaffold`` will call ``validate_repo_path``
-    itself and surface the error consistently with its other errors.
-    """
-    if args.repo:
-        return Path(args.repo).resolve()
-    if args.workspace:
-        return _resolve_workspace(args.workspace)
-    env_value = os.environ.get("RALPH_REPO_PATH", "").strip()
-    if env_value:
-        return Path(env_value).resolve()
-    return Path.cwd().resolve()
-
-
-def _resolve_workspace(name: str) -> Path:
-    """Resolve ``--workspace NAME`` against the ralph_home root.
-
-    Root resolution: ``$RALPH_HOME`` env var if set, else ``ralph_home``
-    from ``~/.ralph/config.toml`` (written by ``ralph-executor init``).
-
-    ``NAME`` must be a plain directory name (no path separators, no
-    parent-traversal, not absolute). Otherwise ``Path(home) / name``
-    would silently escape the root — Python's ``Path / abs`` discards
-    the LHS, and ``..`` traversal resolves outside the root.
-
-    Raises ``ConfigError`` if no root can be resolved or if ``name``
-    violates the plain-directory-name invariant.
-    """
-    from ralph_executor.user_config import read_ralph_home, user_config_path
-
-    env_value = os.environ.get("RALPH_HOME", "").strip()
-    if env_value:
-        home_path = Path(env_value)
-    else:
-        home_path_or_none = read_ralph_home()
-        if home_path_or_none is None:
-            raise ConfigError(
-                "--workspace needs a ralph_home root. Set $RALPH_HOME, or run "
-                f"`ralph-executor init` to write one to {user_config_path()}."
-            )
-        home_path = home_path_or_none
-    name_path = Path(name)
-    if name_path.is_absolute() or len(name_path.parts) != 1 or name_path.parts[0] in ("..", "."):
-        raise ConfigError(
-            f"--workspace name must be a plain directory name "
-            f"(no separators, no '.' or '..', not absolute); got: {name!r}"
-        )
-    return (home_path / name).resolve()
-
-
 def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
-    repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
     queue_repo: str = cfg.queue_repo
     queue_branch: str = cfg.queue_branch
     watch_mode: bool = cfg.watch_mode
     changed = False
-    # argparse already enforces mutual exclusion between --repo and --workspace.
-    if args.repo:
-        repo_path = validate_repo_path(Path(args.repo).resolve(), source="--repo")
-        changed = True
-    elif args.workspace:
-        repo_path = validate_repo_path(_resolve_workspace(args.workspace), source="--workspace")
-        changed = True
     if args.log_level:
         log_level = int(logging.getLevelName(args.log_level))
         changed = True
@@ -393,7 +275,6 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         return cfg
     return dataclasses.replace(
         cfg,
-        repo_path=repo_path,
         log_level=log_level,
         queue_repo=queue_repo,
         queue_branch=queue_branch,
@@ -463,16 +344,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """Handler for ``ralph-executor reconcile [--dry-run]``.
 
-    Loads the executor config (with ``--repo`` / ``--workspace`` overrides
-    via ``_apply_overrides``), resolves the PR-skill scripts directory for
-    the configured git host, builds a ``SweepContext`` and delegates to
-    ``reconcile_all``. Prints a one-line-per-orphan summary table.
+    Loads the executor config, resolves the PR-skill scripts directory
+    for the configured git host, builds a ``SweepContext`` rooted at
+    ``<workspace_root>/queue/.ralph`` and delegates to ``reconcile_all``.
+    Prints a one-line-per-orphan summary table.
 
     Returns 0 on success, 2 on config or environment errors.
     """
     try:
         cfg = load_config()
-        cfg = _apply_overrides(cfg, args)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -491,8 +371,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     from ralph_executor.loop import _queue_repo_root
 
     ctx = SweepContext(
-        # Worktree-mode awareness: `.ralph/` lives in the queue worktree
-        # (not the primary checkout, which has no `.ralph/`).
+        # Worktree-mode awareness: ``.ralph/`` lives in the queue clone at
+        # ``<workspace_root>/queue/`` (not in any per-target checkout).
         queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=SweepConfig(
@@ -501,9 +381,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             stale_threshold=timedelta(days=3),
             now=datetime.now(tz=UTC),
         ),
-        # repo_name must come from the primary checkout name, not from
-        # queue_root.parent.name (which is "queue" in worktree mode).
-        repo_name=cfg.repo_path.name,
+        # Sweep is queue-only: label the context with the queue clone's
+        # directory name (always ``queue`` under ``workspace_root``).
+        repo_name=_queue_repo_root(cfg).name,
     )
 
     report = reconcile_all(ctx, dry_run=args.dry_run)
@@ -570,25 +450,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from ralph_executor.setup_cmds import cmd_init
 
         try:
-            return cmd_init(ralph_home=args.ralph_home, assume_yes=args.yes)
+            return cmd_init(assume_yes=args.yes)
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-    if args.subcommand == "scaffold":
-        from ralph_executor.setup_cmds import cmd_scaffold
-
-        # Reuse the --repo / --workspace / cwd resolution chain rather
-        # than reimplement: synthesise a path the same way the loop does.
-        try:
-            scaffold_target = _scaffold_resolve_target(args)
-        except ConfigError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-        return cmd_scaffold(
-            repo_path=scaffold_target,
-            force=args.force,
-            with_config_toml=args.with_config_toml,
-        )
     if args.subcommand == "reconcile":
         return _cmd_reconcile(args)
     if args.subcommand == "migrate-queue":
@@ -622,8 +487,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(cfg.log_level)
 
     log.info(
-        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s main=%s)",
-        cfg.repo_path,
+        "ralph-executor starting (workspace_root=%s queue_repo=%s queue_branch=%s main=%s)",
+        cfg.workspace_root,
         cfg.queue_repo,
         cfg.queue_branch,
         cfg.main_branch,

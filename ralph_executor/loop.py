@@ -175,10 +175,12 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
             queue_root=_queue_repo_root(cfg) / ".ralph",
             ado_pr_scripts_path=scripts_path,
             config=sweep_cfg,
-            # Always derive the repo name from the primary checkout, NOT
-            # from queue_root.parent.name — the latter is the literal
-            # ``queue`` directory name under workspace_root.
-            repo_name=cfg.repo_path.name,
+            # The queue clone is the single repo the sweep reads/writes
+            # (every PR scanned belongs to a target reachable from the
+            # queue's pending-pr index); label the sweep context with
+            # its directory name — by convention ``queue`` under
+            # ``workspace_root``.
+            repo_name=_queue_repo_root(cfg).name,
             event_log=event_log,
         )
         result = run_sweep(ctx=sweep_ctx)
@@ -199,23 +201,58 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
     )
 
 
+def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
+    """Emit a WARNING if ``<clone>/.ralph/config.toml`` exists.
+
+    Called after every successful ``ensure_clone`` so a freshly cloned
+    target gets exactly one WARNING per iteration that touches it. The
+    file is NOT loaded — project TOML is gone after this refactor. The
+    WARNING names the path so the operator can move the settings to
+    ``~/.ralph/config.toml`` and delete the file.
+
+    Detection failure (permission denied, transient I/O error reading
+    the clone) is suppressed at DEBUG so a flaky filesystem never
+    crashes the iteration.
+    """
+    cfg_file = clone_root / ".ralph" / "config.toml"
+    try:
+        present = cfg_file.is_file()
+    except OSError as exc:
+        log.debug("project-TOML check failed for %s: %s", cfg_file, exc)
+        return
+    if present:
+        log.warning(
+            "project TOML at %s is not supported -- ignored. "
+            "Move settings to ~/.ralph/config.toml.",
+            cfg_file,
+        )
+
+
 def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
     """Return the on-disk scripts directory for the configured PR skill.
 
-    ``cfg.git_host == "github"`` → ``skills/pr-github/scripts/``.
-    ``cfg.git_host == "ado"``    → ``skills/ado-pr/scripts/``.
+    The scripts live in the ralph executor source tree (``skills/pr-github/``
+    or ``skills/ado-pr/``), NOT in any target / queue clone. We resolve
+    relative to the ``ralph_executor`` package location so the lookup is
+    independent of CWD and of any operator-supplied repo path.
+
+    ``cfg.git_host == "github"`` → ``<ralph-src>/skills/pr-github/scripts/``.
+    ``cfg.git_host == "ado"``    → ``<ralph-src>/skills/ado-pr/scripts/``.
     Empty / unknown host: prefer ``pr-github`` if it exists, else fall
     back to ``ado-pr`` (existence is verified by the caller).
     """
+    import ralph_executor
+
+    ralph_src = Path(ralph_executor.__file__).resolve().parent.parent
     host = (cfg.git_host or "").strip().lower()
     if host == "github":
-        return cfg.repo_path / "skills" / "pr-github" / "scripts"
+        return ralph_src / "skills" / "pr-github" / "scripts"
     if host == "ado":
-        return cfg.repo_path / "skills" / "ado-pr" / "scripts"
-    pr_github = cfg.repo_path / "skills" / "pr-github" / "scripts"
+        return ralph_src / "skills" / "ado-pr" / "scripts"
+    pr_github = ralph_src / "skills" / "pr-github" / "scripts"
     if pr_github.is_dir():
         return pr_github
-    return cfg.repo_path / "skills" / "ado-pr" / "scripts"
+    return ralph_src / "skills" / "ado-pr" / "scripts"
 
 
 def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
@@ -396,8 +433,9 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
     just a fetch) and returns the same ``clone_root`` the claim used.
     Calling ``ensure_clone`` again avoids relying on ``pbi.work_worktree``
     (which is runtime-only and absent after a queue re-read between
-    iterations); falling back to ``cfg.repo_path`` would look in the
-    wrong directory entirely and leak orphan worktrees per PBI.
+    iterations); there is no process-wide ``repo_path`` to fall back
+    onto after KILL-RALPH-HOME, so the deterministic clone root from
+    ``ensure_clone`` is the only honest source.
 
     No-op in legacy single-checkout mode or when target_repo / ensure_clone
     are unavailable (defensive). Tolerant of removal failures — an orphan
@@ -558,6 +596,7 @@ def _claim_pbi_worktree(
         clone = tc_mod.ensure_clone(info, workspace_root=cfg.workspace_root)
     except tc_mod.TargetUnreachable as exc:
         raise _ClaimError(f"target unreachable: {exc}") from exc
+    _warn_project_toml_in_target_clone(clone.clone_root)
     event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
@@ -694,7 +733,36 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             )
 
         if outcome.kind == "pr_created":
-            touched = git_ops.diff_names(cfg.repo_path, cfg.main_branch, _feature_branch_name(pbi))
+            # The diff must run against the TARGET clone (which holds the
+            # feature branch the PR was opened from), NOT ralph's own
+            # checkout. Derive the clone root from ``pbi.target_info``
+            # populated by ``_claim_pbi`` / ``iterate_once``'s resume
+            # path. Defensive empties (symmetric to the resume path's
+            # tolerance for a missing clone): ``target_info=None`` from
+            # malformed frontmatter, or the deterministic clone_root
+            # not on disk (transient fetch failure earlier in the
+            # iteration) — log + surface an empty touched-files list
+            # rather than crash; ``pr_created`` itself is still valid.
+            touched: list[str] = []
+            if pbi.target_info is None:
+                log.warning(
+                    "PBI %s pr_created but target_info missing; touched_files=[]",
+                    pbi.id,
+                )
+            else:
+                clone_root = (
+                    cfg.workspace_root / "clones" / pbi.target_info.owner / pbi.target_info.name
+                )
+                if not clone_root.is_dir():
+                    log.warning(
+                        "PBI %s pr_created but target clone %s is missing; touched_files=[]",
+                        pbi.id,
+                        clone_root,
+                    )
+                else:
+                    touched = git_ops.diff_names(
+                        clone_root, cfg.main_branch, _feature_branch_name(pbi)
+                    )
             # Clean up the work worktree BEFORE the queue move — the move
             # invalidates ``pbi.path`` (used by ``_read_target_repo_from_pbi``
             # when ``pbi.work_worktree`` was not threaded through).
@@ -770,9 +838,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         #     target clone_root without depending on ``pbi.path`` (which
         #     the move_*_to_* operations invalidate before cleanup runs);
         #   * ``spawn_claude_p`` uses the per-PBI work worktree inside the
-        #     target clone as cwd for resumed PBIs, NOT ``cfg.repo_path``
-        #     (which is ralph's own repo and would corrupt the wrong
-        #     repository for every iteration after the first).
+        #     target clone as cwd for resumed PBIs. There is no
+        #     process-wide ``repo_path`` to fall back onto after
+        #     KILL-RALPH-HOME; absence of ``pbi.work_worktree`` here
+        #     would raise ``ConfigError`` inside spawn_claude_p, which is
+        #     the correct fail-fast rather than picking a wrong cwd.
         from dataclasses import replace as _replace
 
         from ralph_executor.url_utils import parse_target_repo
@@ -802,9 +872,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         if cfg.use_worktrees and info is not None:
             # ``clone_root`` is fully determined by workspace_root + owner +
             # name; compute deterministically so a transient fetch failure
-            # (network blip, auth expired, etc.) does NOT silently force
-            # spawn_claude_p to fall back to ``cfg.repo_path`` — that would
-            # write Claude's target-repo edits into ralph's own repository.
+            # (network blip, auth expired, etc.) does NOT leave
+            # ``pbi.work_worktree`` unset — spawn_claude_p raises
+            # ConfigError on an unset worktree (the post-KILL-RALPH-HOME
+            # contract), and we want the resume path to proceed against
+            # the cached deterministic clone instead.
             clone_root = cfg.workspace_root / "clones" / info.owner / info.name
             try:
                 from ralph_executor.target_clone import ensure_clone
@@ -818,6 +890,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                     exc_info=True,
                 )
             if clone_root.is_dir():
+                _warn_project_toml_in_target_clone(clone_root)
                 work_wt = work_worktree_path(clone_root, current.id)
         current = _replace(
             current,

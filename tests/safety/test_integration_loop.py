@@ -112,7 +112,6 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
 
     fake_claude = _make_fake_claude(tmp_path)
     cfg = ExecutorConfig(
-        repo_path=clone,
         queue_repo=f"file://{bare.as_posix()}",
         # NOTE: the bare remote seeded above only carries ``main``, so this
         # fixture stays on ``main`` for the queue branch. The production

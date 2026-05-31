@@ -1,4 +1,11 @@
-"""Tests for ``ralph_executor.config``."""
+"""Tests for ``ralph_executor.config``.
+
+After KILL-RALPH-HOME T8, ``ExecutorConfig`` no longer carries
+``repo_path`` and ``load_config`` no longer reads project TOML — every
+TOML knob lives at the user level ``~/.ralph/config.toml``. These tests
+seed that file via the ``_seed_user_config_toml`` helper and rely on a
+monkeypatched ``HOME`` / ``USERPROFILE`` so reads land on the temp dir.
+"""
 
 from __future__ import annotations
 
@@ -13,32 +20,48 @@ from ralph_executor.config import (
     load_config,
 )
 
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    return repo
-
-
 QUEUE_REPO_URL = "https://github.com/example/queue"
 
 
-def _write_queue_repo_toml(repo: Path) -> None:
-    cfg_dir = repo / ".ralph"
-    cfg_dir.mkdir(exist_ok=True)
-    (cfg_dir / "config.toml").write_text(
-        f'queue_repo = "{QUEUE_REPO_URL}"\n',
-        encoding="utf-8",
-    )
+def _seed_user_config_toml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    **kwargs: str,
+) -> Path:
+    """Seed ``~/.ralph/config.toml`` inside a monkeypatched HOME.
+
+    ``kwargs`` hold the keys to write (``queue_repo``, ``queue_branch``,
+    ``workspace_root``, ...). Values are emitted as TOML literal strings
+    (single-quoted) so Windows backslashes survive without escape
+    processing. Returns the config file path so callers can assert on
+    its contents.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_dir = tmp_path / ".ralph"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    lines = [f"{k} = '{v}'" for k, v in kwargs.items()]
+    cfg_file = cfg_dir / "config.toml"
+    cfg_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return cfg_file
 
 
 @pytest.fixture
-def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+def env_minimal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Seed user TOML with a valid queue_repo + workspace_root.
+
+    Returns ``tmp_path`` (the monkeypatched HOME) for callers that need
+    to layer on more files.
+    """
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
-    _write_queue_repo_toml(git_repo)
     for var in (
         "RALPH_MAIN_BRANCH",
         "RALPH_MAX_ATTEMPTS",
@@ -48,14 +71,15 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_CLAUDE_PERMISSION_MODE",
         "RALPH_USE_WORKTREES",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
+        "RALPH_WORKSPACE",
+        "RALPH_QUEUE_BRANCH",
     ):
         monkeypatch.delenv(var, raising=False)
-    return git_repo
+    return tmp_path
 
 
 def test_load_config_uses_defaults(env_minimal: Path) -> None:
     cfg = load_config()
-    assert cfg.repo_path == env_minimal
     assert cfg.queue_repo == QUEUE_REPO_URL
     assert cfg.main_branch == "main"
     assert cfg.max_attempts == 20
@@ -91,38 +115,54 @@ def test_executor_config_has_queue_repo_field() -> None:
     names = {f.name for f in fields(ExecutorConfig)}
     assert "queue_repo" in names
     assert "queue_branch" in names
+    # KILL-RALPH-HOME T8 deleted the field; assert its absence so a
+    # future regression that re-adds it is caught at type-check time.
+    assert "repo_path" not in names
 
 
 def test_load_config_rejects_missing_queue_repo(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """queue_repo is required. Missing TOML key → ConfigError."""
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        main_branch="main",
+        workspace_root=str(ws_parent / "ws"),
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    # Write a TOML that lacks queue_repo.
-    (git_repo / ".ralph").mkdir(exist_ok=True)
-    (git_repo / ".ralph" / "config.toml").write_text("main_branch = 'main'\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="queue_repo"):
         load_config()
 
 
 def test_load_config_rejects_bad_queue_repo_url(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    (git_repo / ".ralph").mkdir(exist_ok=True)
-    (git_repo / ".ralph" / "config.toml").write_text(
-        'queue_repo = "ftp://example.com/queue"\n', encoding="utf-8"
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo="ftp://example.com/queue",
+        workspace_root=str(ws_parent / "ws"),
     )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     with pytest.raises(ConfigError, match="queue_repo"):
         load_config()
 
 
-def test_load_config_accepts_queue_repo(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> None:
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+def test_load_config_accepts_queue_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    _write_queue_repo_toml(git_repo)
     cfg = load_config()
     assert cfg.queue_repo == QUEUE_REPO_URL
 
@@ -138,69 +178,24 @@ def test_load_config_invalid_permission_mode(
         load_config()
 
 
-def test_load_config_missing_repo_path_falls_back_to_cwd(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """RALPH_REPO_PATH unset falls back to the current working directory.
-
-    Validation still runs against cwd, so a cwd that isn't a git repo
-    surfaces a clear ConfigError pointing at "cwd" rather than the env var.
-    """
-    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    monkeypatch.chdir(tmp_path)  # tmp_path has no .git
-    with pytest.raises(ConfigError, match="from cwd.*not a git repository"):
-        load_config()
-
-
-def test_load_config_uses_cwd_when_repo_path_unset(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Happy path: cwd is a valid git repo and RALPH_REPO_PATH is unset."""
-    repo = tmp_path / "in-here"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    _write_queue_repo_toml(repo)
-    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    monkeypatch.chdir(repo)
-    cfg = load_config()
-    assert cfg.repo_path == repo.resolve()
-
-
 def test_load_config_missing_anthropic_key_is_optional(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """ANTHROPIC_API_KEY is optional — claude -p falls back to OAuth.
     Missing key must NOT raise; cfg.anthropic_api_key is the empty
     string and claude_spawn skips propagating it.
     """
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+    )
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    _write_queue_repo_toml(git_repo)
     cfg = load_config()
     assert cfg.anthropic_api_key == ""
-
-
-def test_load_config_repo_path_not_a_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    missing = tmp_path / "nope"
-    monkeypatch.setenv("RALPH_REPO_PATH", str(missing))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    with pytest.raises(ConfigError, match="does not exist"):
-        load_config()
-
-
-def test_load_config_repo_path_not_a_git_repo(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    monkeypatch.setenv("RALPH_REPO_PATH", str(plain))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    with pytest.raises(ConfigError, match="not a git repository"):
-        load_config()
 
 
 def test_load_config_invalid_max_attempts(
@@ -235,17 +230,22 @@ def test_load_config_use_worktrees_env_false_rejected(
 
 
 def test_load_config_use_worktrees_toml_false_rejected(
-    monkeypatch: pytest.MonkeyPatch, git_repo: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """TOML ``use_worktrees = false`` is rejected the same as the env var."""
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
-    monkeypatch.delenv("RALPH_USE_WORKTREES", raising=False)
-    cfg_dir = git_repo / ".ralph"
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_dir = tmp_path / ".ralph"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "config.toml").write_text(
-        'queue_repo = "https://github.com/example/queue"\nuse_worktrees = false\n',
+        "queue_repo = 'https://github.com/example/queue'\n"
+        f"workspace_root = '{ws_parent / 'ws'}'\n"
+        "use_worktrees = false\n",
         encoding="utf-8",
     )
+    monkeypatch.delenv("RALPH_USE_WORKTREES", raising=False)
     with pytest.raises(ConfigError, match="use_worktrees=False is no longer supported"):
         load_config()
 
@@ -285,57 +285,54 @@ def test_executor_config_is_frozen(env_minimal: Path) -> None:
         cfg.queue_repo = "other"  # type: ignore[misc]
 
 
-def test_default_queue_branch_is_ralph_queue(tmp_path, monkeypatch):
+def test_default_queue_branch_is_ralph_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Default queue_branch is 'ralph-queue' when no TOML / env override."""
-    from ralph_executor.config import load_config
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    (repo / ".ralph" / "config.toml").write_text(
-        'queue_repo = "https://github.com/test/queue"\n',
-        encoding="utf-8",
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo="https://github.com/test/queue",
+        workspace_root=str(ws_parent / "ws"),
     )
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
     monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
 
     cfg = load_config()
     assert cfg.queue_branch == "ralph-queue"
 
 
-def test_queue_branch_toml_override(tmp_path, monkeypatch):
-    """queue_branch in project TOML overrides the default."""
-    from ralph_executor.config import load_config
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    (repo / ".ralph" / "config.toml").write_text(
-        'queue_repo = "https://github.com/test/queue"\nqueue_branch = "custom-branch"\n',
-        encoding="utf-8",
+def test_queue_branch_toml_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """queue_branch in user TOML overrides the default."""
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo="https://github.com/test/queue",
+        workspace_root=str(ws_parent / "ws"),
+        queue_branch="custom-branch",
     )
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
     monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
 
     cfg = load_config()
     assert cfg.queue_branch == "custom-branch"
 
 
-def test_queue_branch_env_override_beats_toml(tmp_path, monkeypatch):
+def test_queue_branch_env_override_beats_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """RALPH_QUEUE_BRANCH env var overrides TOML."""
-    from ralph_executor.config import load_config
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    (repo / ".ralph" / "config.toml").write_text(
-        'queue_repo = "https://github.com/test/queue"\nqueue_branch = "toml-value"\n',
-        encoding="utf-8",
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo="https://github.com/test/queue",
+        workspace_root=str(ws_parent / "ws"),
+        queue_branch="toml-value",
     )
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
     monkeypatch.setenv("RALPH_QUEUE_BRANCH", "env-value")
 
     cfg = load_config()
@@ -343,44 +340,35 @@ def test_queue_branch_env_override_beats_toml(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("bad_value", ["", "   ", "HEAD", "refs/heads/foo"])
-def test_queue_branch_rejects_invalid(tmp_path, monkeypatch, bad_value):
+def test_queue_branch_rejects_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_value: str
+) -> None:
     """Empty / HEAD / refs-prefixed branch names raise ConfigError."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    (repo / ".ralph" / "config.toml").write_text(
-        f'queue_repo = "https://github.com/test/queue"\nqueue_branch = "{bad_value}"\n',
-        encoding="utf-8",
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo="https://github.com/test/queue",
+        workspace_root=str(ws_parent / "ws"),
+        queue_branch=bad_value,
     )
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
     monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
 
     with pytest.raises(ConfigError, match="queue_branch"):
         load_config()
 
 
-def test_queue_branch_user_config_fallback(tmp_path, monkeypatch):
-    """When project TOML and env are silent, user TOML supplies queue_branch."""
-    from ralph_executor.config import load_config
-
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / ".ralph").mkdir()
-    (home / ".ralph" / "config.toml").write_text(
-        'queue_repo = "https://github.com/test/queue"\nqueue_branch = "user-config-branch"\n',
-        encoding="utf-8",
+def test_load_config_rejects_missing_workspace_root_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """workspace_root parent must exist — a typo surfaces here, not deep in ensure_clone."""
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(tmp_path / "no" / "such" / "parent" / "ws"),
     )
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    (repo / ".ralph" / "config.toml").write_text("", encoding="utf-8")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
-    monkeypatch.delenv("RALPH_QUEUE_BRANCH", raising=False)
-
-    cfg = load_config()
-    assert cfg.queue_branch == "user-config-branch"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    with pytest.raises(ConfigError, match="workspace_root parent"):
+        load_config()

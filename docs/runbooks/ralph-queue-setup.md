@@ -60,7 +60,7 @@ Once the repo exists, point the executor at it:
 
 ```bash
 ralph-executor init
-# Prompts for ralph_home, queue_repo URL, and queue_branch (default ralph-queue)
+# Prompts for workspace_root, queue_repo URL, and queue_branch (default ralph-queue)
 ```
 
 Or write `~/.ralph/config.toml` directly:
