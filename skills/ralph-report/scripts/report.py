@@ -1,8 +1,11 @@
 """Entry point for the ``ralph-report`` skill.
 
-Parses CLI args, starts the local HTTP server in a daemon thread,
-writes ``<repo>/.ralph-work/report/server-info`` (a JSON file holding
-the URL, host, port, pid, and start timestamp), and blocks until the
+Parses CLI args, resolves the operator queue clone via the standard
+``scripts.queue_writer`` chain (``--workspace`` / ``--queue-repo`` /
+``--queue-branch`` with ``~/.ralph/config.toml`` fallbacks), starts the
+local HTTP server in a daemon thread, writes
+``<workspace_root>/report/server-info`` (a JSON file holding the URL,
+host, port, pid, queue_clone, and start timestamp), and blocks until the
 server's idle timer fires or the user sends SIGINT. On exit, drops a
 ``server-stopped`` marker so ``stop-server.sh`` (and any other client)
 can tell the server is no longer running.
@@ -26,6 +29,17 @@ from pathlib import Path
 from types import ModuleType
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.queue_writer import (  # noqa: E402
+    QueueWriterError,
+    acquire_queue_clone,
+    resolve_queue_branch,
+    resolve_queue_repo,
+    resolve_workspace_root,
+)
 
 
 def _load_sibling(name: str, file_name: str) -> ModuleType:
@@ -46,16 +60,37 @@ def _load_sibling(name: str, file_name: str) -> ModuleType:
 _server = _load_sibling("ralph_report_server", "server.py")
 
 
+def report_dir(workspace_root: Path) -> Path:
+    """Return the directory where ralph-report writes its sentinel files.
+
+    Kept out of the queue clone so the clone's working tree stays clean
+    (the queue clone is on the ``ralph-queue`` branch and is mutated by
+    other skills; dropping server-info inside it would surface as an
+    untracked file on every ``git status``).
+    """
+    return workspace_root / "report"
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point — returns a Unix exit code (0 on clean exit)."""
     parser = argparse.ArgumentParser(
         description="ralph-report — local HTML dashboard for ralph-queue activity.",
     )
     parser.add_argument(
-        "--repo",
-        required=True,
+        "--workspace",
         type=Path,
-        help="Path to the ralph repo checkout.",
+        help="Override workspace_root from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-repo",
+        dest="queue_repo",
+        help="Override queue_repo from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
+        "--queue-branch",
+        dest="queue_branch",
+        metavar="BRANCH",
+        help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
         "--port",
@@ -76,28 +111,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    repo = args.repo.resolve()
-    if not repo.is_dir():
-        print(
-            f"ralph-report: --repo {args.repo} is not a directory",
-            file=sys.stderr,
-        )
-        return 2
-    if not (repo / ".git").exists():
-        print(
-            f"ralph-report: --repo {args.repo} is not a git repo (no .git)",
-            file=sys.stderr,
-        )
+    try:
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_branch = resolve_queue_branch(args.queue_branch)
+        queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+    except QueueWriterError as exc:
+        print(f"ralph-report: {exc}", file=sys.stderr)
         return 2
 
     handle = _server.start_server(
-        repo_path=repo,
+        queue_clone=queue_clone,
         port=args.port,
         idle_seconds=args.idle_seconds,
         bind_host=args.bind,
     )
 
-    info_dir = repo / ".ralph-work" / "report"
+    info_dir = report_dir(workspace_root)
     info_dir.mkdir(parents=True, exist_ok=True)
     info_path = info_dir / "server-info"
     stopped_path = info_dir / "server-stopped"
@@ -110,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
                 "host": args.bind,
                 "port": handle.port,
                 "pid": os.getpid(),
+                "queue_clone": str(queue_clone),
+                "workspace_root": str(workspace_root),
                 "started_at": datetime.now(tz=UTC).isoformat(),
             },
             indent=2,

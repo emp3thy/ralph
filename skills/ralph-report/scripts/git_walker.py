@@ -94,21 +94,23 @@ def parse_commit_subject(subject: str) -> TimelineEvent | None:
 
 def walk_log(
     *,
-    repo_path: Path,
+    queue_clone: Path,
     ref: str = "origin/ralph-queue",
     since: str = "24.hours.ago",
 ) -> list[TimelineEvent]:
     """Return state-change events on ``ref`` from ``since`` to HEAD.
 
-    Order matches ``git log`` (newest-first). Returns ``[]`` when the ref
-    is absent or the repo is not a git repo at all.
+    ``queue_clone`` is the operator queue clone (the same tree
+    ``snapshot.load_snapshot`` reads). Order matches ``git log``
+    (newest-first). Returns ``[]`` when the ref is absent or
+    ``queue_clone`` is not a git repo at all.
     """
     fmt = "%H%x09%aI%x09%s"
     result = subprocess.run(
         [
             "git",
             "-C",
-            str(repo_path),
+            str(queue_clone),
             "log",
             ref,
             f"--since={since}",

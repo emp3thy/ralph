@@ -1,16 +1,44 @@
 #!/usr/bin/env bash
-# Stop the running ralph-report server identified by .ralph-work/report/server-info.
+# Stop the running ralph-report server identified by
+# <workspace_root>/report/server-info.
+#
+# Usage:
+#   stop-server.sh [--workspace PATH]
+#
+# Resolves workspace_root the same way report.py does, then signals the
+# pid recorded in server-info.
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: stop-server.sh <repo-path>" >&2
-  exit 2
-fi
+WORKSPACE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace) WORKSPACE="$2"; shift 2;;
+    -h|--help) echo "usage: stop-server.sh [--workspace PATH]"; exit 0;;
+    *) echo "stop-server.sh: unknown flag: $1" >&2; exit 2;;
+  esac
+done
 
-REPO="$1"
-INFO="$REPO/.ralph-work/report/server-info"
-STOPPED="$REPO/.ralph-work/report/server-stopped"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+WORKSPACE_ROOT="$(
+  uv run python -c "
+import sys
+from pathlib import Path
+sys.path.insert(0, '$REPO_ROOT')
+from scripts.queue_writer import QueueWriterError, resolve_workspace_root
+try:
+    cli = Path('$WORKSPACE') if '$WORKSPACE' else None
+    print(resolve_workspace_root(cli))
+except QueueWriterError as exc:
+    print(f'stop-server.sh: {exc}', file=sys.stderr)
+    raise SystemExit(2)
+"
+)"
+
+INFO="$WORKSPACE_ROOT/report/server-info"
+STOPPED="$WORKSPACE_ROOT/report/server-stopped"
 
 if [[ -f "$STOPPED" ]]; then
   # Server exited naturally (idle timeout). server-info still on disk but

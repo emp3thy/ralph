@@ -50,15 +50,17 @@ _EVENT_LABEL: dict[str, tuple[str, str]] = {
 
 def render_page(
     *,
-    repo_path: Path,
+    queue_clone: Path,
     snapshot: Any,
     events: list[Any],
     now: datetime,
 ) -> str:
     """Render the full dashboard page.
 
-    ``snapshot`` is a ``snapshot.Snapshot`` (or any object exposing the
-    same attribute surface). ``events`` is a list of
+    ``queue_clone`` is the operator queue clone path; its absolute path
+    is shown in the header pill so operators can see which clone the
+    dashboard is reading. ``snapshot`` is a ``snapshot.Snapshot`` (or any
+    object exposing the same attribute surface). ``events`` is a list of
     ``git_walker.TimelineEvent``. ``now`` must be timezone-aware.
     """
     cutoff = now - timedelta(hours=24)
@@ -75,7 +77,7 @@ def render_page(
     refresh_iso = now.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     return _PAGE_TEMPLATE.format(
         bootstrap_css=_BOOTSTRAP_CSS,
-        repo_path=escape(str(repo_path)),
+        queue_clone=escape(str(queue_clone)),
         refresh_iso=escape(refresh_iso),
         current_panel=_render_current(snapshot.current),
         blocked_panel=_render_blocked(snapshot.blocked, snapshot.meta_cycle_sentinels),
@@ -272,7 +274,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <div class="container container-narrow py-4">
   <header class="header-bar">
     <h1 class="mb-0 h3">ralph-report</h1>
-    <span class="repo-pill">{repo_path}</span>
+    <span class="repo-pill">{queue_clone}</span>
     <span class="ms-auto text-muted small">refreshed {refresh_iso} &middot; F5 to update</span>
   </header>
   {current_panel}
