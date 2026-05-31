@@ -9,9 +9,11 @@ import pytest
 from ralph_executor.config import ConfigError
 from ralph_executor.user_config import (
     read_claude_skills_dir,
+    read_instance_id,
     read_ralph_home,
     read_skills_root,
     user_config_path,
+    write_instance_id,
     write_ralph_home,
 )
 
@@ -199,3 +201,31 @@ def test_write_queue_branch_persists(tmp_path, monkeypatch):
     assert user_config.read_queue_branch() == "ralph-queue"
     # queue_repo survives the merge
     assert user_config.read_queue_repo() == "https://github.com/test/queue"
+
+
+def test_read_instance_id_missing_file_returns_none(fake_home: Path) -> None:
+    assert read_instance_id() is None
+
+
+def test_write_then_read_instance_id_roundtrips(fake_home: Path) -> None:
+    written = write_instance_id("ralph-a")
+    assert written == user_config_path()
+    assert read_instance_id() == "ralph-a"
+
+
+def test_read_instance_id_non_string_raises(fake_home: Path) -> None:
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("instance_id = 42\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="instance_id"):
+        read_instance_id()
+
+
+def test_write_instance_id_preserves_other_keys(fake_home: Path) -> None:
+    from ralph_executor.user_config import write_queue_repo
+
+    write_queue_repo("https://github.com/owner/queue")
+    write_instance_id("ralph-a")
+    text = user_config_path().read_text(encoding="utf-8")
+    assert 'queue_repo = "https://github.com/owner/queue"' in text
+    assert 'instance_id = "ralph-a"' in text

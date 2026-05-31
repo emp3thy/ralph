@@ -261,3 +261,32 @@ def write_queue_branch(branch: str) -> Path:
     Merges with existing keys so ``queue_repo`` / ``ralph_home`` survive.
     """
     return _write_user_config({"queue_branch": branch})
+
+
+def read_instance_id() -> str | None:
+    """Return the ``instance_id`` value from the user config, or None.
+
+    Multi-ralph identity knob — mirrors ``read_queue_repo`` /
+    ``read_queue_branch`` for the matching field. The executor's
+    ``load_config`` consults this as the user-level fallback in its
+    resolution chain (CLI > env > project TOML > user TOML > hostname).
+    """
+    data = _load_user_config()
+    raw = data.get("instance_id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(
+            f"{user_config_path()}: instance_id must be a non-empty string, "
+            f"got {type(raw).__name__}"
+        )
+    return raw.strip()
+
+
+def write_instance_id(value: str) -> Path:
+    """Persist ``instance_id`` to ``~/.ralph/config.toml``.
+
+    Merges with existing keys so ``queue_repo`` / ``queue_branch`` /
+    ``ralph_home`` survive.
+    """
+    return _write_user_config({"instance_id": value})
