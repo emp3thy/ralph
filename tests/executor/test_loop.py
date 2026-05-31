@@ -463,9 +463,7 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
         timeout: float = 120.0,
     ) -> Path:
         calls.append((workspace_root, queue_repo, queue_branch))
-        return real_ensure(
-            workspace_root, queue_repo, queue_branch, dest=dest, timeout=timeout
-        )
+        return real_ensure(workspace_root, queue_repo, queue_branch, dest=dest, timeout=timeout)
 
     monkeypatch.setattr("ralph_executor.loop.ensure_queue_clone", _spy)
     monkeypatch.setattr(
@@ -1318,15 +1316,11 @@ def test_pull_queue_passes_configured_branch(
     assert captured["queue_branch"] == "custom-branch"
 
 
-def test_queue_repo_root_uses_instance_id(
-    cfg_for_repo: ExecutorConfig, tmp_path: Path
-) -> None:
+def test_queue_repo_root_uses_instance_id(cfg_for_repo: ExecutorConfig, tmp_path: Path) -> None:
     """``_queue_repo_root`` returns ``<workspace_root>/queue-<instance_id>``."""
     from ralph_executor.loop import _queue_repo_root
 
-    cfg = dataclasses.replace(
-        cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a"
-    )
+    cfg = dataclasses.replace(cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a")
     assert _queue_repo_root(cfg) == tmp_path / "queue-ralph-a"
 
 
@@ -1390,25 +1384,41 @@ def test_claim_writes_claim_json_atomically(
     # added the moved entry file under current/<id>/ — i.e. one atomic
     # commit, not two.
     commit_sha = subprocess.run(
-        ["git", "-C", str(fake_repo), "log", "-1", "--format=%H", "--",
-         ".ralph/current/WI-1234/CLAIM.json"],
-        capture_output=True, text=True, check=True,
-        encoding="utf-8", errors="replace",
+        [
+            "git",
+            "-C",
+            str(fake_repo),
+            "log",
+            "-1",
+            "--format=%H",
+            "--",
+            ".ralph/current/WI-1234/CLAIM.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert commit_sha, "CLAIM.json must be tracked by git after claim"
     files = subprocess.run(
-        ["git", "-C", str(fake_repo), "show", "--name-only", "--format=",
-         commit_sha],
-        capture_output=True, text=True, check=True,
-        encoding="utf-8", errors="replace",
+        ["git", "-C", str(fake_repo), "show", "--name-only", "--format=", commit_sha],
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout
     assert ".ralph/current/WI-1234/CLAIM.json" in files
     assert ".ralph/current/WI-1234/PBI.md" in files
     # The commit subject is the standard inbox→current move message.
     subject = subprocess.run(
         ["git", "-C", str(fake_repo), "log", "-1", "--format=%s", commit_sha],
-        capture_output=True, text=True, check=True,
-        encoding="utf-8", errors="replace",
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout.strip()
     assert subject == "chore(ralph-queue): move WI-1234 from inbox to current"
 

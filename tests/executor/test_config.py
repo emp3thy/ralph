@@ -420,9 +420,7 @@ def test_instance_id_defaults_to_sanitised_hostname(
     assert cfg.instance_id == "mybox-example-com"
 
 
-def test_instance_id_env_wins_over_toml(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_instance_id_env_wins_over_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-from-env")

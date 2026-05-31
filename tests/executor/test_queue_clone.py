@@ -134,9 +134,7 @@ def test_ensure_queue_clone_migrates_legacy_path(
     legacy.mkdir()
     (legacy / ".git").mkdir()
     dest = tmp_path / "queue-ralph-a"
-    qc.ensure_queue_clone(
-        tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest
-    )
+    qc.ensure_queue_clone(tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest)
     assert dest.is_dir()
     assert (dest / ".git").is_dir()
     assert not legacy.exists()
@@ -150,6 +148,4 @@ def test_ensure_queue_clone_refuses_both_paths_exist(tmp_path: Path) -> None:
     dest.mkdir()
     (dest / ".git").mkdir()
     with pytest.raises(QueueCloneError, match="both"):
-        ensure_queue_clone(
-            tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest
-        )
+        ensure_queue_clone(tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest)

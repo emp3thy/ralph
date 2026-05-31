@@ -426,9 +426,7 @@ def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
 def test_resolve_instance_id_cli_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts.queue_writer import resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: "ralph-toml")
     assert resolve_instance_id("ralph-cli") == "ralph-cli"
 
 
@@ -437,9 +435,7 @@ def test_resolve_instance_id_sanitises_cli_value(
 ) -> None:
     from scripts.queue_writer import resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: None
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: None)
     assert resolve_instance_id("Ralph.A") == "ralph-a"
 
 
@@ -448,9 +444,7 @@ def test_resolve_instance_id_rejects_invalid_cli_value(
 ) -> None:
     from scripts.queue_writer import QueueWriterError, resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: None
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: None)
     with pytest.raises(QueueWriterError, match="--instance-id"):
         resolve_instance_id("!!!")
 
@@ -458,9 +452,7 @@ def test_resolve_instance_id_rejects_invalid_cli_value(
 def test_resolve_instance_id_falls_back_to_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts.queue_writer import resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: "ralph-toml")
     assert resolve_instance_id(None) == "ralph-toml"
 
 
@@ -469,9 +461,7 @@ def test_resolve_instance_id_falls_back_to_hostname(
 ) -> None:
     from scripts.queue_writer import resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: None
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: None)
     monkeypatch.setattr("socket.gethostname", lambda: "MyBox")
     assert resolve_instance_id(None) == "mybox"
 
@@ -479,9 +469,7 @@ def test_resolve_instance_id_falls_back_to_hostname(
 def test_resolve_instance_id_empty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts.queue_writer import QueueWriterError, resolve_instance_id
 
-    monkeypatch.setattr(
-        "ralph_executor.user_config.read_instance_id", lambda: None
-    )
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", lambda: None)
     monkeypatch.setattr("socket.gethostname", lambda: "")
     with pytest.raises(QueueWriterError, match="instance_id not resolvable"):
         resolve_instance_id(None)

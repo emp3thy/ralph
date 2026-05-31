@@ -175,10 +175,7 @@ class FilesystemQueueSource:
     def _root(self) -> Path:
         from ralph_executor.queue_path import queue_clone_path
 
-        return (
-            queue_clone_path(self._config.workspace_root, self._config.instance_id)
-            / ".ralph"
-        )
+        return queue_clone_path(self._config.workspace_root, self._config.instance_id) / ".ralph"
 
     def _list_pbis(self, state: str) -> list[PBI]:
         state_dir = self._root / state
@@ -211,9 +208,7 @@ class FilesystemQueueSource:
             try:
                 claim = read_claim(pbi.path)
             except ClaimParseError as exc:
-                raise QueueError(
-                    f"current/{pbi.id}: malformed CLAIM.json: {exc}"
-                ) from exc
+                raise QueueError(f"current/{pbi.id}: malformed CLAIM.json: {exc}") from exc
             if claim is None:
                 continue
             if claim.instance_id == self._config.instance_id:
@@ -222,9 +217,7 @@ class FilesystemQueueSource:
             return None
         if len(own) > 1:
             ids = sorted(p.id for p in own)
-            raise QueueError(
-                f"current/ contains more than one PBI owned by this instance: {ids}"
-            )
+            raise QueueError(f"current/ contains more than one PBI owned by this instance: {ids}")
         return own[0]
 
     def inbox_pbis(self) -> list[PBI]:

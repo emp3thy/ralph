@@ -158,19 +158,21 @@ def write_meta_bug(
     ]
     if tripped_by_instance:
         lines.append(f"tripped_by_instance: {tripped_by_instance}")
-    lines.extend([
-        "---",
-        "",
-        f"# {meta_id}",
-        "",
-        "Cycle detector tripped. Halt is in effect; the executor's main",
-        "loop refuses to start until the sentinel at",
-        f"`{_SENTINEL_RELATIVE}` is acknowledged (fill in",
-        "`acknowledged_by` and `acknowledged_at`).",
-        "",
-        "## Signals",
-        "",
-    ])
+    lines.extend(
+        [
+            "---",
+            "",
+            f"# {meta_id}",
+            "",
+            "Cycle detector tripped. Halt is in effect; the executor's main",
+            "loop refuses to start until the sentinel at",
+            f"`{_SENTINEL_RELATIVE}` is acknowledged (fill in",
+            "`acknowledged_by` and `acknowledged_at`).",
+            "",
+            "## Signals",
+            "",
+        ]
+    )
     for signal in signals:
         lines.extend(
             [

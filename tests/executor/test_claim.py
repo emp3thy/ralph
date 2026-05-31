@@ -46,9 +46,7 @@ def test_read_malformed_raises(tmp_path: Path) -> None:
 def test_read_missing_field_raises(tmp_path: Path) -> None:
     pbi_dir = tmp_path / "WI-1234"
     pbi_dir.mkdir()
-    (pbi_dir / CLAIM_FILENAME).write_text(
-        '{"instance_id": "ralph-a"}', encoding="utf-8"
-    )
+    (pbi_dir / CLAIM_FILENAME).write_text('{"instance_id": "ralph-a"}', encoding="utf-8")
     with pytest.raises(ClaimParseError, match="claimed_at"):
         read_claim(pbi_dir)
 

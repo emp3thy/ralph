@@ -483,7 +483,10 @@ def test_cancel_refuses_foreign_claim(
     """Current PBI with a CLAIM owned by ralph-b is not cancellable by ralph-a."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-FOREIGN",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-FOREIGN",
         claim_instance_id="ralph-b",
     )
     subprocess.run(
@@ -516,11 +519,15 @@ def test_cancel_accepts_own_claim(
     """Current PBI claimed by this instance proceeds to cancel."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-OWN",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-OWN",
         claim_instance_id=TEST_INSTANCE_ID,
     )
     subprocess.run(
-        ["git", "clone", queue_repo, str(_clone_path(workspace))], check=True,
+        ["git", "clone", queue_repo, str(_clone_path(workspace))],
+        check=True,
     )
     _configure_identity(_clone_path(workspace))
 
@@ -542,11 +549,15 @@ def test_cancel_errors_on_malformed_claim_json(
     """Malformed CLAIM.json surfaces as a QueueWriterError exit, not a silent pass."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-BAD",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-BAD",
         claim_payload="not json at all",
     )
     subprocess.run(
-        ["git", "clone", queue_repo, str(_clone_path(workspace))], check=True,
+        ["git", "clone", queue_repo, str(_clone_path(workspace))],
+        check=True,
     )
     _configure_identity(_clone_path(workspace))
 
@@ -587,7 +598,11 @@ def test_cancel_instance_id_flag_propagates_to_acquire(
     ) -> Path:
         seen.append(instance_id)
         return real_acquire(
-            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout,
+            workspace_root,
+            repo,
+            branch,
+            instance_id=instance_id,
+            timeout=timeout,
         )
 
     monkeypatch.setattr(cancel_module, "acquire_queue_clone", fake_acquire)

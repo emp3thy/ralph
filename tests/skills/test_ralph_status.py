@@ -594,9 +594,7 @@ def test_status_acquires_ralph_queue_by_default(
         timeout: float = 120.0,
     ) -> Path:
         calls.append((workspace_root, repo, branch, instance_id))
-        return real_acquire(
-            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout
-        )
+        return real_acquire(workspace_root, repo, branch, instance_id=instance_id, timeout=timeout)
 
     monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
 
@@ -637,9 +635,7 @@ def test_status_shows_owner_column_for_claimed_current_pbi(
         ),
         claim_instance_id="ralph-a",
     )
-    exit_code = status_module.main(
-        ["--workspace", str(workspace), "--queue-repo", queue_repo]
-    )
+    exit_code = status_module.main(["--workspace", str(workspace), "--queue-repo", queue_repo])
     assert exit_code == 0, capsys.readouterr().err
     stdout = capsys.readouterr().out
     header = stdout.splitlines()[0]
@@ -663,9 +659,7 @@ def test_status_owner_column_renders_dash_when_unclaimed(
         WI_CURRENT,
         content=_pbi_md(pbi_id=WI_CURRENT, status="current", target_repo=TARGET_AUTH),
     )
-    exit_code = status_module.main(
-        ["--workspace", str(workspace), "--queue-repo", queue_repo]
-    )
+    exit_code = status_module.main(["--workspace", str(workspace), "--queue-repo", queue_repo])
     assert exit_code == 0, capsys.readouterr().err
     stdout = capsys.readouterr().out
     pbi_line = next(line for line in stdout.splitlines() if WI_CURRENT in line)
@@ -751,9 +745,7 @@ def test_status_instance_id_flag_propagates_to_acquire(
         timeout: float = 120.0,
     ) -> Path:
         seen.append(instance_id)
-        return real_acquire(
-            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout
-        )
+        return real_acquire(workspace_root, repo, branch, instance_id=instance_id, timeout=timeout)
 
     monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
     exit_code = status_module.main(

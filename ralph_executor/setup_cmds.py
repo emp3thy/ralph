@@ -340,9 +340,7 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
     # value but a closed/piped stdin is not a blocker).
     existing_instance = read_instance_id()
     if existing_instance is not None:
-        print(
-            f"instance_id already set to {existing_instance} in {user_config_path()}"
-        )
+        print(f"instance_id already set to {existing_instance} in {user_config_path()}")
     else:
         host_default = default_instance_id() or "ralph"
         if assume_yes:

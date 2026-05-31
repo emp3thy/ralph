@@ -617,7 +617,10 @@ def test_promote_refuses_foreign_claim_when_moving_out_of_current(
     """current/ PBI claimed by ralph-b cannot be promoted by ralph-a."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-FOREIGN",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-FOREIGN",
         claim_instance_id="ralph-b",
     )
     subprocess.run(
@@ -653,7 +656,10 @@ def test_promote_accepts_own_claim_when_moving_out_of_current(
     """current/ PBI claimed by this instance moves normally."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-OWN",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-OWN",
         claim_instance_id=TEST_INSTANCE_ID,
     )
     subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
@@ -684,7 +690,10 @@ def test_promote_errors_on_malformed_claim_when_moving_out_of_current(
     """Malformed CLAIM.json on current/ surfaces as exit 2."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "current", "WI-BAD",
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-BAD",
         claim_payload="not json at all",
     )
     subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
@@ -714,7 +723,10 @@ def test_promote_ignores_claim_when_from_state_not_current(
     """A stray CLAIM.json on a non-current/ PBI does NOT gate the move."""
     workspace, queue_repo = queue_env
     _seed_pbi(
-        queue_repo, tmp_path, "inbox", "WI-STRAY",
+        queue_repo,
+        tmp_path,
+        "inbox",
+        "WI-STRAY",
         claim_instance_id="ralph-b",
     )
     subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
@@ -762,7 +774,11 @@ def test_promote_instance_id_flag_propagates_to_acquire(
     ) -> Path:
         seen.append(instance_id)
         return real_acquire(
-            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout,
+            workspace_root,
+            repo,
+            branch,
+            instance_id=instance_id,
+            timeout=timeout,
         )
 
     monkeypatch.setattr(promote_module, "acquire_queue_clone", fake_acquire)

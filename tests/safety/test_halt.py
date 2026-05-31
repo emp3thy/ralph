@@ -253,9 +253,7 @@ def test_write_meta_bug_emits_instance_line_inside_frontmatter(repo_dir: Path) -
     # Frontmatter shape: opening "---" at line 0; closing "---" is the next
     # "---" line. tripped_by_instance must sit between summary and closing.
     assert lines[0] == "---"
-    closing_idx = next(
-        i for i, line in enumerate(lines[1:], start=1) if line == "---"
-    )
+    closing_idx = next(i for i, line in enumerate(lines[1:], start=1) if line == "---")
     summary_idx = next(i for i, line in enumerate(lines) if line.startswith("summary:"))
     instance_idx = next(
         i for i, line in enumerate(lines) if line.startswith("tripped_by_instance:")

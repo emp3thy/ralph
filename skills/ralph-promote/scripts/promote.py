@@ -186,7 +186,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         clone = acquire_queue_clone(
-            workspace_root, queue_repo, queue_branch, instance_id=instance_id,
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=instance_id,
         )
 
         from_dir = clone / ".ralph" / args.from_state / args.pbi_id
@@ -230,9 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 claim = read_claim(from_dir)
             except ClaimParseError as exc:
-                raise QueueWriterError(
-                    f"malformed CLAIM.json at {from_dir.name}: {exc}"
-                ) from exc
+                raise QueueWriterError(f"malformed CLAIM.json at {from_dir.name}: {exc}") from exc
             if claim is not None and claim.instance_id != instance_id:
                 raise QueueWriterError(
                     f"PBI {args.pbi_id} is claimed by instance {claim.instance_id!r}, "

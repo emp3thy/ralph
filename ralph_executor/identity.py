@@ -24,13 +24,9 @@ def sanitize_instance_id(value: str) -> str:
 def validate_instance_id(value: str) -> str:
     """Return value unchanged when it matches INSTANCE_ID_REGEX; else raise."""
     if not value:
-        raise InstanceIdError(
-            "instance_id must be set (CLI / env / TOML / hostname default)"
-        )
+        raise InstanceIdError("instance_id must be set (CLI / env / TOML / hostname default)")
     if not INSTANCE_ID_REGEX.match(value):
-        raise InstanceIdError(
-            f"instance_id {value!r} does not match {INSTANCE_ID_REGEX.pattern}"
-        )
+        raise InstanceIdError(f"instance_id {value!r} does not match {INSTANCE_ID_REGEX.pattern}")
     return value
 
 

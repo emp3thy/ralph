@@ -143,7 +143,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         clone = acquire_queue_clone(
-            workspace_root, queue_repo, queue_branch, instance_id=instance_id,
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=instance_id,
         )
 
         pbi_dir = _resolve_current_pbi(clone, args.pbi_id)

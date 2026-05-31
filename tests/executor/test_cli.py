@@ -1002,8 +1002,7 @@ def test_main_exits_when_lockfile_held(
     monkeypatch.setattr(cli, "iterate_once", _record_iterate)
 
     lock_path = (
-        queue_clone_path(cfg_for_repo.workspace_root, cfg_for_repo.instance_id)
-        / ".ralph.lock"
+        queue_clone_path(cfg_for_repo.workspace_root, cfg_for_repo.instance_id) / ".ralph.lock"
     )
     other = WorkspaceLock(lock_path, instance_id="other")
     other.acquire()
@@ -1042,6 +1041,7 @@ def test_main_releases_lockfile_on_iteration_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the iteration loop raises, the lockfile is still released."""
+
     def _explode(cfg: ExecutorConfig) -> IterationResult:
         raise RuntimeError("boom")
 

@@ -336,9 +336,7 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
         cfg.queue_branch,
         dest,
     )
-    ensure_queue_clone(
-        cfg.workspace_root, cfg.queue_repo, cfg.queue_branch, dest=dest
-    )
+    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo, cfg.queue_branch, dest=dest)
 
 
 def _feature_branch_name(pbi: PBI) -> str:

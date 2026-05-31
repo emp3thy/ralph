@@ -88,13 +88,9 @@ def test_parse_pbi_directory_missing_entry_file_raises(
         parse_pbi_directory(empty, status="inbox")
 
 
-def test_filesystem_root_uses_instance_id(
-    cfg_for_repo: ExecutorConfig, tmp_path: Path
-) -> None:
+def test_filesystem_root_uses_instance_id(cfg_for_repo: ExecutorConfig, tmp_path: Path) -> None:
     """``FilesystemQueueSource._root`` resolves via ``queue_clone_path``."""
-    cfg = dataclasses.replace(
-        cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a"
-    )
+    cfg = dataclasses.replace(cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a")
     assert FilesystemQueueSource(cfg)._root == tmp_path / "queue-ralph-a" / ".ralph"
 
 
@@ -129,9 +125,7 @@ def test_current_pbi_raises_when_more_than_one_own(
         source.current_pbi()
 
 
-def test_current_pbi_filters_to_own_claim(
-    cfg_for_repo: ExecutorConfig, fake_repo: Path
-) -> None:
+def test_current_pbi_filters_to_own_claim(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
     """Only the PBI whose ``CLAIM.json.instance_id`` matches is returned."""
     own_dir = write_sample_pbi(fake_repo, pbi_id="WI-own", where="current")
     foreign_dir = write_sample_pbi(fake_repo, pbi_id="WI-foreign", where="current")
