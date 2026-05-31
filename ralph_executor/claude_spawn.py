@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.prompt_composer import PromptComposeError, compose_prompt
 from ralph_executor.subprocess_utils import popen_text, run_text
 from ralph_executor.types import PBI
 
@@ -50,6 +51,22 @@ OutcomeKind = Literal["pr_created", "stuck", "partial", "error"]
 
 _STUCK_FILENAME = "STUCK.md"
 _GH_BINARY = "gh"
+
+
+def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
+    """Filesystem path of the queue clone (replica of ``loop._queue_repo_root``).
+
+    Replicated here rather than imported to avoid a ``claude_spawn`` ->
+    ``loop`` circular import (``loop`` already imports ``spawn_claude_p``
+    from this module). The body must stay in sync with
+    ``ralph_executor.loop._queue_repo_root``; that function is the single
+    source of truth for the queue-clone path in non-spawn code paths.
+    The PLAN template proposed a ``cfg.use_worktrees`` branch, but
+    ``load_config`` rejects ``use_worktrees=False`` at config-load time,
+    so the branch is unreachable; this replica mirrors the loop helper
+    exactly.
+    """
+    return cfg.workspace_root / "queue"
 
 
 @dataclass(frozen=True)
