@@ -9,6 +9,7 @@ queue clone never leaves that branch.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -72,6 +73,16 @@ def ensure_queue_clone(
     workspace_root.mkdir(parents=True, exist_ok=True)
     if dest is None:
         dest = workspace_root / "queue"
+
+    legacy = workspace_root / "queue"
+    if dest != legacy and legacy.is_dir():
+        if dest.exists():
+            raise QueueCloneError(
+                f"both legacy queue/ and {dest.name}/ exist under {workspace_root}; "
+                "remove one before continuing"
+            )
+        log.info("migrating legacy queue clone: %s -> %s", legacy, dest)
+        shutil.move(str(legacy), str(dest))
 
     if not (dest / ".git").exists():
         log.info("cloning queue %s (branch=%s) -> %s", queue_repo, queue_branch, dest)

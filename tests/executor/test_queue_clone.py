@@ -116,3 +116,40 @@ def test_ensure_queue_clone_pulls_configured_branch(tmp_path, monkeypatch):
     # ['git', '-C', <dest>, 'pull', '--ff-only', 'origin', 'ralph-queue']
     assert "ralph-queue" in pull_cmd
     assert pull_cmd[-2:] == ["origin", "ralph-queue"]
+
+
+def test_ensure_queue_clone_migrates_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ralph_executor import queue_clone as qc
+
+    monkeypatch.setattr(
+        qc,
+        "_run_git",
+        lambda repo, *args, timeout=120.0: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        ),
+    )
+    legacy = tmp_path / "queue"
+    legacy.mkdir()
+    (legacy / ".git").mkdir()
+    dest = tmp_path / "queue-ralph-a"
+    qc.ensure_queue_clone(
+        tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest
+    )
+    assert dest.is_dir()
+    assert (dest / ".git").is_dir()
+    assert not legacy.exists()
+
+
+def test_ensure_queue_clone_refuses_both_paths_exist(tmp_path: Path) -> None:
+    legacy = tmp_path / "queue"
+    legacy.mkdir()
+    (legacy / ".git").mkdir()
+    dest = tmp_path / "queue-ralph-a"
+    dest.mkdir()
+    (dest / ".git").mkdir()
+    with pytest.raises(QueueCloneError, match="both"):
+        ensure_queue_clone(
+            tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest
+        )
