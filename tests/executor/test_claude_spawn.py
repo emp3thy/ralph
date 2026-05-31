@@ -648,8 +648,11 @@ def test_spawn_passes_stream_json_flags_to_claude(
     # as the prompt value (BugBot finding on PR #24).
     p_index = argv_lines.index("-p")
     prompt_token = argv_lines[p_index + 1]
-    assert prompt_token.startswith("Read ./prompt/PROMPT.md"), (
+    assert prompt_token.startswith("Read "), (
         f"argv element after -p must be the prompt; got {prompt_token!r}"
+    )
+    assert "standing-prompt-" in prompt_token, (
+        f"prompt token must reference the composed standing-prompt file; got {prompt_token!r}"
     )
 
 
