@@ -171,6 +171,9 @@ def _verify_clone(tmp_path: Path, bare_url: str) -> Path:
     return verify
 
 
+TEST_INSTANCE_ID = "test"
+
+
 def _argv(
     *,
     pbi_id: str,
@@ -178,6 +181,7 @@ def _argv(
     queue_repo: str,
     destination: str,
     note: str,
+    instance_id: str | None = TEST_INSTANCE_ID,
     extra: list[str] | None = None,
 ) -> list[str]:
     argv = [
@@ -192,9 +196,15 @@ def _argv(
         "--queue-repo",
         queue_repo,
     ]
+    if instance_id is not None:
+        argv.extend(["--instance-id", instance_id])
     if extra:
         argv.extend(extra)
     return argv
+
+
+def _clone_path(workspace: Path, instance_id: str = TEST_INSTANCE_ID) -> Path:
+    return workspace / f"queue-{instance_id}"
 
 
 def _read_frontmatter(entry: Path) -> dict[str, object]:
@@ -220,8 +230,8 @@ def test_triage_to_inbox_resets_attempts_and_moves(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-700", attempts=3)
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -268,8 +278,8 @@ def test_triage_to_archive_creates_archive_folder(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-800", attempts=4)
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -315,8 +325,8 @@ def test_triage_bug_pbi_uses_bug_md(
         entry_file="BUG.md",
         pbi_type="bug",
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -363,8 +373,8 @@ def test_triage_errors_on_missing_pbi(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     workspace, queue_repo = queue_env
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -388,8 +398,8 @@ def test_triage_rejects_pbi_outside_blocked(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi_at_state(queue_repo, tmp_path, "inbox", "WI-1000")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -461,7 +471,7 @@ def test_triage_dry_run_writes_nothing(
     assert payload["commit_sha"] == ""
 
     # Dry-run must NOT clone the queue or push.
-    assert not (workspace / "queue").exists()
+    assert not (_clone_path(workspace)).exists()
     after = subprocess.run(
         ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
@@ -501,7 +511,7 @@ def test_triage_dry_run_archive_reports_conservative_archive_created(
     assert payload["dry_run"] is True
     assert payload["destination"] == "archive"
     assert payload["archive_created"] is False
-    assert not (workspace / "queue").exists()
+    assert not (_clone_path(workspace)).exists()
 
 
 def test_triage_no_push_keeps_remote_unchanged(
@@ -512,9 +522,9 @@ def test_triage_no_push_keeps_remote_unchanged(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-1300")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
+    before = _git(_clone_path(workspace), "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = triage_module.main(
         _argv(
@@ -530,7 +540,7 @@ def test_triage_no_push_keeps_remote_unchanged(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(_clone_path(workspace), "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
 
 
@@ -544,8 +554,8 @@ def test_triage_idempotent_when_already_at_destination(
     operation is a no-op — already_triaged=True, no new commit."""
     workspace, queue_repo = queue_env
     _seed_pbi_at_state(queue_repo, tmp_path, "inbox", "WI-1400")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         _argv(
@@ -574,9 +584,9 @@ def test_triage_refuses_when_destination_dir_exists(
     rather than silently overwriting."""
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-1500")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    stale = workspace / "queue" / ".ralph" / "inbox" / "WI-1500"
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
+    stale = _clone_path(workspace) / ".ralph" / "inbox" / "WI-1500"
     stale.mkdir(parents=True)
     (stale / "PBI.md").write_text("stale", encoding="utf-8")
 
@@ -648,8 +658,8 @@ def test_triage_queue_repo_resolved_from_toml(
         encoding="utf-8",
     )
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     exit_code = triage_module.main(
         [
@@ -661,6 +671,8 @@ def test_triage_queue_repo_resolved_from_toml(
             "from TOML",
             "--workspace",
             str(workspace),
+            "--instance-id",
+            TEST_INSTANCE_ID,
             "--no-push",
         ]
     )
@@ -680,8 +692,8 @@ def test_triage_pushes_ralph_queue_by_default(
     """ralph-triage pushes to ralph-queue when no --queue-branch override."""
     workspace, queue_repo = queue_env
     _seed_blocked_pbi(queue_repo, tmp_path, "WI-7200")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(_clone_path(workspace))], check=True)
+    _configure_identity(_clone_path(workspace))
 
     pushed: list[tuple[Path, str]] = []
 
@@ -701,3 +713,131 @@ def test_triage_pushes_ralph_queue_by_default(
     )
     assert exit_code == 0, capsys.readouterr().err
     assert [branch for _repo, branch in pushed] == ["ralph-queue"]
+
+
+def test_triage_uses_namespaced_clone(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ralph-triage acquires clone at <workspace_root>/queue-<instance_id>/."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-7300")
+    namespaced = _clone_path(workspace, instance_id="ralph-a")
+    subprocess.run(["git", "clone", queue_repo, str(namespaced)], check=True)
+    _configure_identity(namespaced)
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-7300",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="retry",
+            instance_id="ralph-a",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["queue_clone"].endswith("queue-ralph-a")
+    assert payload["pbi_id"] == "WI-7300"
+    assert payload["commit_sha"] != ""
+
+
+def test_triage_dry_run_uses_namespaced_clone_path(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Dry-run reports the namespaced queue-<instance>/ path, not the legacy queue/."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-7400")
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-7400",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="archive",
+            note="dry",
+            instance_id="ralph-z",
+            extra=["--dry-run"],
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["queue_clone"].endswith("queue-ralph-z")
+    assert payload["dry_run"] is True
+    assert not _clone_path(workspace, instance_id="ralph-z").exists()
+
+
+def test_triage_instance_id_flag_propagates_to_acquire(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance-id reaches acquire_queue_clone as keyword argument."""
+    workspace, queue_repo = queue_env
+    _seed_blocked_pbi(queue_repo, tmp_path, "WI-7500")
+
+    captured: dict[str, object] = {}
+    real_acquire = triage_module.acquire_queue_clone
+
+    def fake_acquire(
+        workspace_root: Path,
+        queue_repo_arg: str,
+        queue_branch_arg: str,
+        instance_id: str | None = None,
+        *,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["instance_id"] = instance_id
+        return real_acquire(
+            workspace_root,
+            queue_repo_arg,
+            queue_branch_arg,
+            instance_id=instance_id,
+            timeout=timeout,
+        )
+
+    monkeypatch.setattr(triage_module, "acquire_queue_clone", fake_acquire)
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-7500",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="propagate",
+            instance_id="ralph-zz",
+            extra=["--no-push"],
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert captured["instance_id"] == "ralph-zz"
+
+
+def test_triage_rejects_invalid_instance_id(
+    queue_env: tuple[Path, str],
+    triage_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance-id !!! sanitises to empty → exit 2 with 'instance_id' in stderr."""
+    workspace, queue_repo = queue_env
+
+    exit_code = triage_module.main(
+        _argv(
+            pbi_id="WI-7600",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            destination="inbox",
+            note="bad",
+            instance_id="!!!",
+        )
+    )
+    assert exit_code == 2
+    assert "instance_id" in capsys.readouterr().err

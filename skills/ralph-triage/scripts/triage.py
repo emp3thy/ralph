@@ -21,6 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from ralph_executor.queue_path import queue_clone_path  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
@@ -29,6 +30,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -103,6 +105,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the move locally but do not push.",
@@ -150,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
+        instance_id = resolve_instance_id(args.instance_id)
 
         action_name = "return-to-inbox" if args.destination == "inbox" else "archive"
         rel_from = f".ralph/{SOURCE_FOLDER}/{args.pbi_id}"
@@ -158,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be move against the would-be clone location.
-            clone = workspace_root / "queue"
+            clone = queue_clone_path(workspace_root, instance_id)
             print(
                 f"dry-run: would move {rel_from} -> {rel_to} and commit "
                 f"'chore(queue): triage {args.pbi_id} "
@@ -187,7 +195,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        clone = acquire_queue_clone(
+            workspace_root, queue_repo, queue_branch, instance_id=instance_id
+        )
 
         from_dir = clone / ".ralph" / SOURCE_FOLDER / args.pbi_id
         to_dir = clone / ".ralph" / args.destination / args.pbi_id
