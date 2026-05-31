@@ -195,6 +195,20 @@ GH_OWNER=owner GH_TOKEN=$(gh auth token) \
 
 ## Running ralph
 
+**Ralph startup script (Windows / PowerShell):** `scripts/start-ralph.ps1`
+wraps the prerequisite checks (`uv`, `git`, `gh`, `claude`, `~/.ralph/config.toml`),
+runs `uv sync`, and launches the executor. Defaults to workspace `queue`,
+drain-once mode.
+
+```powershell
+.\scripts\start-ralph.ps1                    # default: workspace queue, drain-once
+.\scripts\start-ralph.ps1 -Workspace repo    # different workspace
+.\scripts\start-ralph.ps1 -Watch             # daemon mode
+.\scripts\start-ralph.ps1 -Once              # single iteration
+```
+
+Or invoke the executor directly:
+
 ```bash
 uv run ralph-executor --workspace repo
 ```
