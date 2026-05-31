@@ -309,7 +309,6 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
 
     # Build cfg targeting the bare on ralph-queue.
     cfg = ExecutorConfig(
-        repo_path=clone,
         queue_repo=f"file://{bare.as_posix()}",
         queue_branch="ralph-queue",
         main_branch="main",

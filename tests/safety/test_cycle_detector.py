@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from pathlib import Path
 
 from ralph_executor.safety.cycle_detector import (
     SignalKind,
@@ -530,7 +529,7 @@ class TestEvaluateAll:
         assert evaluate_all([], now) == []
 
     def test_aggregator_forwards_same_file_cfg_thresholds(
-        self, now: datetime, tmp_path: Path
+        self, now: datetime
     ) -> None:
         """``evaluate_all`` reads ``cfg.same_file_min_prs`` and
         ``cfg.same_file_window_hours`` and passes them through to the
@@ -543,7 +542,6 @@ class TestEvaluateAll:
 
         def _cfg(min_prs: int) -> ExecutorConfig:
             return ExecutorConfig(
-                repo_path=tmp_path,
                 queue_repo="https://github.com/example/queue",
                 queue_branch="ralph-queue",
                 main_branch="main",

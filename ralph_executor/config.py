@@ -7,22 +7,19 @@ config objects without any environment dependency.
 Precedence (lowest → highest):
 
   1. Hard-coded defaults (``DEFAULT_*`` constants).
-  2. ``<repo>/.ralph/config.toml`` (optional, checked-in).
+  2. ``~/.ralph/config.toml`` (per-machine; written by ``ralph-executor init``).
   3. ``RALPH_*`` environment variables.
   4. CLI flags applied by ``ralph_executor.cli._apply_overrides``.
 
-Repo path resolution (highest → lowest, all evaluated by the CLI layer
-except the last two which live here):
+The executor is queue-driven: the operator configures one
+``workspace_root`` plus the queue repo URL / branch in user TOML and
+every iteration the loop reads the next PBI's ``target_repo`` and
+materialises a per-target clone under
+``<workspace_root>/clones/<owner>/<name>/``. There is no top-level
+"current repo" — ``ExecutorConfig`` has no ``repo_path`` field.
 
-  1. ``--repo <PATH>``
-  2. ``--workspace <NAME>``  →  ``$RALPH_HOME/<NAME>``
-  3. ``RALPH_REPO_PATH`` env var
-  4. Current working directory
-
-Two values are intentionally NOT readable from TOML:
-
-* ``repo_path`` — chicken-and-egg (we need it to find the TOML file).
-* ``anthropic_api_key`` — secret; env-only by policy.
+``anthropic_api_key`` is intentionally env-only (secret) and is the
+only knob not readable from TOML.
 """
 
 from __future__ import annotations
@@ -203,7 +200,6 @@ class ExecutorConfig:
     point of the loop driver, queue source, and claude-spawn helpers.
     """
 
-    repo_path: Path
     # HTTPS URL of the queue repo (e.g. ``https://github.com/emp3thy/ralph-queue``).
     # Required via TOML (or the ``--queue-repo`` CLI flag). The loop clones
     # this into ``<workspace_root>/queue/`` once and pulls on subsequent
@@ -310,58 +306,34 @@ class ExecutorConfig:
     idle_exit_threshold: int = DEFAULT_IDLE_EXIT_THRESHOLD
 
 
-def validate_repo_path(path: Path, *, source: str) -> Path:
-    """Validate that ``path`` is a git repo directory and return it resolved.
+def _load_user_toml_overrides() -> Mapping[str, Any]:
+    """Read ``~/.ralph/config.toml`` and return overrides keyed by knob name.
 
-    ``source`` describes where the path came from (env var name, CLI flag,
-    or "cwd") so the error message points the operator at the right knob.
+    Replaces the per-repo ``<repo>/.ralph/config.toml`` loader removed in
+    the KILL-RALPH-HOME refactor. Project TOML is no longer loaded; every
+    knob previously sourced from it now lives at the user level.
+
+    Missing file is a no-op (returns empty mapping). Malformed TOML
+    raises ``ConfigError`` so the operator notices a typo rather than
+    silently falling back to defaults. Unknown top-level keys are logged
+    at WARNING and dropped; ``ralph_home``, ``skills_root`` and
+    ``claude_skills_dir`` are allow-listed silently (stale-warn case for
+    the first, read directly by ``host_select`` for the latter two).
     """
-    if not path.exists():
-        raise ConfigError(f"repo path {path} (from {source}) does not exist")
-    if not path.is_dir():
-        raise ConfigError(f"repo path {path} (from {source}) is not a directory")
-    if not (path / ".git").exists():
-        raise ConfigError(
-            f"repo path {path} (from {source}) is not a git repository (no .git/ entry)"
-        )
-    return path.resolve()
+    from ralph_executor.user_config import user_config_path
 
-
-def _resolve_repo_path() -> Path:
-    """Resolve the repo path from env → cwd, then validate.
-
-    Resolution order (highest → lowest):
-      1. ``RALPH_REPO_PATH`` env var (operator/daemon escape hatch).
-      2. Current working directory.
-
-    CLI flags (``--repo``, ``--workspace``) override the result via
-    ``ralph_executor.cli._apply_overrides``.
-    """
-    env_value = os.environ.get("RALPH_REPO_PATH", "").strip()
-    if env_value:
-        return validate_repo_path(Path(env_value), source="RALPH_REPO_PATH")
-    return validate_repo_path(Path.cwd(), source="cwd")
-
-
-def _load_toml_overrides(repo_path: Path) -> Mapping[str, Any]:
-    """Read ``<repo>/.ralph/config.toml`` and return a dict of overrides.
-
-    Missing file is a no-op (returns empty mapping). Malformed TOML or
-    a non-table top level raises ``ConfigError`` so the operator notices
-    a typo rather than silently falling back to defaults. Unknown
-    top-level keys are logged at WARNING and dropped.
-    """
-    cfg_file = repo_path / ".ralph" / "config.toml"
+    cfg_file = user_config_path()
     if not cfg_file.is_file():
         return {}
     try:
         with cfg_file.open("rb") as fh:
-            # tomllib.load always returns a dict for any parseable TOML
-            # document; invalid TOML raises TOMLDecodeError above.
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{cfg_file}: invalid TOML: {exc}") from exc
-    unknown = sorted(k for k in data if k not in _TOML_KNOWN_KEYS)
+    silent_allowlist = {"ralph_home", "skills_root", "claude_skills_dir"}
+    unknown = sorted(
+        k for k in data if k not in _TOML_KNOWN_KEYS and k not in silent_allowlist
+    )
     for key in unknown:
         log.warning("%s: unknown key %r (ignored)", cfg_file, key)
     return {k: v for k, v in data.items() if k in _TOML_KNOWN_KEYS}
@@ -377,7 +349,6 @@ def _resolve_str(
     ``RALPH_ADO_AUTHOR_EMAIL=' ralph@bot.com '`` survives the truthiness
     guards in consumers (the string is non-empty) and string-equality
     comparisons (e.g. PR-author matching in the sweep) silently fail.
-    Mirrors the strip already done in ``_resolve_repo_path``.
     """
     env_value = os.environ.get(env_name)
     if env_value and env_value.strip():
@@ -504,55 +475,45 @@ def _resolve_log_level(*, toml_value: Any, default: str, source_label: str) -> i
 
 
 def load_config() -> ExecutorConfig:
-    """Read defaults < ``<repo>/.ralph/config.toml`` < env, and validate.
+    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
 
-    Repo path resolution: ``RALPH_REPO_PATH`` env var if set, else the
-    current working directory. CLI flags (``--repo``, ``--workspace``)
-    override the result downstream in ``cli._apply_overrides``.
+    The executor is queue-driven: ``ExecutorConfig`` has no
+    ``repo_path``. ``workspace_root`` is the only configured root; every
+    per-iteration target clone is materialised under
+    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
+    ``target_repo`` frontmatter.
 
     ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
     empty string means "use claude CLI's OAuth session".
     """
-    from ralph_executor.user_config import _warn_stale_ralph_home_in_user_config
+    from ralph_executor.user_config import (
+        _warn_stale_ralph_home_in_user_config,
+        user_config_path,
+    )
 
     _warn_stale_ralph_home_in_user_config()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    repo_path = _resolve_repo_path()
 
-    toml_overrides = _load_toml_overrides(repo_path)
-    source_label = str(repo_path / ".ralph" / "config.toml")
+    toml_overrides = _load_user_toml_overrides()
+    source_label = str(user_config_path())
 
     queue_repo_value = toml_overrides.get("queue_repo")
-    queue_repo_source = source_label
-    if queue_repo_value is None:
-        # Spec bridge: fall back to ~/.ralph/config.toml (the user-level
-        # location ``ralph-executor init`` writes the URL to). One operator
-        # runs against one queue, so the per-machine config is the natural
-        # home; the per-repo override stays available for one-off CI runs.
-        from ralph_executor.user_config import read_queue_repo, user_config_path
-
-        try:
-            user_queue_repo = read_queue_repo()
-        except ConfigError:
-            raise
-        if user_queue_repo is not None:
-            queue_repo_value = user_queue_repo
-            queue_repo_source = str(user_config_path())
     if queue_repo_value is None:
         raise ConfigError(
             f"{source_label}: queue_repo not configured. "
-            "Add 'queue_repo = \"<url>\"' to your config.toml or pass --queue-repo."
+            "Run `ralph-executor init` (writes ~/.ralph/config.toml) "
+            "or pass --queue-repo."
         )
     if not isinstance(queue_repo_value, str):
         raise ConfigError(
-            f"{queue_repo_source}: queue_repo must be a string, "
+            f"{source_label}: queue_repo must be a string, "
             f"got {type(queue_repo_value).__name__}"
         )
     try:
         parse_target_repo(queue_repo_value)
     except ValueError as exc:
         raise ConfigError(
-            f"{queue_repo_source}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
+            f"{source_label}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
         ) from exc
     queue_repo = queue_repo_value
     main_branch = _resolve_str(
@@ -562,30 +523,21 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_MAIN_BRANCH,
         source_label=source_label,
     )
-    queue_branch_value = toml_overrides.get("queue_branch")
-    queue_branch_source = source_label
-    if queue_branch_value is None:
-        from ralph_executor.user_config import read_queue_branch, user_config_path
-
-        user_queue_branch = read_queue_branch()
-        if user_queue_branch is not None:
-            queue_branch_value = user_queue_branch
-            queue_branch_source = str(user_config_path())
     queue_branch = _resolve_str(
         name="queue_branch",
         env_name="RALPH_QUEUE_BRANCH",
-        toml_value=queue_branch_value,
+        toml_value=toml_overrides.get("queue_branch"),
         default=DEFAULT_QUEUE_BRANCH,
-        source_label=queue_branch_source,
+        source_label=source_label,
     )
     queue_branch = queue_branch.strip()
     if not queue_branch:
-        raise ConfigError(f"{queue_branch_source}: queue_branch must be a non-empty branch name")
+        raise ConfigError(f"{source_label}: queue_branch must be a non-empty branch name")
     if queue_branch == "HEAD":
-        raise ConfigError(f"{queue_branch_source}: queue_branch must be a branch name, not 'HEAD'")
+        raise ConfigError(f"{source_label}: queue_branch must be a branch name, not 'HEAD'")
     if queue_branch.startswith("refs/heads/"):
         raise ConfigError(
-            f"{queue_branch_source}: queue_branch must not include the 'refs/heads/' "
+            f"{source_label}: queue_branch must not include the 'refs/heads/' "
             f"prefix (got {queue_branch!r})"
         )
     max_attempts = _resolve_int(
@@ -749,6 +701,15 @@ def load_config() -> ExecutorConfig:
         default=Path.home() / "ralph-workspaces",
         source_label=source_label,
     )
+    # The executor creates ``workspace_root`` itself on first use, but
+    # its parent must exist — without this guard a typo in the TOML
+    # ("workspace_root = '/no/such/dir/ws'") would only surface much
+    # later inside ``ensure_clone`` with a confusing OSError.
+    if not workspace_root.parent.is_dir():
+        raise ConfigError(
+            f"{source_label}: workspace_root parent {workspace_root.parent} "
+            "does not exist. Create it (or change workspace_root)."
+        )
     same_file_min_prs = _resolve_int(
         name="same_file_min_prs",
         env_name="RALPH_SAME_FILE_MIN_PRS",
@@ -792,7 +753,6 @@ def load_config() -> ExecutorConfig:
         )
 
     return ExecutorConfig(
-        repo_path=repo_path,
         queue_repo=queue_repo,
         queue_branch=queue_branch,
         main_branch=main_branch,

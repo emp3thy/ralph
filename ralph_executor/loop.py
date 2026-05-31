@@ -433,8 +433,9 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
     just a fetch) and returns the same ``clone_root`` the claim used.
     Calling ``ensure_clone`` again avoids relying on ``pbi.work_worktree``
     (which is runtime-only and absent after a queue re-read between
-    iterations); falling back to ``cfg.repo_path`` would look in the
-    wrong directory entirely and leak orphan worktrees per PBI.
+    iterations); there is no process-wide ``repo_path`` to fall back
+    onto after KILL-RALPH-HOME, so the deterministic clone root from
+    ``ensure_clone`` is the only honest source.
 
     No-op in legacy single-checkout mode or when target_repo / ensure_clone
     are unavailable (defensive). Tolerant of removal failures — an orphan
@@ -840,9 +841,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         #     target clone_root without depending on ``pbi.path`` (which
         #     the move_*_to_* operations invalidate before cleanup runs);
         #   * ``spawn_claude_p`` uses the per-PBI work worktree inside the
-        #     target clone as cwd for resumed PBIs, NOT ``cfg.repo_path``
-        #     (which is ralph's own repo and would corrupt the wrong
-        #     repository for every iteration after the first).
+        #     target clone as cwd for resumed PBIs. There is no
+        #     process-wide ``repo_path`` to fall back onto after
+        #     KILL-RALPH-HOME; absence of ``pbi.work_worktree`` here
+        #     would raise ``ConfigError`` inside spawn_claude_p, which is
+        #     the correct fail-fast rather than picking a wrong cwd.
         from dataclasses import replace as _replace
 
         from ralph_executor.url_utils import parse_target_repo
@@ -872,9 +875,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         if cfg.use_worktrees and info is not None:
             # ``clone_root`` is fully determined by workspace_root + owner +
             # name; compute deterministically so a transient fetch failure
-            # (network blip, auth expired, etc.) does NOT silently force
-            # spawn_claude_p to fall back to ``cfg.repo_path`` — that would
-            # write Claude's target-repo edits into ralph's own repository.
+            # (network blip, auth expired, etc.) does NOT leave
+            # ``pbi.work_worktree`` unset — spawn_claude_p raises
+            # ConfigError on an unset worktree (the post-KILL-RALPH-HOME
+            # contract), and we want the resume path to proceed against
+            # the cached deterministic clone instead.
             clone_root = cfg.workspace_root / "clones" / info.owner / info.name
             try:
                 from ralph_executor.target_clone import ensure_clone

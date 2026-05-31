@@ -277,8 +277,9 @@ def _scaffold_resolve_target(args: argparse.Namespace) -> Path:
     between T7 and T10.
 
     Unlike ``load_config``, the scaffold path is NOT required to be a
-    valid git repo yet — ``cmd_scaffold`` will call ``validate_repo_path``
-    itself and surface the error consistently with its other errors.
+    valid git repo yet — ``cmd_scaffold`` will call its own
+    ``_validate_scaffold_target`` helper and surface the error
+    consistently with its other errors.
     """
     if args.repo:
         return Path(args.repo).resolve()

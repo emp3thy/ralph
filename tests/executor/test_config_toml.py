@@ -1,4 +1,9 @@
-"""Tests for the TOML override layer in ``ralph_executor.config``."""
+"""Tests for the TOML override layer in ``ralph_executor.config``.
+
+After KILL-RALPH-HOME T8, ``load_config`` reads ``~/.ralph/config.toml``
+exclusively (project-TOML is gone). The fixture monkeypatches
+``HOME`` / ``USERPROFILE`` so the loader lands on the temp dir.
+"""
 
 from __future__ import annotations
 
@@ -9,32 +14,23 @@ import pytest
 
 from ralph_executor.config import ConfigError, load_config
 
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / ".ralph").mkdir()
-    return repo
-
-
 QUEUE_REPO_URL = "https://github.com/example/queue"
 
 
 @pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
-    """RALPH_REPO_PATH set, every overridable env var removed.
+def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """User TOML seeded with queue_repo; every overridable env var removed.
 
-    Also pre-seeds ``.ralph/config.toml`` with the required ``queue_repo``
-    key so individual tests can focus on the knob they exercise. Tests
-    that want a different TOML state (or no TOML at all) overwrite/delete
-    via ``_write_toml`` / ``_write_raw_toml``.
+    Returns the monkeypatched HOME dir. Tests overwrite the user TOML via
+    ``_write_toml`` / ``_write_raw_toml``.
     """
-    monkeypatch.setenv("RALPH_REPO_PATH", str(git_repo))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    (git_repo / ".ralph" / "config.toml").write_text(
-        f'queue_repo = "{QUEUE_REPO_URL}"\n',
+    cfg_dir = tmp_path / ".ralph"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.toml").write_text(
+        f"queue_repo = '{QUEUE_REPO_URL}'\n",
         encoding="utf-8",
     )
     for var in (
@@ -58,31 +54,35 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_CLAUDE_SESSION_TIMEOUT_SECONDS",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
         "RALPH_WORKSPACE",
+        "RALPH_QUEUE_BRANCH",
         "RALPH_SAME_FILE_MIN_PRS",
         "RALPH_SAME_FILE_WINDOW_HOURS",
     ):
         monkeypatch.delenv(var, raising=False)
-    return git_repo
+    return tmp_path
 
 
-def _write_toml(repo: Path, body: str) -> Path:
-    """Write `.ralph/config.toml` ensuring queue_repo is present.
+def _write_toml(home: Path, body: str) -> Path:
+    """Write ``~/.ralph/config.toml`` ensuring queue_repo is present.
 
     queue_repo is required by load_config; this helper prepends a default
     queue_repo line so callers can focus their TOML body on the keys they
-    care about. Tests that need to test queue_repo-specific behavior or
-    malformed TOML use ``_write_raw_toml`` instead.
+    care about. queue_repo uses a TOML literal-string (single-quoted) so
+    Windows backslashes inside string values supplied by callers don't
+    accidentally trigger TOML escape processing. Tests that need to test
+    queue_repo-specific behavior or malformed TOML use ``_write_raw_toml``
+    instead.
     """
-    cfg_file = repo / ".ralph" / "config.toml"
+    cfg_file = home / ".ralph" / "config.toml"
     cfg_file.write_text(
-        f'queue_repo = "{QUEUE_REPO_URL}"\n' + body,
+        f"queue_repo = '{QUEUE_REPO_URL}'\n" + body,
         encoding="utf-8",
     )
     return cfg_file
 
 
-def _write_raw_toml(repo: Path, body: str) -> Path:
-    cfg_file = repo / ".ralph" / "config.toml"
+def _write_raw_toml(home: Path, body: str) -> Path:
+    cfg_file = home / ".ralph" / "config.toml"
     cfg_file.write_text(body, encoding="utf-8")
     return cfg_file
 

@@ -223,7 +223,6 @@ def cfg_for_repo(
     """
     bare = tmp_path / "queue.git"
     return ExecutorConfig(
-        repo_path=fake_repo,
         queue_repo=f"file://{bare.as_posix()}",
         # NOTE: the ``fake_repo`` seed pushes a single ``main`` branch to
         # the bare remote, so unit tests in this suite stay on ``main``
@@ -261,16 +260,13 @@ def cfg_for_repo(
 
 
 def _build_minimal_cfg(tmp_path: Path, *, git_host: str = "github") -> ExecutorConfig:
-    """Construct an ExecutorConfig without ``repo_path``.
+    """Construct a minimal ExecutorConfig.
 
     Used by tests that only need a cfg shape, not a running queue or
     target clone. Tests that need spawning still go through
-    ``cfg_for_repo``. Today ``ExecutorConfig.repo_path`` is still a
-    required positional field, so this helper raises ``TypeError`` on
-    instantiation — that's intentional: the tests that import it are
-    skip-marked until Task 8 deletes the field.
+    ``cfg_for_repo``.
     """
-    return ExecutorConfig(  # type: ignore[call-arg]
+    return ExecutorConfig(
         queue_repo="file:///tmp/bare.git",
         queue_branch="ralph-queue",
         main_branch="main",

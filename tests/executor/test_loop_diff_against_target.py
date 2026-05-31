@@ -115,7 +115,6 @@ def test_diff_names_uses_target_clone_root(
     assert outcome.kind == "pr_created"
     assert result.outcome == "ran_pr_created"
     assert seen["repo"] == clone_root_expected
-    assert seen["repo"] != cfg_for_repo.repo_path
     assert captured_touched["touched"] == ["a.py", "b.py"]
 
 
@@ -263,16 +262,13 @@ def test_diff_names_skipped_when_clone_root_missing(
 
 def test_sweep_repo_name_is_queue_clone_name(
     cfg_for_repo: ExecutorConfig,
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_run_sweep labels SweepContext.repo_name with the queue clone
-    directory name (``queue`` under workspace_root), not ``cfg.repo_path.name``.
+    directory name (``queue`` under workspace_root).
 
-    The cfg_for_repo fixture happens to set ``repo_path = <ws>/queue`` so
-    ``repo_path.name == "queue"`` by coincidence; override ``repo_path``
-    here to a distinct directory name so the assertion proves the value
-    comes from ``_queue_repo_root``, not ``cfg.repo_path``.
+    After KILL-RALPH-HOME T8, ``ExecutorConfig.repo_path`` is gone — the
+    sweep label is unambiguously derived from ``_queue_repo_root(cfg).name``.
     """
     from ralph_executor.loop import _run_sweep
     from ralph_executor.queue.filesystem import FilesystemQueueSource
@@ -286,16 +282,9 @@ def test_sweep_repo_name_is_queue_clone_name(
 
     monkeypatch.setattr("ralph_executor.sweep.run", _fake_run_sweep)
 
-    distinct = tmp_path / "ralph-source-checkout"
-    distinct.mkdir()
-    cfg = replace(
-        cfg_for_repo,
-        bot_author_email="ralph-bot@example.com",
-        repo_path=distinct,
-    )
+    cfg = replace(cfg_for_repo, bot_author_email="ralph-bot@example.com")
     _run_sweep(cfg, FilesystemQueueSource(cfg))
 
     # Sweep context labels itself ``queue`` (the queue clone dir name
-    # under workspace_root), independent of ``cfg.repo_path.name``.
+    # under workspace_root).
     assert seen["repo_name"] == "queue"
-    assert seen["repo_name"] != cfg.repo_path.name

@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ralph_executor.config import ConfigError, validate_repo_path
+from ralph_executor.config import ConfigError
 from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
@@ -32,6 +32,25 @@ from ralph_executor.user_config import (
 
 QUEUE_BRANCH = "ralph-queue"
 QUEUE_SUBDIRS = ("inbox", "current", "pending-pr", "done", "blocked")
+
+
+def _validate_scaffold_target(path: Path) -> Path:
+    """Return ``path`` resolved if it is a git repo directory, else raise.
+
+    Inlined here (KILL-RALPH-HOME T8) after ``ralph_executor.config.validate_repo_path``
+    was deleted with the rest of the per-repo config surface. ``cmd_scaffold``
+    is the only remaining caller; T10 removes the scaffold subcommand entirely
+    and this helper goes with it.
+    """
+    if not path.exists():
+        raise ConfigError(f"repo path {path} (from scaffold target) does not exist")
+    if not path.is_dir():
+        raise ConfigError(f"repo path {path} (from scaffold target) is not a directory")
+    if not (path / ".git").exists():
+        raise ConfigError(
+            f"repo path {path} (from scaffold target) is not a git repository (no .git/ entry)"
+        )
+    return path.resolve()
 
 CONFIG_TOML_STUB = """\
 # ralph-executor per-repo configuration.
@@ -410,7 +429,7 @@ def cmd_scaffold(*, repo_path: Path, force: bool, with_config_toml: bool) -> int
     Returns: 0 on success, 2 on operator-recoverable error.
     """
     try:
-        repo = validate_repo_path(repo_path, source="scaffold target")
+        repo = _validate_scaffold_target(repo_path)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
