@@ -1,4 +1,4 @@
-# Multi-ralph Implementation Plan (v3 — confidence-rated, sub-91% lifted)
+# Multi-ralph Implementation Plan (v4 — gap audit vs. PR #61 baseline)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -771,9 +771,19 @@ git commit -m "multi-ralph: queue_clone_path helper"
 
 ## Task T7: Route executor queue-path callers through helper — **confidence: 91%**
 
-**Files:** `ralph_executor/loop.py`, `ralph_executor/queue/filesystem.py`, `ralph_executor/queue/movements.py`, `ralph_executor/queue_clone.py` (modify); their test files (extend)
+**Files:** `ralph_executor/loop.py`, `ralph_executor/queue/filesystem.py`, `ralph_executor/queue/movements.py`, `ralph_executor/queue_clone.py`, `ralph_executor/claude_spawn.py`, `ralph_executor/safety/stuck.py` (modify); `tests/executor/conftest.py` + other test files (extend)
 
-**Step 0 mitigation:** Sweep these files for the literal `"queue"` path construction; verified 4 sites in source + their counterparts in tests. Update test fixtures in the same task.
+**Step 0 mitigation (re-verified after PR #61):** `grep -rn 'workspace_root / "queue"'` returns **10 sites** across `ralph_executor/` + `skills/` (skill-side dry-run paths covered by T16/T17/T17b/T18 separately). Executor-side sites are:
+
+1. `ralph_executor/loop.py:90` (`_queue_repo_root`)
+2. `ralph_executor/queue/filesystem.py:176` (`_root` property)
+3. `ralph_executor/queue/movements.py:41` (`_queue_repo`)
+4. `ralph_executor/queue_clone.py:66` (`ensure_queue_clone` `dest` default)
+5. `ralph_executor/claude_spawn.py:69` (`_queue_repo_root_for_spawn` — NEW in PR #61; intentionally duplicated to avoid the `claude_spawn → loop` circular import per the comment at line 56–67)
+6. `ralph_executor/safety/stuck.py:105` (`move_to_blocked`)
+7. `ralph_executor/safety/stuck.py:146` (`handle_stuck`)
+
+Plus the conftest test fixture at `tests/executor/conftest.py:43` (`fake_repo` builds `<workspace_root>/queue/`) and the docstring references.
 
 - [ ] **Step 1: Failing tests**
 
@@ -850,7 +860,37 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
     )
 ```
 
-f. Regression sweep: grep test fixtures for `"queue"` path literals; update each to the namespaced form using the fixture's instance_id.
+f. `ralph_executor/claude_spawn.py::_queue_repo_root_for_spawn` — keep the duplicate (circular-import comment at line 56–67 is correct), but switch body to the leaf helper. `ralph_executor.queue_path` has zero internal imports so it does not re-introduce the cycle:
+
+```python
+def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
+    """Filesystem path of the queue clone (replica of ``loop._queue_repo_root``).
+
+    Replicated here rather than imported to avoid a ``claude_spawn`` ->
+    ``loop`` circular import. The body delegates to
+    ``ralph_executor.queue_path.queue_clone_path`` which has no internal
+    dependencies — the only safe way to share the multi-ralph namespacing
+    rule across both call sites.
+    """
+    from ralph_executor.queue_path import queue_clone_path
+
+    return queue_clone_path(cfg.workspace_root, cfg.instance_id)
+```
+
+g. `ralph_executor/safety/stuck.py` — two sites, both inside functions that take `cfg: ExecutorConfig`. Replace line 105 (`move_to_blocked`) and line 146 (`handle_stuck`):
+
+```python
+    from ralph_executor.queue_path import queue_clone_path
+
+    queue_repo = queue_clone_path(cfg.workspace_root, cfg.instance_id)
+```
+
+h. **Regression sweep — conftest.py:**
+   - `tests/executor/conftest.py:43`: `fake_repo` fixture currently builds the clone at `<workspace_root>/queue/`. Rename to `<workspace_root>/queue-test/` (or pick a constant `TEST_INSTANCE_ID = "test"` exported from conftest).
+   - `tests/executor/conftest.py:226`: `cfg_for_repo` ExecutorConfig kwargs — add `instance_id=TEST_INSTANCE_ID`.
+   - Update conftest's `fake_repo` docstring (lines 4-9) to refer to `<workspace_root>/queue-<instance_id>/`.
+
+i. **Regression sweep — non-conftest tests:** grep `tests/` for `"queue"` path-literal constructions; rewrite each to use the fixture's `instance_id` or `queue_clone_path`.
 
 - [ ] **Step 4: PASS**
 
@@ -863,6 +903,8 @@ uv run pytest tests/executor/ -v
 ```
 git add ralph_executor/loop.py ralph_executor/queue/filesystem.py \
         ralph_executor/queue/movements.py ralph_executor/queue_clone.py \
+        ralph_executor/claude_spawn.py ralph_executor/safety/stuck.py \
+        tests/executor/conftest.py \
         tests/executor/test_loop.py tests/executor/test_filesystem_queue.py \
         tests/executor/test_queue_clone.py
 git commit -m "multi-ralph: route queue-path callers through queue_clone_path"
@@ -1905,6 +1947,8 @@ git commit -m "multi-ralph: ralph-status OWNER column + --instance-id flag"
 
 **Step 0 mitigation (verified):** `cancel.py:138` calls `_resolve_current_pbi(clone, args.pbi_id)` returning the dir. Insert ownership check immediately after. Add `--instance-id` flag, thread through `acquire_queue_clone`.
 
+**Additional fix in same task — dry-run path:** `cancel.py:115` hard-codes `clone = workspace_root / "queue"` in the dry-run early-return branch (does not call `acquire_queue_clone`). Replace with `clone = queue_clone_path(workspace_root, instance_id)` so the dry-run message reports the correct namespaced path.
+
 - [ ] **Step 1: Failing test**
 
 ```python
@@ -1959,13 +2003,82 @@ git commit -m "multi-ralph: ralph-cancel refuses foreign CLAIM + --instance-id f
 
 **Step 0 mitigation:** Read `skills/ralph-promote/scripts/promote.py` to find the from-state-current branch. Insert the ownership check there. Add `--instance-id` flag.
 
-- [ ] **Steps 1–4** — same pattern as T16, applied only when moving OUT OF `current/`.
+**Additional fix in same task — dry-run path:** `promote.py:156` hard-codes `clone = workspace_root / "queue"` in the dry-run early-return branch. Replace with `queue_clone_path(workspace_root, instance_id)`.
+
+- [ ] **Steps 1–4** — same pattern as T16, applied only when moving OUT OF `current/`. Dry-run path uses `queue_clone_path` to report the correct namespaced clone location.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add skills/ralph-promote/scripts/promote.py tests/skills/test_ralph_promote.py
 git commit -m "multi-ralph: ralph-promote refuses cross-instance current/ transfer + --instance-id flag"
+```
+
+---
+
+## Task T17b: `ralph-triage` `--instance-id` + namespaced clone — **confidence: 92%**
+
+**Files:** `skills/ralph-triage/scripts/triage.py` (modify), `tests/skills/test_ralph_triage.py` (extend)
+
+**Step 0 verified:** `ralph-triage` operates on `.ralph/blocked/<id>/` and moves to `inbox/` or `archive/`. It does NOT operate on `current/`, so a CLAIM.json ownership check does not apply (blocked PBIs have no live claimant). What it DOES need:
+
+- `--instance-id` CLI flag (new)
+- `acquire_queue_clone(workspace_root, queue_repo, queue_branch, instance_id)` call (TA-extended signature)
+- Dry-run path at `triage.py:161` (`clone = workspace_root / "queue"`) replaced with `queue_clone_path(workspace_root, instance_id)`
+
+No ownership-protection step.
+
+- [ ] **Step 1: Failing test**
+
+```python
+def test_triage_uses_namespaced_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ralph-triage operates against <workspace_root>/queue-<instance_id>/."""
+    # Setup: workspace_root/queue-ralph-a/.ralph/blocked/WI-1/ with valid PBI.md.
+    # Call triage.main(["--pbi-id", "WI-1", "--to", "inbox",
+    #                    "--instance-id", "ralph-a", "--note", "retry", ...]).
+    # Assert: WI-1 now in queue-ralph-a/.ralph/inbox/, attempts: 0, rc == 0.
+```
+
+- [ ] **Step 2: FAIL** — no `--instance-id` flag exists.
+
+- [ ] **Step 3: Implementation**
+
+a. Add to `_parse_args`:
+
+```python
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
+    )
+```
+
+b. Add `resolve_instance_id` to the import block. In `main`:
+
+```python
+    instance_id = resolve_instance_id(args.instance_id)
+    clone = acquire_queue_clone(
+        workspace_root, queue_repo, queue_branch, instance_id
+    )
+```
+
+c. Dry-run path at line 161 — replace literal:
+
+```python
+        from ralph_executor.queue_path import queue_clone_path
+
+        clone = queue_clone_path(workspace_root, instance_id)
+```
+
+- [ ] **Step 4: PASS** — new test green, existing triage tests still green.
+
+- [ ] **Step 5: Commit**
+
+```
+git add skills/ralph-triage/scripts/triage.py tests/skills/test_ralph_triage.py
+git commit -m "multi-ralph: ralph-triage --instance-id flag + namespaced clone"
 ```
 
 ---
@@ -2379,7 +2492,7 @@ git commit -m "multi-ralph: docs — README + runbook updates"
 | T4 CLI flag | 96 | low | direct |
 | T5 init prompt | 92 | exact insertion point | Step 0 traced cmd_init flow lines |
 | T6 queue_clone_path | 99 | trivial | direct |
-| T7 route callers | 91 | fixture sweep | Step 0 enumerated 4 sites + test fixtures |
+| T7 route callers | 91 | fixture sweep | Step 0 enumerated **7 executor sites** + conftest.py changes (includes `claude_spawn.py:69` and `safety/stuck.py:105+146` discovered against PR #61 baseline) |
 | T8 legacy rename | 92 | cross-volume | `shutil.move` + both-exist guard before rename |
 | T9 CLAIM.json IO | 96 | low | direct |
 | T10 atomic claim | 91 | `git mv` + untracked file gotcha | redesigned to `post_mv` callback inside `_move` |
@@ -2389,13 +2502,14 @@ git commit -m "multi-ralph: docs — README + runbook updates"
 | T14 CLI lockfile | 92 | wrapping `main` body | explicit try/finally |
 | TA queue_writer | 90 | skill resolver layer | mirror existing resolvers exactly |
 | T15 status OWNER | 90 | PBIRow extension | explicit dataclass field + per-state population |
-| T16 cancel refuse | 92 | check placement | post-`_resolve_current_pbi` |
-| T17 promote refuse | 91 | branch placement | mirror T16, only on from-current path |
+| T16 cancel refuse | 92 | check placement | post-`_resolve_current_pbi`; also fixes dry-run literal at `cancel.py:115` |
+| T17 promote refuse | 91 | branch placement | mirror T16, only on from-current path; also fixes dry-run literal at `promote.py:156` |
+| T17b triage instance-id | 92 | low | `--instance-id` flag + namespaced clone + dry-run literal fix at `triage.py:161`. No ownership check (operates on `blocked/`, not `current/`) |
 | T18 recover skill | **94** | frontmatter rewrites | reuse `update_frontmatter_fields` + `append_history` + `shutil.move` (was 87) |
 | T19 integration | **93** | fixture build | reuse `fake_repo` + `cfg_for_repo` + `write_sample_pbi` from conftest (was 88) |
 | T20 docs | 96 | low | direct |
 
-All tasks ≥90%. All sub-95% tasks carry baked-in mitigations.
+All 22 tasks ≥90%. All sub-95% tasks carry baked-in mitigations.
 
 ## v3 lifts log
 
@@ -2404,3 +2518,15 @@ All tasks ≥90%. All sub-95% tasks carry baked-in mitigations.
 | T13 lockfile | 88 | 92 | Spike confirmed POSIX `fcntl.flock(LOCK_EX \| LOCK_NB)` blocks same-process second acquire. Test split into per-platform gated variants so Windows path is tested under Windows CI and POSIX path under POSIX CI. |
 | T18 recover | 87 | 94 | Source-read of `scripts/queue_writer.py` revealed `find_pbi_directory`, `read_frontmatter`/`write_frontmatter`/`update_frontmatter_fields`, `append_history(actor, action, detail)`, `commit_paths` — all battle-tested by `ralph-promote`. Custom `_rewrite_lines` removed; uses helpers. `actor="ralph-recover"` (operator decision). `shutil.move` instead of `Path.rename` for cross-volume safety. |
 | T19 integration | 88 | 93 | Source-read of `tests/executor/conftest.py` revealed `fake_repo` + `cfg_for_repo` + `write_sample_pbi` already exist; `_fake_ensure_target_clone` autouse. `two_ralphs` fixture is the conftest pattern duplicated with distinct workspace_root + instance_id. Fixture body filled in concretely (5 steps). |
+
+## v4 gap-audit log (vs. PR #61 baseline)
+
+| Gap | Found via | Patch |
+|---|---|---|
+| `claude_spawn.py:69` `_queue_repo_root_for_spawn` not routed through helper | grep `workspace_root / "queue"` after PR #61 merged | T7 step `f` updates the new replica function (intentional duplicate per circular-import comment) to delegate to `queue_clone_path` |
+| `safety/stuck.py:105` + `:146` not routed through helper | same grep | T7 step `g` replaces both literals |
+| `tests/executor/conftest.py` `fake_repo` fixture hard-codes `queue/` + `cfg_for_repo` lacks `instance_id` | grep + read | T7 step `h` renames + adds field + updates docstring |
+| `cancel.py:115` dry-run path hard-codes `queue/` | same grep | T16 dry-run note |
+| `promote.py:156` dry-run path hard-codes `queue/` | same grep | T17 dry-run note |
+| `ralph-triage` skill entirely missing from plan | source read of `skills/ralph-triage/scripts/triage.py` | new task **T17b** — `--instance-id` flag + namespaced clone + dry-run fix at line 161; no ownership-check (operates on `blocked/`, not `current/`) |
+| `prompt_composer.py` (new in PR #61) | source read | NO interaction with queue/.ralph/instance_id — no plan change |
