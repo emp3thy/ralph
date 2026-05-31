@@ -175,10 +175,12 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
             queue_root=_queue_repo_root(cfg) / ".ralph",
             ado_pr_scripts_path=scripts_path,
             config=sweep_cfg,
-            # Always derive the repo name from the primary checkout, NOT
-            # from queue_root.parent.name — the latter is the literal
-            # ``queue`` directory name under workspace_root.
-            repo_name=cfg.repo_path.name,
+            # The queue clone is the single repo the sweep reads/writes
+            # (every PR scanned belongs to a target reachable from the
+            # queue's pending-pr index); label the sweep context with
+            # its directory name — by convention ``queue`` under
+            # ``workspace_root``.
+            repo_name=_queue_repo_root(cfg).name,
             event_log=event_log,
         )
         result = run_sweep(ctx=sweep_ctx)
@@ -730,7 +732,39 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
             )
 
         if outcome.kind == "pr_created":
-            touched = git_ops.diff_names(cfg.repo_path, cfg.main_branch, _feature_branch_name(pbi))
+            # The diff must run against the TARGET clone (which holds the
+            # feature branch the PR was opened from), NOT ralph's own
+            # checkout. Derive the clone root from ``pbi.target_info``
+            # populated by ``_claim_pbi`` / ``iterate_once``'s resume
+            # path. Defensive empties (symmetric to the resume path's
+            # tolerance for a missing clone): ``target_info=None`` from
+            # malformed frontmatter, or the deterministic clone_root
+            # not on disk (transient fetch failure earlier in the
+            # iteration) — log + surface an empty touched-files list
+            # rather than crash; ``pr_created`` itself is still valid.
+            touched: list[str] = []
+            if pbi.target_info is None:
+                log.warning(
+                    "PBI %s pr_created but target_info missing; touched_files=[]",
+                    pbi.id,
+                )
+            else:
+                clone_root = (
+                    cfg.workspace_root
+                    / "clones"
+                    / pbi.target_info.owner
+                    / pbi.target_info.name
+                )
+                if not clone_root.is_dir():
+                    log.warning(
+                        "PBI %s pr_created but target clone %s is missing; touched_files=[]",
+                        pbi.id,
+                        clone_root,
+                    )
+                else:
+                    touched = git_ops.diff_names(
+                        clone_root, cfg.main_branch, _feature_branch_name(pbi)
+                    )
             # Clean up the work worktree BEFORE the queue move — the move
             # invalidates ``pbi.path`` (used by ``_read_target_repo_from_pbi``
             # when ``pbi.work_worktree`` was not threaded through).
