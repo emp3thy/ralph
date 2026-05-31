@@ -66,16 +66,13 @@ You will be prompted for the following values:
 
 | Key | What it is | Example |
 |---|---|---|
-| `ralph_home` | Root for legacy single-checkout state (kept for compatibility) | `~/dev/ralph` |
 | `workspace_root` | Where ralph clones the queue and target repos | `~/ralph-workspaces` |
 | `queue_repo` | HTTPS URL of the queue repo holding `.ralph/` state | `https://github.com/emp3thy/ralph-queue` |
 | `queue_branch` | Branch on `queue_repo` that holds `.ralph/` state. Default `ralph-queue`. Override with TOML, `RALPH_QUEUE_BRANCH`, or `--queue-branch`. | `ralph-queue` |
 
-`init` only accepts two flags: `--ralph-home PATH` (skip the ralph_home
-prompt) and `--yes` (non-interactive: OS default for `ralph_home`, default
-`queue_branch`, and SKIP the `queue_repo` prompt with a warning — there is
-no sensible default to write). All other keys are collected via interactive
-prompts or written manually to the TOML.
+`init` only accepts one flag: `--yes` (non-interactive: OS default for
+`workspace_root`, default `ralph-queue` for `queue_branch`, `queue_repo`
+must be added manually post-init).
 
 For fully scripted setup (CI, pods), write `~/.ralph/config.toml`
 directly instead:
@@ -83,7 +80,6 @@ directly instead:
 ```bash
 mkdir -p ~/.ralph
 cat > ~/.ralph/config.toml <<'EOF'
-ralph_home = "/opt/ralph"
 workspace_root = "/opt/ralph/workspaces"
 queue_repo = "https://github.com/emp3thy/ralph-queue"
 queue_branch = "ralph-queue"
@@ -95,6 +91,12 @@ If your network or auth is flaky it will print a warning but still write
 the config — the executor will retry on its next iteration.
 
 ## Working the queue
+
+Add a PBI with `ralph-new` (interactive) or by writing a Markdown file
+under `.ralph/inbox/<PBI-ID>/PBI.md` on the queue repo's `ralph-queue`
+branch. The PBI's `target_repo` frontmatter field points at the GitHub
+repo to be modified. Ralph clones every target it encounters under
+`<workspace_root>/clones/<owner>/<name>/`.
 
 Five skills cover the operator workflow. All read or write
 `<workspace_root>/queue/.ralph/` (the queue clone) and never touch the
@@ -164,154 +166,35 @@ out to `archive/`.
 uv run python skills/ralph-triage/scripts/triage.py --pbi-id WI-1234 --to inbox
 ```
 
-## Per-repo setup
-
-For each repo you want ralph to manage:
-
-```bash
-# 1. Clone the target repo into $RALPH_HOME/<name>
-git clone https://github.com/owner/repo C:\dev\ralph\repo
-
-# 2. Scaffold the ralph-queue branch + .ralph/ skeleton
-uv run ralph-executor scaffold --workspace repo
-
-# 3. Push the queue branch
-git -C C:\dev\ralph\repo push -u origin ralph-queue
-```
-
-`scaffold` creates the `ralph-queue` branch off your current `HEAD`
-(usually `main`), populates `.ralph/{inbox,current,pending-pr,done,blocked}/`
-with `.gitkeep` files, and writes a commented `.ralph/config.toml`
-stub. It commits the scaffold locally but does **not** push — you
-inspect, then push when ready.
-
-Optional: harden the queue branch on GitHub (require linear history,
-disable force-push):
-
-```bash
-GH_OWNER=owner GH_TOKEN=$(gh auth token) \
-  uv run python scripts/setup_ralph_queue_github.py repo
-```
-
 ## Running ralph
 
-**Ralph startup script (Windows / PowerShell):** `scripts/start-ralph.ps1`
-wraps the prerequisite checks (`uv`, `git`, `gh`, `claude`, `~/.ralph/config.toml`),
-runs `uv sync`, and launches the executor. Defaults to workspace `queue`,
-drain-once mode.
-
-```powershell
-.\scripts\start-ralph.ps1                    # default: workspace queue, drain-once
-.\scripts\start-ralph.ps1 -Workspace repo    # different workspace
-.\scripts\start-ralph.ps1 -Watch             # daemon mode
-.\scripts\start-ralph.ps1 -Once              # single iteration
-```
-
-Or invoke the executor directly:
-
 ```bash
-uv run ralph-executor --workspace repo
+uv run ralph-executor             # drain queue
+uv run ralph-executor --watch     # daemon
+uv run ralph-executor --once      # single iteration
 ```
 
-This resolves to `$RALPH_HOME/repo`, switches to the `ralph-queue`
-branch, and starts iterating. By default ralph **drains the queue and
-exits 0** once it sees `idle_exit_threshold` (default `2`) consecutive
-idle iterations — i.e. no PBI to claim and nothing in `current/`. The
-final log line is `INFO ralph_executor.cli: queue drained -- exiting
-after N consecutive idle iterations`, which a pod / container
-supervisor can grep for to confirm orderly shutdown.
-
-This default is built for **unattended pod / container deployments**
-where the queue contents are baked in at launch and a process that
-doesn't terminate when it's done its work is just burning compute.
-
-For an interactive workstation session — operator keeps pushing PBIs
-into `inbox/` mid-run — pass `--watch` to get the legacy daemon
-behaviour (run forever, sleep `iteration_sleep_seconds` between idles,
-exit only on Ctrl-C):
-
-```bash
-uv run ralph-executor --watch --workspace repo
-```
-
-Other forms:
-
-```bash
-# Explicit path
-uv run ralph-executor --repo /path/to/checkout
-
-# Whatever's in the current directory
-cd /path/to/checkout && uv run ralph-executor
-
-# Single iteration (for debugging) — exits after 1 iter regardless of outcome
-uv run ralph-executor --once --workspace repo
-
-# Daemon mode (workstation use)
-uv run ralph-executor --watch --workspace repo
-```
-
-Pin the daemon default per project in `<repo>/.ralph/config.toml`:
-
-```toml
-watch_mode = true            # equivalent to passing --watch every time
-idle_exit_threshold = 5      # tolerate more transient idles before drain
-```
-
-…or per shell:
-
-```bash
-RALPH_WATCH_MODE=1 uv run ralph-executor --workspace repo
-RALPH_IDLE_EXIT_THRESHOLD=5 uv run ralph-executor --workspace repo
-```
-
-## Running multiple ralphs
-
-The `ralph_home` convention is what makes this clean. One subdirectory
-per ralph:
-
-```
-C:\dev\ralph\
-  repo_a\    ← ralph #1
-  repo_b\    ← ralph #2
-  repo_c\    ← ralph #3
-```
-
-Open three terminals:
-
-```powershell
-uv run ralph-executor --workspace repo_a   # terminal 1
-uv run ralph-executor --workspace repo_b   # terminal 2
-uv run ralph-executor --workspace repo_c   # terminal 3
-```
-
-Each instance is fully isolated — its own queue, its own feature
-branches (`ralph/<PBI-ID>` namespaced inside the workspace), its own
-spawned Claude session.
+One executor drains the whole queue across every distinct `target_repo`
+URL. No second-terminal / second-workspace setup is needed.
 
 ## Configuration precedence
 
 Knobs read from (highest priority wins):
 
-1. CLI flags (`--repo`, `--workspace`, `--log-level`)
+1. CLI flags (`--log-level`, `--queue-repo`, `--queue-branch`, `--watch`)
 2. `RALPH_*` environment variables
-3. `<repo>/.ralph/config.toml` (per-project)
+3. `~/.ralph/config.toml` (user TOML)
 4. Hard-coded defaults
-
-Workspace root specifically:
-
-1. `$RALPH_HOME` environment variable
-2. `ralph_home` in `~/.ralph/config.toml` (written by `init`)
 
 Secrets stay env-only: `GH_TOKEN` (auto-resolved by `gh` CLI),
 optional `ANTHROPIC_API_KEY` (omit to use Claude Code OAuth).
 
 `git_host` is also TOML-readable — set `git_host = "github"` (or
-`"ado"`) in `<repo>/.ralph/config.toml` instead of exporting
-`$RALPH_GIT_HOST` every shell. The `scaffold` subcommand emits this
-key in the stub it writes.
+`"ado"`) in `~/.ralph/config.toml` instead of exporting
+`$RALPH_GIT_HOST` every shell.
 
 Same goes for project identifiers and alerting URLs that aren't
-secrets — set these once in `<repo>/.ralph/config.toml`:
+secrets — set these once in `~/.ralph/config.toml`:
 
 ```toml
 gh_owner = "your-github-org-or-user"     # was $GH_OWNER
@@ -320,11 +203,9 @@ ado_project = "your-project"             # was $ADO_PROJECT
 halt_webhook = "https://..."             # was $RALPH_HALT_WEBHOOK
 ```
 
-Per-machine paths (where things live on YOUR machine) live in
-`~/.ralph/config.toml` instead of project config:
+Per-machine paths also live in `~/.ralph/config.toml`:
 
 ```toml
-ralph_home = "C:/dev/ralph"
 skills_root = "C:/Users/you/source/ralph/skills"  # was $RALPH_SKILLS_ROOT
 claude_skills_dir = "C:/Users/you/.claude/skills" # was $RALPH_CLAUDE_SKILLS_DIR
 ```
@@ -342,7 +223,7 @@ cannot answer permission prompts. Operators do NOT need to relax the
 host's global `defaultMode` for ralph to run — leaving it at `"auto"`
 is fine.
 
-Override per project via TOML:
+Override via user TOML:
 
 ```toml
 claude_permission_mode = "acceptEdits"   # was $RALPH_CLAUDE_PERMISSION_MODE
