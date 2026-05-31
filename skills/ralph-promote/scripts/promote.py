@@ -21,6 +21,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from ralph_executor.claim import ClaimParseError, read_claim  # noqa: E402
+from ralph_executor.queue_path import queue_clone_path  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QUEUE_STATE_FOLDERS,
     QueueWriterError,
@@ -30,6 +32,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -99,6 +102,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the move locally but do not push.",
@@ -149,11 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
+        instance_id = resolve_instance_id(args.instance_id)
 
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be move against the would-be clone location.
-            clone = workspace_root / "queue"
+            clone = queue_clone_path(workspace_root, instance_id)
             rel_from = f".ralph/{args.from_state}/{args.pbi_id}"
             rel_to = f".ralph/{args.to_state}/{args.pbi_id}"
             print(
@@ -176,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        clone = acquire_queue_clone(
+            workspace_root, queue_repo, queue_branch, instance_id=instance_id,
+        )
 
         from_dir = clone / ".ralph" / args.from_state / args.pbi_id
         to_dir = clone / ".ralph" / args.to_state / args.pbi_id
@@ -208,6 +219,25 @@ def main(argv: list[str] | None = None) -> int:
 
         if not from_dir.is_dir():
             raise QueueWriterError(f"PBI {args.pbi_id!r} not found at .ralph/{args.from_state}/")
+
+        # Refuse to move a current/ PBI claimed by a different instance — the
+        # operator must use ``ralph-recover`` to take a foreign claim off this
+        # PBI before promoting it out of current/. Other source states do not
+        # carry CLAIM.json (only current/ does), so the check is gated by
+        # ``from_state == "current"``. PBIs in current/ with no CLAIM.json
+        # (legacy / mid-migration) pass through unchanged.
+        if args.from_state == "current":
+            try:
+                claim = read_claim(from_dir)
+            except ClaimParseError as exc:
+                raise QueueWriterError(
+                    f"malformed CLAIM.json at {from_dir.name}: {exc}"
+                ) from exc
+            if claim is not None and claim.instance_id != instance_id:
+                raise QueueWriterError(
+                    f"PBI {args.pbi_id} is claimed by instance {claim.instance_id!r}, "
+                    f"not {instance_id!r}. Use `ralph-recover` if you need to force."
+                )
 
         if to_dir.exists():
             raise QueueWriterError(
