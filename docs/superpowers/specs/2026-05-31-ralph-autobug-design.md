@@ -10,7 +10,7 @@ When the ralph executor or its Claude subprocess crashes, the executor emits a b
 
 Two trigger classes ship in v1: **Python crashes inside `ralph_executor/`** and **Claude subprocess crashes (non-zero exit or timeout)**. Cycle-detector signals and `STUCK.md` writes are deferred to v2.
 
-The bug PBIs land in `inbox/` as normal `type: bug` PBIs. They carry extra frontmatter fields (`signature`, `occurrences`, `first_seen`, `last_seen`, optional `regression_of`) that the dedup mechanism uses to find existing entries. There is no separate folder, no separate dashboard panel, no `source` marker — the presence of `signature: <hex>` distinguishes crash-captured bugs from human-authored ones.
+The bug PBIs land in `inbox/` as normal `type: bug` PBIs (entry file `BUG.md`, required siblings `REPRODUCE.md` and `HISTORY.md`, matching the existing bug shape). They carry the required bug-PBI frontmatter (`id`, `type`, `severity`, `attempts`, `created_at`, `updated_at`, `target_repo`) plus autobug-specific extras (`signature`, `trigger_kind`, `occurrences`, `first_seen`, `last_seen`, optional `regression_of`, `triggering_pbi`, `ralph_sha`) that the dedup mechanism uses to find existing entries. There is no separate folder, no separate dashboard panel, no `source` marker — the presence of `signature: <hex>` distinguishes crash-captured bugs from human-authored ones.
 
 Three independent fuses protect against runaway emission: a rate limit (5 writes per 10 min), a recursion guard (`RALPH_AUTOBUG_DEPTH` env var), and the dedup mechanism itself (which collapses repeat crashes onto an existing PBI). All emission is no-op-safe: an autobug failure never propagates back to the executor and never masks the original crash signal.
 
@@ -98,39 +98,108 @@ A single emission flows through:
    - `new` → check rate limit, then emit fresh PBI.
 5. **Rate-limit overflow** → append to `<queue>/.ralph/state/autobug-suppressed.log` and return.
 
-## Frontmatter and PBI directory layout
+## Bug PBI directory and frontmatter
 
-Autobug PBIs use the existing PBI directory shape with extra fields. They go in `inbox/autobug-<short-sig>-<seq>/`.
+Autobug PBIs ARE bug PBIs. They use the existing bug shape (entry file `BUG.md`, required siblings per `prompt/02-read-order/bug/read.md`) so the executor's queue parser (`ralph_executor/queue/filesystem.py::parse_pbi_directory`) and the bug workflow (`prompt/03-workflow/bug/workflow.md`) both accept them with one minor amendment to the workflow (§"Bug workflow amendment" below).
 
 ### Directory
 
 ```
 inbox/autobug-a3f2c9-001/
-  PBI.md          # title + summary + stacktrace + env snapshot + recent events
-  OBSERVED.md     # what we saw, no reproducibility claim
-  HISTORY.md      # excerpt from triggering PBI (only if autobug_include_history=true for that target_repo)
+  BUG.md          # entry file — title, stacktrace, env snapshot, recent events, triggering PBI ref
+  REPRODUCE.md    # observed stacktrace + skeleton; explicitly marked "starting point, not a recipe"
+  HISTORY.md      # initially empty (or excerpt from triggering PBI when autobug_include_history=true)
 ```
 
-No `PLAN.md`, `REPRODUCE.md`, or `INVESTIGATE.md` — the first iteration that claims the PBI writes those, exactly as it would for a human-authored bug PBI.
+The set matches the bug PBI requirement: `BUG.md`, `REPRODUCE.md`, `HISTORY.md`. No `INVESTIGATE.md` is shipped — that's a per-service repo-root file maintained by the service owner, not a per-PBI artefact.
 
-### Frontmatter on PBI.md
+### Frontmatter on BUG.md
+
+Required fields (enforced by `parse_pbi_directory`):
 
 ```yaml
 ---
 id: autobug-a3f2c9-001
 type: bug
-severity: critical              # python_crash → critical, subprocess_crash → high (both TOML-tunable)
-target_repo: <ralph repo URL>
-signature: a3f2c9d8e1bc...      # full SHA-256 hex; id uses 6-char prefix
-trigger_kind: python_crash      # | subprocess_crash
-occurrences: 1
-first_seen: 2026-05-31T14:23:01Z
-last_seen: 2026-05-31T14:23:01Z
-regression_of: null             # set on reopen from done/
-triggering_pbi: WI-247          # null for startup / pre-claim crashes
-ralph_sha: 51cc97a              # ralph executor SHA at crash time
+severity: critical              # python_crash → critical, subprocess_crash → high (TOML-tunable)
+status: inbox                   # rewritten by movements._rewrite_status on every move
+attempts: 0                     # fresh PBI; bumps preserve existing value; reopens reset to 0
+created_at: 2026-05-31T14:23:01Z
+updated_at: 2026-05-31T14:23:01Z
+target_repo: <ralph repo URL>   # PBI-1 schema requirement; parser is lenient but downstream code expects it
 ---
 ```
+
+Autobug-specific extras (parser ignores unknown keys; line-by-line `_rewrite_status` preserves them across moves):
+
+```yaml
+signature: a3f2c9d8e1bc...      # full SHA-256 hex; id uses 6-char prefix
+trigger_kind: python_crash      # | subprocess_crash
+occurrences: 1                  # bumped in place on dedup match
+first_seen: 2026-05-31T14:23:01Z
+last_seen: 2026-05-31T14:23:01Z
+regression_of: null             # set on reopen from done/, otherwise null
+triggering_pbi: WI-247          # null for startup / pre-claim crashes
+ralph_sha: 51cc97a              # ralph executor SHA at crash time
+```
+
+`severity` values are constrained to the existing `Severity` Literal: `critical` / `high` / `normal` / `low`. `type` must be `bug` to match the `BUG.md` entry-file convention (parser raises `QueueError` on type/entry-file mismatch).
+
+### REPRODUCE.md shape
+
+The autobug emits a REPRODUCE.md with an explicit "starting point" header. It contains the observed crash artefacts AND a marker telling the iteration that converting these into runnable reproduction commands IS part of the work, not grounds for STUCK.md.
+
+```markdown
+# REPRODUCE — autobug-a3f2c9-001
+
+> AUTOBUG NOTE: This bug was auto-captured at crash time. The content
+> below is what we observed, NOT a confirmed reproduction recipe. Your
+> iteration's job is to convert these observations into runnable
+> reproduction commands and append them to this file. If after
+> investigation the crash is genuinely non-deterministic (race
+> condition, OOM under load, network blip), write STUCK.md per the
+> bug workflow's contradictory-evidence trigger — do not stack
+> speculative fixes.
+
+## Observed
+
+Trigger: python_crash (or subprocess_crash)
+Exit code: <N>  (subprocess only)
+
+### Stacktrace
+
+```
+<full traceback>
+```
+
+### Environment snapshot
+
+- OS: <platform>
+- Python: <version>
+- Ralph SHA: <sha>
+- Claude CLI: <version>
+- Relevant env vars (secrets redacted): <list>
+
+## Suggested reproduction approach
+
+- Inspect <throw_file>:<throw_line> for the failing call path
+- Reproduce the env conditions captured above
+- See triggering PBI <triggering_pbi> in done/ for context (HISTORY excerpt is in HISTORY.md if available)
+```
+
+### Bug workflow amendment
+
+`prompt/03-workflow/bug/workflow.md` step 2 currently reads:
+
+> Reproduce. Run the commands in `REPRODUCE.md`. Confirm you observe the failure signature documented in `BUG.md`. If you cannot reproduce, write `STUCK.md` ("cannot reproduce: <what I saw instead>") and stop.
+
+Amend step 2 to add a signature-aware conditional:
+
+> **If `BUG.md` frontmatter contains `signature: <hex>`** (autobug-emitted), REPRODUCE.md may contain only observed artefacts, not runnable commands. Your iteration's first task is to build the reproduction from the stacktrace + env snapshot. The "cannot reproduce → STUCK" rule applies only after a documented investigation attempt, not on initial read.
+>
+> **Otherwise** (human-authored bug): the existing rule stands — REPRODUCE.md must contain runnable commands; if they don't fire, STUCK.md immediately.
+
+This is a one-paragraph amendment to one file in `prompt/03-workflow/bug/workflow.md`. No new prompt topic folder, no parser changes.
 
 ### ID scheme
 
@@ -142,19 +211,29 @@ The full `signature` lives in frontmatter; the short prefix is for filesystem re
 
 ### Bump semantics (open-state match)
 
-1. Read existing PBI's frontmatter.
-2. Increment `occurrences`; update `last_seen`.
-3. Append new stacktrace + timestamp under a `## Trace <N>` heading in the body.
-4. Commit + push as `bot_author_email`.
+1. Read existing PBI's BUG.md frontmatter (line-based, not via the PBI dataclass — preserves autobug extras).
+2. Increment `occurrences`; update `last_seen`. `attempts` left untouched (only the iteration loop bumps that).
+3. Append new stacktrace + timestamp under a `## Trace <N>` heading in `BUG.md` body.
+4. Commit + push via existing `push_with_rebase` as `bot_author_email`.
 5. Do NOT emit a new PBI.
 
 ### Reopen semantics (done/ match within 30 days)
 
 1. Generate a fresh PBI ID with `<seq>` incremented.
-2. Set `regression_of: <old-id>` in new frontmatter.
+2. Set `regression_of: <old-id>` in new frontmatter; set `attempts: 0`, `created_at` / `updated_at` = now.
 3. `occurrences: 1`, `first_seen` = now.
 4. Write to `inbox/` (NOT moved from done/) — fresh entry, cross-linked.
 5. Rationale: the old PBI carries its own `HISTORY.md` from the iteration that closed it. Mixing old history with a new occurrence is confusing.
+
+### Roundtrip safety
+
+`ralph_executor/queue/movements.py::_rewrite_status` is line-based: it scans the frontmatter block, replaces `status:` and `updated_at:` lines in place, and **preserves every other line verbatim**. It does NOT round-trip through the `PBI` dataclass and so does NOT lose unknown frontmatter keys.
+
+This means autobug's extras (`signature`, `occurrences`, etc.) survive `move_inbox_to_current`, `move_current_to_pending_pr`, and `move_*_to_done`. Verified by reading `_rewrite_status` directly.
+
+The bump and reopen paths bypass `_rewrite_status` entirely — autobug owns its own writes to `BUG.md` and uses the same line-level technique to update `last_seen` and `occurrences` without losing other fields.
+
+If a future change to movements switches to dataclass-roundtrip serialisation, autobug extras will silently disappear. Mitigation: an integration test (`test_roundtrip_preserves_extras`) writes an autobug PBI, runs it through `move_inbox_to_current` → `move_current_to_pending_pr` → `move_pending_pr_to_done`, then asserts every autobug-specific frontmatter key is still present in the final file.
 
 ## Signature computation
 
@@ -401,6 +480,7 @@ The same nested-try pattern wraps every internal wire site in `loop.py`.
 | `ralph_executor/config.py` | Add TOML keys per §"Config defaults" below. | Loaded via existing config layer; no new mechanism |
 | `ralph_executor/safety/events.py` | Add new EventType: `autobug_emitted` with signature payload. | Cycle detector can filter on this in v2 |
 | `ralph_executor/queue/movements.py` | No change. Autobug uses existing `write_pbi_to_inbox` + `update_pbi_frontmatter` helpers. | Reuses existing queue write surface |
+| `prompt/03-workflow/bug/workflow.md` | Add signature-aware conditional to step 2 (Reproduce) per §"Bug workflow amendment". | Autobug PBIs whose REPRODUCE.md contains only observed artefacts are not auto-STUCK'd on first read |
 | `prompt/06-memory/memory.md` | Add one line: "If you see frontmatter `signature: <hex>` on the PBI, this is an autobug — your `RALPH_AUTOBUG_DEPTH=1` env var prevents further autobug emissions while you fix it." | Iteration's Claude is aware of the autobug shape |
 
 ### What does NOT change
@@ -458,6 +538,7 @@ These are the tests that MUST pass for the "autobug doesn't eat the original sig
 5. `test_cli.py::test_outer_handler_reraises_original` — trigger `RuntimeError` from `run_loop`, monkeypatch `autobug.detect_python_crash` to raise `TypeError`, assert `sys.exit` propagates the original `RuntimeError` and log contains the original traceback.
 6. `test_recursion_guard_e2e.py::test_recursion_marker_propagates` — claim an autobug PBI, spawn subagent, introspect the actual env the subagent's subprocess receives, assert `RALPH_AUTOBUG_DEPTH=1` is present.
 7. `test_signature_corpus.py::test_buckets_collapse_correctly` — for each bucket in `fixtures/stderr_corpus/`, assert all files hash to the same signature; assert cross-bucket signatures differ.
+8. `test_roundtrip_preserves_extras` (integration) — write an autobug PBI with all extras, run it through `move_inbox_to_current` → `move_current_to_pending_pr` → `move_pending_pr_to_done`, assert every autobug-specific frontmatter key (`signature`, `occurrences`, `trigger_kind`, `first_seen`, `last_seen`, `regression_of`, `triggering_pbi`, `ralph_sha`) is still present in the final file verbatim. Guards against a future movements change that switches to dataclass-roundtrip serialisation.
 
 ### TDD discipline
 
@@ -493,6 +574,7 @@ These were surfaced during brainstorming. None block v1 ship; all are documented
 6. **Defensive composer can silently degrade.** Mitigated by `autobug.compose.section_failed` metric; operator must wire alerting.
 7. **Severity heuristic is opinionated.** Defaults are guesses, not data-driven. Knobs ship in v1 config table; operator tunes after observing.
 8. **Short-sig collision space.** 6 hex chars = 16M namespace. Negligible at expected volume; `<seq>` suffix handles same-sig collisions; different-sig short-prefix collisions handled by `<seq>` increment as well.
+9. **Frontmatter-roundtrip preservation depends on movements' line-based rewriter.** Autobug extras survive `_rewrite_status` because the rewriter is line-by-line and doesn't deserialise unknown keys. A future refactor that switches to dataclass-roundtrip serialisation silently drops every autobug-specific field. Mitigated by the `test_roundtrip_preserves_extras` integration test (load-bearing test #8). If that test is ever weakened or removed, autobug dedup breaks silently on the next move.
 
 ## Rollout posture
 
