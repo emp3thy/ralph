@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Literal
 
-from ralph_executor.config import ExecutorConfig
+from ralph_executor.config import ConfigError, ExecutorConfig
 from ralph_executor.subprocess_utils import popen_text, run_text
 from ralph_executor.types import PBI
 
@@ -495,8 +495,10 @@ def spawn_claude_p(
     ``cwd`` overrides the subprocess working directory. When omitted,
     falls back to ``pbi.work_worktree`` (set by ``_claim_pbi`` in
     multi-target mode so Claude runs inside the target's per-PBI
-    worktree), then to ``cfg.repo_path`` for legacy single-checkout
-    setups.
+    worktree). If neither override is supplied the call raises
+    ``ConfigError`` — the per-PBI worktree must be materialised by
+    ``_claim_pbi`` or the resume path in ``iterate_once`` before Claude
+    can be spawned.
 
     ``pbi_dir`` overrides the on-disk PBI directory the spawned Claude
     reads/writes; defaults to ``pbi.path`` for legacy mode. In worktree
@@ -521,7 +523,12 @@ def spawn_claude_p(
     elif pbi.work_worktree is not None:
         effective_cwd = pbi.work_worktree
     else:
-        effective_cwd = cfg.repo_path
+        raise ConfigError(
+            f"spawn_claude_p: PBI {pbi.id} has no work_worktree set and no "
+            "cwd override was supplied. The per-PBI worktree must be "
+            "materialised by _claim_pbi or recovered by the resume path "
+            "in iterate_once before Claude can be spawned."
+        )
     if not effective_pbi_dir.is_dir():
         raise FileNotFoundError(
             f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
@@ -662,7 +669,10 @@ def spawn_claude_p(
     # would be unreliable (PROMPT.md doesn't mandate a marker line and
     # the pr-skill emits its own JSON envelope).
     feature_branch = f"ralph/{pbi.id}"
-    pr_url = _query_open_pr_via_gh(cfg.repo_path, feature_branch)
+    # ``gh pr list`` runs against the target clone's working tree (the
+    # per-PBI worktree on the feature branch). ``cfg`` no longer carries
+    # a process-wide repo path — every gh invocation is per-PBI.
+    pr_url = _query_open_pr_via_gh(effective_cwd, feature_branch)
     # Gate pr_created on required CI checks being green. _wait_for_pr_checks
     # polls up to 3 min per iteration; non-pass states fall through to
     # ``partial`` in classify_outcome so the next iteration re-polls.
@@ -676,7 +686,7 @@ def spawn_claude_p(
             pr_check_failed_names = [f"could not parse PR number from {pr_url}"]
         else:
             pr_check_state, pr_check_failed_names = _wait_for_pr_checks(
-                cfg.repo_path,
+                effective_cwd,
                 pr_number,
                 max_polls=cfg.pr_check_poll_max_attempts,
                 interval_seconds=cfg.pr_check_poll_interval_seconds,
