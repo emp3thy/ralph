@@ -199,6 +199,33 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
     )
 
 
+def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
+    """Emit a WARNING if ``<clone>/.ralph/config.toml`` exists.
+
+    Called after every successful ``ensure_clone`` so a freshly cloned
+    target gets exactly one WARNING per iteration that touches it. The
+    file is NOT loaded — project TOML is gone after this refactor. The
+    WARNING names the path so the operator can move the settings to
+    ``~/.ralph/config.toml`` and delete the file.
+
+    Detection failure (permission denied, transient I/O error reading
+    the clone) is suppressed at DEBUG so a flaky filesystem never
+    crashes the iteration.
+    """
+    cfg_file = clone_root / ".ralph" / "config.toml"
+    try:
+        present = cfg_file.is_file()
+    except OSError as exc:
+        log.debug("project-TOML check failed for %s: %s", cfg_file, exc)
+        return
+    if present:
+        log.warning(
+            "project TOML at %s is not supported -- ignored. "
+            "Move settings to ~/.ralph/config.toml.",
+            cfg_file,
+        )
+
+
 def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
     """Return the on-disk scripts directory for the configured PR skill.
 
@@ -558,6 +585,7 @@ def _claim_pbi_worktree(
         clone = tc_mod.ensure_clone(info, workspace_root=cfg.workspace_root)
     except tc_mod.TargetUnreachable as exc:
         raise _ClaimError(f"target unreachable: {exc}") from exc
+    _warn_project_toml_in_target_clone(clone.clone_root)
     event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
@@ -818,6 +846,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                     exc_info=True,
                 )
             if clone_root.is_dir():
+                _warn_project_toml_in_target_clone(clone_root)
                 work_wt = work_worktree_path(clone_root, current.id)
         current = _replace(
             current,
