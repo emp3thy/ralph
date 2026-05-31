@@ -185,6 +185,11 @@ _TOML_KNOWN_KEYS = frozenset(
         # ``watch_mode = true``.
         "watch_mode",
         "idle_exit_threshold",
+        # Multi-ralph per-instance identity. See ralph_executor/identity.py
+        # for the value-shape contract. Resolution chain:
+        # --instance-id CLI > RALPH_INSTANCE_ID env > project TOML >
+        # ~/.ralph/config.toml > sanitised hostname.
+        "instance_id",
     }
 )
 
@@ -308,6 +313,12 @@ class ExecutorConfig:
     # tolerates more transient false-idles before exit.
     watch_mode: bool = DEFAULT_WATCH_MODE
     idle_exit_threshold: int = DEFAULT_IDLE_EXIT_THRESHOLD
+    # Per-ralph identity. See ralph_executor/identity.py. Resolution:
+    # --instance-id CLI > RALPH_INSTANCE_ID env > project TOML >
+    # ~/.ralph/config.toml > sanitised hostname. Defaulted to the empty
+    # string only so dataclass field-order stays clean — load_config
+    # always resolves a non-empty value (or raises ConfigError).
+    instance_id: str = ""
 
 
 def validate_repo_path(path: Path, *, source: str) -> Path:
@@ -788,6 +799,47 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: idle_exit_threshold must be positive (got {idle_exit_threshold})"
         )
 
+    from ralph_executor.identity import (
+        InstanceIdError,
+        default_instance_id,
+        sanitize_instance_id,
+        validate_instance_id,
+    )
+    from ralph_executor.user_config import read_instance_id, user_config_path
+
+    raw_env = os.environ.get("RALPH_INSTANCE_ID")
+    instance_id_value: str | None = None
+    instance_id_source = source_label
+    if raw_env is not None and raw_env.strip():
+        instance_id_value = raw_env.strip()
+        instance_id_source = "RALPH_INSTANCE_ID env"
+    else:
+        toml_instance_id = toml_overrides.get("instance_id")
+        if toml_instance_id is not None:
+            if not isinstance(toml_instance_id, str):
+                raise ConfigError(
+                    f"{source_label}: instance_id must be a string, "
+                    f"got {type(toml_instance_id).__name__}"
+                )
+            instance_id_value = toml_instance_id.strip()
+        if not instance_id_value:
+            user_value = read_instance_id()
+            if user_value is not None:
+                instance_id_value = user_value
+                instance_id_source = str(user_config_path())
+        if not instance_id_value:
+            instance_id_value = default_instance_id()
+            instance_id_source = "hostname default"
+    instance_id_value = sanitize_instance_id(instance_id_value or "")
+    try:
+        instance_id = validate_instance_id(instance_id_value)
+    except InstanceIdError as exc:
+        raise ConfigError(
+            f"{instance_id_source}: {exc}. "
+            "Set 'instance_id = \"<name>\"' in ~/.ralph/config.toml "
+            "or pass --instance-id."
+        ) from exc
+
     return ExecutorConfig(
         repo_path=repo_path,
         queue_repo=queue_repo,
@@ -817,4 +869,5 @@ def load_config() -> ExecutorConfig:
         same_file_window_hours=same_file_window_hours,
         watch_mode=watch_mode,
         idle_exit_threshold=idle_exit_threshold,
+        instance_id=instance_id,
     )

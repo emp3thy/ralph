@@ -48,9 +48,28 @@ def env_minimal(monkeypatch: pytest.MonkeyPatch, git_repo: Path) -> Path:
         "RALPH_CLAUDE_PERMISSION_MODE",
         "RALPH_USE_WORKTREES",
         "RALPH_AUTO_MERGE_CLEAN_PRS",
+        "RALPH_INSTANCE_ID",
     ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "test-host")
     return git_repo
+
+
+def _prepare_user_config(
+    tmp_path: Path, *, queue_repo: str, instance_id: str | None = None
+) -> None:
+    cfg = tmp_path / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f'queue_repo = "{queue_repo}"']
+    if instance_id is not None:
+        lines.append(f'instance_id = "{instance_id}"')
+    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _prepare_project_repo(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / ".git").mkdir(parents=True, exist_ok=True)
 
 
 def test_load_config_uses_defaults(env_minimal: Path) -> None:
@@ -384,3 +403,84 @@ def test_queue_branch_user_config_fallback(tmp_path, monkeypatch):
 
     cfg = load_config()
     assert cfg.queue_branch == "user-config-branch"
+
+
+def test_instance_id_defaults_to_sanitised_hostname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "MyBox.example.com")
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue")
+    _prepare_project_repo(tmp_path)
+    monkeypatch.chdir(tmp_path / "project")
+    cfg = load_config()
+    assert cfg.instance_id == "mybox-example-com"
+
+
+def test_instance_id_env_wins_over_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-from-env")
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    _prepare_user_config(
+        tmp_path,
+        queue_repo="https://github.com/owner/queue",
+        instance_id="ralph-from-toml",
+    )
+    _prepare_project_repo(tmp_path)
+    monkeypatch.chdir(tmp_path / "project")
+    assert load_config().instance_id == "ralph-from-env"
+
+
+def test_instance_id_toml_wins_over_hostname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "hostname-default")
+    _prepare_user_config(
+        tmp_path,
+        queue_repo="https://github.com/owner/queue",
+        instance_id="ralph-from-toml",
+    )
+    _prepare_project_repo(tmp_path)
+    monkeypatch.chdir(tmp_path / "project")
+    assert load_config().instance_id == "ralph-from-toml"
+
+
+def test_instance_id_invalid_raises_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # "!!!" sanitises to "" (all chars replaced with -, collapsed, stripped);
+    # validate_instance_id then raises on the empty value.
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "!!!")
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue")
+    _prepare_project_repo(tmp_path)
+    monkeypatch.chdir(tmp_path / "project")
+    with pytest.raises(ConfigError, match="instance_id"):
+        load_config()
+
+
+def test_instance_id_missing_hostname_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("RALPH_REPO_PATH", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "")
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue")
+    _prepare_project_repo(tmp_path)
+    monkeypatch.chdir(tmp_path / "project")
+    with pytest.raises(ConfigError, match="instance_id"):
+        load_config()
