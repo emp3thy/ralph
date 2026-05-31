@@ -2,8 +2,8 @@
 
 Usage::
 
-    ralph-executor [--watch] [--once] [--iterations N]
-                   [--repo PATH | --workspace NAME] [--log-level LEVEL]
+    ralph-executor [--watch] [--once] [--iterations N] [--log-level LEVEL]
+                   [--queue-repo URL] [--queue-branch BRANCH]
     ralph-executor health --ready
     ralph-executor health --live
     ralph-executor doctor [--json]
@@ -16,25 +16,20 @@ Usage::
 * ``--once``           -- run a single iteration and exit. Alias for
                           ``--iterations 1``. Kept for backward compatibility.
 * ``--iterations N``   -- run exactly N iterations and exit.
-* ``--repo PATH``      -- explicit path to the repo Ralph operates on.
-* ``--workspace NAME`` -- resolve repo path against ``$RALPH_HOME/NAME``.
-                          Mutually exclusive with ``--repo``. Requires
-                          ``RALPH_HOME`` to be set. Convention for running
-                          multiple ralphs on one machine: keep every
-                          ralph's checkout under ``$RALPH_HOME/<name>/``.
+* ``--queue-repo URL`` -- override the queue_repo TOML value for this run.
+* ``--queue-branch B`` -- override the queue_branch TOML value for this run.
 * ``--log-level``      -- override ``RALPH_LOG_LEVEL`` for this run.
 
-Repo path resolution (highest → lowest):
-
-  1. ``--repo PATH``
-  2. ``--workspace NAME``  →  ``$RALPH_HOME/NAME``
-  3. ``RALPH_REPO_PATH`` env var
-  4. Current working directory
+The executor is queue-driven: each iteration reads the next PBI's
+``target_repo`` from frontmatter and clones (or reuses) it under
+``<workspace_root>/clones/<owner>/<name>/``. There is no operator-facing
+flag for picking the per-iteration target; the queue PBI is the single
+source of truth.
 
 Startup sequence (BEFORE the iteration loop):
 
   1. Parse argv.
-  2. ``load_config()`` -- reads RALPH_* env vars, validates the repo.
+  2. ``load_config()`` -- reads RALPH_* env vars + ``~/.ralph/config.toml``.
   3. Apply CLI overrides to the loaded config.
   4. Configure logging.
   5. ``prepare_host_environment()`` -- reads RALPH_GIT_HOST, verifies
@@ -62,7 +57,6 @@ from ralph_executor.config import (
     ConfigError,
     ExecutorConfig,
     load_config,
-    validate_repo_path,
 )
 from ralph_executor.host_select import (
     HostSelectionError,
@@ -112,19 +106,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Run exactly N iterations and exit.",
     )
-    repo_group = parser.add_mutually_exclusive_group()
-    repo_group.add_argument(
-        "--repo",
-        help=("Explicit path to the repo Ralph operates on. Overrides RALPH_REPO_PATH and cwd."),
-    )
-    repo_group.add_argument(
-        "--workspace",
-        metavar="NAME",
-        help=(
-            "Resolve repo path against $RALPH_HOME/NAME. Requires RALPH_HOME "
-            "to be set. Convention for running multiple ralphs on one host."
-        ),
-    )
+    # --repo and --workspace removed: the queue PBI's target_repo
+    # frontmatter is the only input that decides which repo the executor
+    # works on per iteration. The operator does not pre-clone target
+    # repos; the loop materialises every target under workspace_root.
     parser.add_argument(
         "--log-level",
         choices=_VALID_LOG_LEVELS,
@@ -282,8 +267,14 @@ def _configure_logging(level: int) -> None:
 
 
 def _scaffold_resolve_target(args: argparse.Namespace) -> Path:
-    """Resolve the scaffold target via the same chain the loop uses:
+    """Resolve the scaffold target via the same chain the loop used to use:
     ``--repo`` > ``--workspace`` > ``$RALPH_REPO_PATH`` > cwd.
+
+    KILL-RALPH-HOME T7 dropped these flags from the top-level parser, but
+    the scaffold subcommand keeps its own ``--repo`` / ``--workspace`` group
+    until T10 deletes the scaffold subcommand wholesale. The helper stays
+    in place to keep that subcommand functional and the lint gate green
+    between T7 and T10.
 
     Unlike ``load_config``, the scaffold path is NOT required to be a
     valid git repo yet — ``cmd_scaffold`` will call ``validate_repo_path``
@@ -300,7 +291,11 @@ def _scaffold_resolve_target(args: argparse.Namespace) -> Path:
 
 
 def _resolve_workspace(name: str) -> Path:
-    """Resolve ``--workspace NAME`` against the ralph_home root.
+    """Resolve a scaffold ``--workspace NAME`` against the ralph_home root.
+
+    Kept in place until T10 deletes the scaffold subcommand (the only
+    remaining caller). The top-level ``--workspace`` flag is gone (T7);
+    this helper now exclusively supports the scaffold subparser.
 
     Root resolution: ``$RALPH_HOME`` env var if set, else ``ralph_home``
     from ``~/.ralph/config.toml`` (written by ``ralph-executor init``).
@@ -336,19 +331,11 @@ def _resolve_workspace(name: str) -> Path:
 
 
 def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorConfig:
-    repo_path: Path = cfg.repo_path
     log_level: int = cfg.log_level
     queue_repo: str = cfg.queue_repo
     queue_branch: str = cfg.queue_branch
     watch_mode: bool = cfg.watch_mode
     changed = False
-    # argparse already enforces mutual exclusion between --repo and --workspace.
-    if args.repo:
-        repo_path = validate_repo_path(Path(args.repo).resolve(), source="--repo")
-        changed = True
-    elif args.workspace:
-        repo_path = validate_repo_path(_resolve_workspace(args.workspace), source="--workspace")
-        changed = True
     if args.log_level:
         log_level = int(logging.getLevelName(args.log_level))
         changed = True
@@ -388,7 +375,6 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         return cfg
     return dataclasses.replace(
         cfg,
-        repo_path=repo_path,
         log_level=log_level,
         queue_repo=queue_repo,
         queue_branch=queue_branch,
