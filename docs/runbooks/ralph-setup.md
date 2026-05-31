@@ -140,11 +140,12 @@ Per-machine knobs. Source: `ralph_executor/user_config.py`. Written by
 | Key | Type | Required | Default | Env override | Description |
 |---|---|---|---|---|---|
 | `ralph_home` | string (path) | no | — | `$RALPH_HOME` | Root directory used to resolve `--workspace NAME` to `$RALPH_HOME/NAME`. Stored as a string; `~` is expanded. |
-| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue/`. Also readable from the per-queue TOML — the executor reads either. |
+| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue-<instance_id>/` (multi-ralph namespaced — see `instance_id` below). Also readable from the per-queue TOML — the executor reads either. |
 | `skills_root` | string (path) | no | source-checkout default | `$RALPH_SKILLS_ROOT` | Source `skills/` tree used by `host_select.prepare_host_environment` to find `pr-<host>/`. |
 | `claude_skills_dir` | string (path) | no | `~/.claude/skills` | `$RALPH_CLAUDE_SKILLS_DIR` | Destination directory where staged `pr/` ends up for the spawned Claude subprocess. |
-| `queue_repo` | string (URL) | yes (or set per-repo TOML / `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue/`. |
+| `queue_repo` | string (URL) | yes (or set per-repo TOML / `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue-<instance_id>/`. |
 | `queue_branch` | string | no | `ralph-queue` | `$RALPH_QUEUE_BRANCH` (executor only — skills do not read this env) | Branch on `queue_repo` that holds `.ralph/` state. |
+| `instance_id` | string | no | sanitised hostname | `$RALPH_INSTANCE_ID` | Per-instance identity used for the namespaced queue clone path (`<workspace_root>/queue-<instance_id>/`), `CLAIM.json` ownership, the workspace lockfile (`<workspace_root>/queue-<instance_id>/.ralph.lock`), and META-BUG `tripped_by_instance`. Resolution: `--instance-id` CLI > env > project TOML > user TOML > sanitised hostname. Validated against `^[a-z0-9][a-z0-9_-]{0,62}$`. See "Running multiple ralphs" in [README](../../README.md). |
 
 ## 6. Config reference: `<queue_repo>/.ralph/config.toml`
 
@@ -208,6 +209,7 @@ runs the iteration loop.
 | `--log-level LEVEL` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Overrides `$RALPH_LOG_LEVEL` for this run. |
 | `--queue-repo URL` | Override `queue_repo` (per-run; URL validated). |
 | `--queue-branch BRANCH` | Override `queue_branch` (per-run). Plain branch name only; empty, `HEAD`, or `refs/heads/...` raise `ConfigError`. |
+| `--instance-id ID` | Override `instance_id` (per-run). Sanitised + validated against `^[a-z0-9][a-z0-9_-]{0,62}$`; empty after sanitisation exits with `ConfigError`. Drives the per-instance queue clone path and the workspace lockfile. |
 
 `$RALPH_RUN_ONCE` (truthy: `1`, `true`, `yes`, `on`) is equivalent to
 `--once` when `--iterations` is not supplied.
@@ -216,12 +218,14 @@ runs the iteration loop.
 
 #### `init`
 
-Per-machine setup. Writes `~/.ralph/config.toml`.
+Per-machine setup. Writes `~/.ralph/config.toml`. Also prompts for
+`instance_id` (multi-ralph identity) — sanitised hostname is offered as
+the default and accepted under `--yes`.
 
 | Flag | Description |
 |---|---|
 | `--ralph-home PATH` | Skip the prompt and set `ralph_home` to `PATH`. |
-| `--yes` | Non-interactive. Accept the OS default for `ralph_home`; skip the `queue_repo` and `queue_branch` prompts (`queue_branch` falls back to `"ralph-queue"`; `queue_repo` must be added manually). |
+| `--yes` | Non-interactive. Accept the OS default for `ralph_home`; skip the `queue_repo`, `queue_branch`, and `instance_id` prompts (`queue_branch` falls back to `"ralph-queue"`; `instance_id` falls back to the sanitised hostname; `queue_repo` must be added manually). |
 
 #### `scaffold`
 
@@ -322,7 +326,9 @@ The full design lives at
 
 `skills/ralph-cancel/scripts/cancel.py`. Drops an empty `CANCEL`
 sentinel into `.ralph/current/<pbi-id>/` so the executor moves the
-PBI out on the next iteration.
+PBI out on the next iteration. Refuses to act when `CLAIM.json` names
+an `instance_id` other than the resolved one (exit 2 — use
+`ralph-recover` to force).
 
 | Flag | Required | Description |
 |---|---|---|
@@ -330,13 +336,17 @@ PBI out on the next iteration.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id ID` | no | Override `instance_id` (resolution: CLI > user TOML > hostname). Drives the queue clone path and the CLAIM-ownership check. |
 | `--no-push` | no | Commit but do not push. |
 | `--dry-run` | no | Compute without mutating. |
 
 ### `ralph-promote`
 
 `skills/ralph-promote/scripts/promote.py`. Moves a PBI between state
-folders; updates the `status` frontmatter; commits + pushes.
+folders; updates the `status` frontmatter; commits + pushes. When the
+source is `current/`, refuses to move a PBI whose `CLAIM.json` names a
+different `instance_id` (use `ralph-recover` to force). Non-`current/`
+sources are not gated.
 
 | Flag | Required | Description |
 |---|---|---|
@@ -346,6 +356,7 @@ folders; updates the `status` frontmatter; commits + pushes.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id ID` | no | Override `instance_id`. Drives the queue clone path and (when source is `current/`) the CLAIM-ownership check. |
 | `--no-push` | no | Commit but do not push. |
 | `--dry-run` | no | Compute without mutating. |
 
@@ -353,7 +364,9 @@ folders; updates the `status` frontmatter; commits + pushes.
 
 `skills/ralph-triage/scripts/triage.py`. Routes a PBI in
 `.ralph/blocked/` back to `inbox/` (attempts reset to 0) or to
-`archive/`. A note is appended to `HISTORY.md`.
+`archive/`. A note is appended to `HISTORY.md`. Blocked PBIs carry no
+`CLAIM.json` by design, so no ownership check applies — `--instance-id`
+controls only the namespaced clone path.
 
 | Flag | Required | Description |
 |---|---|---|
@@ -363,13 +376,36 @@ folders; updates the `status` frontmatter; commits + pushes.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id ID` | no | Override `instance_id`. Drives the queue clone path. |
 | `--no-push` | no | Commit but do not push. |
 | `--dry-run` | no | Compute without mutating. |
+
+### `ralph-recover`
+
+`skills/ralph-recover/scripts/recover.py`. Manual claim-recovery
+escape hatch — the SOLE skill that bypasses the CLAIM-ownership check.
+Moves a PBI from `current/<id>/` to `inbox/<id>/` (attempts reset to
+0) or `blocked/<id>/` (attempts preserved). Strips the `CLAIM.json`
+during the move. Use after a previous owner crashed and left a stale
+claim that another instance needs to take over. Refuses to operate
+while `.ralph/state/halted` is present in the queue clone.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--pbi-id ID` | yes | PBI directory name under `.ralph/current/`. |
+| `--to {inbox,blocked}` | yes | Destination state folder. |
+| `--workspace PATH` | no | Override `workspace_root`. |
+| `--queue-repo URL` | no | Override `queue_repo`. |
+| `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id ID` | no | Override `instance_id`. Drives the queue clone path; the previous owner is read from `CLAIM.json` and surfaced in the commit subject + `RecoverResult.previous_owner`. |
+| `--no-push` | no | Commit but do not push. |
 
 ### `ralph-status`
 
 `skills/ralph-status/scripts/status.py`. Read-only view of the queue,
-grouped by `target_repo`.
+grouped by `target_repo`. Renders an `OWNER` column populated from
+`CLAIM.json` for `current/` rows (`—` if unclaimed, `<malformed>` if
+the claim file fails to parse).
 
 | Flag | Required | Description |
 |---|---|---|
@@ -379,6 +415,7 @@ grouped by `target_repo`.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id ID` | no | Override `instance_id`. Drives the queue clone path. |
 
 ## 9. CLI reference: `setup_ralph_queue_github.py`
 
@@ -454,3 +491,9 @@ Executor-specific symptoms:
 | Executor exits with `host environment ready: host=...` then a `HostSelectionError`. | `git_host` set but auth env vars missing (e.g. `$GH_TOKEN`). | Export the required env vars; or set `git_host = "github"` and rerun `gh auth login`. |
 | `FileNotFoundError: claude` from inside the loop. | Claude CLI not on PATH for the executor process. | Install Claude Code, run `claude --version` in the same shell, or set `claude_binary` to an absolute path. |
 | Loop exits immediately with `queue drained -- exiting after N consecutive idle iterations` and the queue has work. | The queue clone is stale (operator-side push race) or the executor is reading a different `queue_branch` than the operator skills are writing to. | Compare `cfg.queue_branch` (`ralph-executor doctor`) with the skill's resolved branch (`grep RALPH_QUEUE_BRANCH ~/.ralph/config.toml`). |
+| `error: another ralph already running on this workspace: …` | Two `ralph-executor` processes are trying to share the same `<workspace_root>/queue-<instance_id>/.ralph.lock`. | Either the other process is alive (check `ps`) — let it run; or it died without releasing the file lock (OS-level lock; should clear on process exit). If the lockfile JSON points to a dead `pid`, delete `.ralph.lock` and retry. |
+| `error: --instance-id: instance_id 'X' does not match ^[a-z0-9][a-z0-9_-]{0,62}$` | CLI value (or sanitised value) fails validation. | Use only lowercase alphanumerics, `_`, `-`; start with `[a-z0-9]`; ≤63 chars. |
+| `error: instance_id not resolvable (...); pass --instance-id or set it via 'ralph-executor init'` | Hostname returned empty AND no CLI/env/TOML value. | Pass `--instance-id` explicitly or write `instance_id = "<name>"` to `~/.ralph/config.toml`. |
+| `error: PBI WI-X is claimed by instance 'ralph-b', not 'ralph-a'. Use ralph-recover if you need to force.` | `ralph-cancel` or `ralph-promote` (from `current/`) ran against a PBI owned by another instance. | If the owner is alive, let it finish. If stale, drain the other instance first; or use `ralph-recover --pbi-id <id> --to inbox` (sole skill allowed to bypass the ownership check). |
+| `error: both legacy queue/ and queue-<instance_id>/ exist under <workspace_root>; remove one before continuing` | Multi-ralph migration tripped on first startup because both the legacy clone AND the namespaced clone are already on disk. | Pick one (typically delete `<workspace_root>/queue/` if `<workspace_root>/queue-<instance_id>/` is the live one) and rerun. |
+| `error: halt sentinel is active; refusing to operate` from `ralph-recover` | `.ralph/state/halted` is present in the queue clone. | Acknowledge the halt (fill `acknowledged_by` / `acknowledged_at`) or delete the sentinel + META-BUG after fixing the underlying cause. |

@@ -97,8 +97,11 @@ the config — the executor will retry on its next iteration.
 ## Working the queue
 
 Five skills cover the operator workflow. All read or write
-`<workspace_root>/queue/.ralph/` (the queue clone) and never touch the
-target repos themselves.
+`<workspace_root>/queue-<instance_id>/.ralph/` (the queue clone — see
+"Running multiple ralphs" below for the multi-instance namespacing) and
+never touch the target repos themselves. All four mutating skills plus
+`ralph-status` accept `--instance-id ID` to target a specific instance's
+clone; without it they resolve the same chain as the executor.
 
 ### See what's in flight: `ralph-status`
 
@@ -266,27 +269,121 @@ RALPH_IDLE_EXIT_THRESHOLD=5 uv run ralph-executor --workspace repo
 
 ## Running multiple ralphs
 
-The `ralph_home` convention is what makes this clean. One subdirectory
-per ralph:
+Two patterns:
+
+1. **One ralph per target repo** — run `N` executors, each pointed at a
+   distinct target repo. Each has its own `ralph_home` subdir and
+   queue. Open `N` terminals (`--workspace repo_a`, `--workspace repo_b`,
+   …). No coordination needed because the queues are disjoint.
+2. **N ralphs draining one queue** (multi-ralph) — run `N` executors
+   against the SAME `queue_repo`, each with a distinct `instance_id`.
+   They take PBIs from the shared `inbox/` concurrently, push claim
+   commits via the queue branch's git rebase machinery, and never
+   touch each other's `current/<PBI>` work. This is the right shape
+   when one team owns one queue and wants horizontal throughput.
+
+### Multi-ralph: per-instance identity
+
+Each executor carries a stable `instance_id`. It selects:
+
+* the per-instance queue clone path: `<workspace_root>/queue-<instance_id>/`
+* the `CLAIM.json` written into every PBI under `current/`
+* the workspace lockfile: `<workspace_root>/queue-<instance_id>/.ralph.lock`
+* `tripped_by_instance` in any META-BUG written by the cycle detector
+
+**Resolution chain** (highest precedence wins):
+
+1. `--instance-id ID` CLI flag (on `ralph-executor` and every operator skill)
+2. `$RALPH_INSTANCE_ID` env var
+3. `instance_id` in `<repo>/.ralph/config.toml`
+4. `instance_id` in `~/.ralph/config.toml`
+5. Sanitised hostname
+
+Sanitisation lowercases, replaces non-`[a-z0-9_-]` chars with `-`,
+collapses runs, and strips leading/trailing dashes. Validation rejects
+empty values and anything not matching `^[a-z0-9][a-z0-9_-]{0,62}$`. `ralph-executor init`
+prompts for `instance_id` with the sanitised hostname as the default;
+`--yes` accepts the default non-interactively.
+
+### Multi-ralph: CLAIM.json ownership
+
+When the loop claims a PBI from `inbox/` into `current/`, it writes a
+`CLAIM.json` alongside the entry file (`PBI.md`/`BUG.md`/`FEEDBACK.md`)
+naming the owning `instance_id`, the claim timestamp, and the hostname.
+The claim is atomic — `CLAIM.json` lands in the same git commit as the
+`git mv inbox/<id>/ current/<id>/` so concurrent pulls never observe a
+PBI in `current/` without its claim.
+
+`current_pbi()` filters by `instance_id`: each executor only sees PBIs
+it owns. Foreign claims and PBI dirs lacking a `CLAIM.json` are skipped.
+
+### Multi-ralph: operator skills
+
+All four operator skills accept `--instance-id ID`, propagate it to the
+queue clone path (`<workspace_root>/queue-<instance_id>/`), and the
+mutating ones refuse foreign claims:
+
+* `ralph-status` — adds an `OWNER` column. Resolves `instance_id` so
+  the read targets the correct clone. Foreign claims display the other
+  instance's id; malformed CLAIM.json shows `<malformed>`.
+* `ralph-cancel` — refuses to cancel a PBI claimed by another instance
+  (exit 2, "claimed by …, not …. Use `ralph-recover` if you need to
+  force.").
+* `ralph-promote` — refuses to move a PBI out of `current/` if the
+  claim does not belong to the resolved `instance_id`. Sources other
+  than `current/` are not gated.
+* `ralph-triage` — adds `--instance-id` for the namespaced clone.
+  No ownership check (operates on `blocked/`, which carries no claim).
+
+### Multi-ralph: workspace lockfile
+
+`ralph-executor` acquires an exclusive OS lock at
+`<workspace_root>/queue-<instance_id>/.ralph.lock` at startup
+(`fcntl.flock` on POSIX, `msvcrt.locking` on Windows). A second process
+trying the same workspace + instance combination exits 2 with `error:
+another ralph already running on this workspace: …`. The lock is
+released on every Python exit path, including Ctrl-C and unhandled
+exceptions. The lockfile is OUTSIDE `.git` and never committed.
+
+### Multi-ralph: upgrade procedure
+
+When upgrading from single-ralph to multi-ralph:
+
+1. **Drain `current/` first** — let any in-flight PBI complete (or
+   `ralph-cancel` it) so no work needs a claim transferred.
+2. Set `instance_id` (TOML or hostname default) on each executor host.
+3. First `ralph-executor` startup migrates `<workspace_root>/queue/`
+   to `<workspace_root>/queue-<instance_id>/` automatically (atomic
+   `shutil.move`; refuses if BOTH paths already exist).
+
+If a previous owner crashed and left a stale `CLAIM.json` blocking
+recovery, use `ralph-recover --pbi-id <id> --to inbox|blocked` — the
+sole skill authorised to bypass the ownership check.
+
+### Multi-ralph: example two-instance layout
 
 ```
 C:\dev\ralph\
-  repo_a\    ← ralph #1
-  repo_b\    ← ralph #2
-  repo_c\    ← ralph #3
+  ws-a\
+    queue-ralph-a\           ← ralph-a's queue clone + .ralph.lock
+      .ralph\current\WI-1\   ← CLAIM.json:{instance_id: ralph-a}
+  ws-b\
+    queue-ralph-b\           ← ralph-b's queue clone + .ralph.lock
+      .ralph\current\WI-2\   ← CLAIM.json:{instance_id: ralph-b}
 ```
 
-Open three terminals:
+Two terminals:
 
 ```powershell
-uv run ralph-executor --workspace repo_a   # terminal 1
-uv run ralph-executor --workspace repo_b   # terminal 2
-uv run ralph-executor --workspace repo_c   # terminal 3
+$env:RALPH_WORKSPACE = "C:\dev\ralph\ws-a"
+uv run ralph-executor --instance-id ralph-a    # terminal 1
+
+$env:RALPH_WORKSPACE = "C:\dev\ralph\ws-b"
+uv run ralph-executor --instance-id ralph-b    # terminal 2
 ```
 
-Each instance is fully isolated — its own queue, its own feature
-branches (`ralph/<PBI-ID>` namespaced inside the workspace), its own
-spawned Claude session.
+Both drain the same `queue_repo`; the queue branch's `git pull --rebase`
+mechanism arbitrates concurrent claim pushes.
 
 ## Configuration precedence
 
