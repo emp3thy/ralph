@@ -64,18 +64,20 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
 
     Layout::
 
-        <tmp>/queue.git           bare remote (queue_repo URL)
-        <tmp>/ws/queue            queue clone the executor reads/writes
+        <tmp>/queue.git                bare remote (queue_repo URL)
+        <tmp>/ws/queue-test            queue clone the executor reads/writes
 
     Returns (queue_clone_path, cfg). ``cfg.workspace_root`` is ``<tmp>/ws``
-    so ``ensure_queue_clone`` no-ops on the already-materialised clone, and
-    ``cfg.queue_repo`` is ``file://<tmp>/queue.git`` so any rebase-pull
-    can resolve a real remote.
+    and ``cfg.instance_id`` is ``"test"``, so
+    ``queue_clone_path(workspace_root, instance_id)`` resolves to the
+    already-materialised clone and ``ensure_queue_clone`` no-ops. The
+    bare remote at ``<tmp>/queue.git`` is reachable via
+    ``cfg.queue_repo = "file://<tmp>/queue.git"`` for any rebase-pull.
     """
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    clone = workspace / "queue"
+    clone = workspace / "queue-test"
 
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(bare)],
@@ -137,6 +139,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         pr_check_poll_interval_seconds=30.0,
         use_worktrees=True,
         workspace_root=workspace,
+        instance_id="test",
     )
     return clone, cfg
 

@@ -33,12 +33,15 @@ log = logging.getLogger(__name__)
 
 
 def _queue_repo(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone for this run.
+    """Filesystem path of this instance's queue clone.
 
-    The queue is its own repository checked out at
-    ``<workspace_root>/queue/`` and always sits on ``main``.
+    Resolves to ``<workspace_root>/queue-<instance_id>`` via
+    ``queue_clone_path`` — the single source of truth for the per-ralph
+    queue-clone directory.
     """
-    return cfg.workspace_root / "queue"
+    from ralph_executor.queue_path import queue_clone_path
+
+    return queue_clone_path(cfg.workspace_root, cfg.instance_id)
 
 
 class QueueMovementError(RuntimeError):

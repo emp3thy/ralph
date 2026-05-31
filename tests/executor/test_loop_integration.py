@@ -211,7 +211,10 @@ def _build_dual_branch_queue(tmp_path: Path) -> tuple[Path, Path]:
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
-    clone = workspace / "queue"
+    # Multi-ralph namespacing: queue clone lives at queue-<instance_id>.
+    # This integration test pins instance_id="test" in its ExecutorConfig
+    # builder below so this path matches queue_clone_path(workspace, "test").
+    clone = workspace / "queue-test"
     seed = tmp_path / "seed"
 
     subprocess.run(
@@ -322,6 +325,7 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         claude_session_timeout_seconds=1200,
         same_file_min_prs=10,
         same_file_window_hours=24.0,
+        instance_id="test",
     )
 
     # Stub Claude (it isn't spawned on the claim iteration anyway, but

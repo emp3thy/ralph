@@ -52,18 +52,26 @@ def ensure_queue_clone(
     queue_repo: str,
     queue_branch: str,
     *,
+    dest: Path | None = None,
     timeout: float = 120.0,
 ) -> Path:
-    """Ensure ``<workspace_root>/queue`` is a clone of ``queue_repo`` on ``queue_branch``.
+    """Ensure ``dest`` is a clone of ``queue_repo`` on ``queue_branch``.
 
-    On first call: ``git clone -b <queue_branch> <queue_repo> <workspace_root>/queue``.
+    When ``dest`` is ``None`` it defaults to ``<workspace_root>/queue`` —
+    the pre-multi-ralph location — so legacy callers that do not pass an
+    explicit per-instance path keep working. Multi-ralph callers pass
+    ``dest=queue_clone_path(workspace_root, instance_id)`` to land the
+    clone at ``<workspace_root>/queue-<instance_id>``.
+
+    On first call: ``git clone -b <queue_branch> <queue_repo> <dest>``.
     On subsequent calls: ``git fetch origin`` then ``git pull --ff-only origin <queue_branch>``.
 
     Returns the path to the clone. Raises ``QueueCloneError`` with a message
     pointing at ``gh auth login`` on auth-related failures.
     """
     workspace_root.mkdir(parents=True, exist_ok=True)
-    dest = workspace_root / "queue"
+    if dest is None:
+        dest = workspace_root / "queue"
 
     if not (dest / ".git").exists():
         log.info("cloning queue %s (branch=%s) -> %s", queue_repo, queue_branch, dest)

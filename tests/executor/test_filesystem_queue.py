@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +68,16 @@ def test_parse_pbi_directory_missing_entry_file_raises(
     empty.mkdir(parents=True)
     with pytest.raises(QueueError, match="no entry file"):
         parse_pbi_directory(empty, status="inbox")
+
+
+def test_filesystem_root_uses_instance_id(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """``FilesystemQueueSource._root`` resolves via ``queue_clone_path``."""
+    cfg = dataclasses.replace(
+        cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a"
+    )
+    assert FilesystemQueueSource(cfg)._root == tmp_path / "queue-ralph-a" / ".ralph"
 
 
 def test_current_pbi_returns_none_when_empty(cfg_for_repo: ExecutorConfig) -> None:

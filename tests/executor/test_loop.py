@@ -459,10 +459,13 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         calls.append((workspace_root, queue_repo, queue_branch))
-        return real_ensure(workspace_root, queue_repo, queue_branch, timeout=timeout)
+        return real_ensure(
+            workspace_root, queue_repo, queue_branch, dest=dest, timeout=timeout
+        )
 
     monkeypatch.setattr("ralph_executor.loop.ensure_queue_clone", _spy)
     monkeypatch.setattr(
@@ -1268,10 +1271,11 @@ def test_pull_queue_calls_ensure_queue_clone(
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         calls.append((workspace_root, queue_repo, queue_branch))
-        return workspace_root / "queue"
+        return dest if dest is not None else workspace_root / "queue"
 
     monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
 
@@ -1301,16 +1305,61 @@ def test_pull_queue_passes_configured_branch(
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         captured["queue_branch"] = queue_branch
-        return workspace_root / "queue"
+        return dest if dest is not None else workspace_root / "queue"
 
     monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
 
     loop._pull_queue(cfg)
 
     assert captured["queue_branch"] == "custom-branch"
+
+
+def test_queue_repo_root_uses_instance_id(
+    cfg_for_repo: ExecutorConfig, tmp_path: Path
+) -> None:
+    """``_queue_repo_root`` returns ``<workspace_root>/queue-<instance_id>``."""
+    from ralph_executor.loop import _queue_repo_root
+
+    cfg = dataclasses.replace(
+        cfg_for_repo, workspace_root=tmp_path, instance_id="ralph-a"
+    )
+    assert _queue_repo_root(cfg) == tmp_path / "queue-ralph-a"
+
+
+def test_pull_queue_passes_namespaced_dest(
+    cfg_for_repo: ExecutorConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_pull_queue`` forwards ``queue_clone_path(...)`` as the ``dest`` kwarg."""
+    from ralph_executor import loop
+
+    cfg = dataclasses.replace(
+        cfg_for_repo,
+        workspace_root=tmp_path,
+        queue_repo="https://github.com/example/q",
+        instance_id="ralph-a",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        dest: Path | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["dest"] = dest
+        return dest if dest is not None else workspace_root / "queue"
+
+    monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
+    loop._pull_queue(cfg)
+    assert captured["dest"] == tmp_path / "queue-ralph-a"
 
 
 def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(

@@ -20,14 +20,15 @@ def _make_orphan(pending_dir: Path, pbi_id: str) -> Path:
 def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Layout the queue-clone topology the post-split CLI expects.
 
-    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``
-    (not ``cfg.repo_path``), so ``RALPH_WORKSPACE`` is monkeypatched to
-    ``<tmp_path>/ws`` and the orphan is placed at
-    ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
+    The reconcile CLI reads ``.ralph/`` from
+    ``<workspace_root>/queue-<instance_id>/`` (not ``cfg.repo_path``).
+    ``RALPH_WORKSPACE`` is monkeypatched to ``<tmp_path>/ws`` and
+    ``RALPH_INSTANCE_ID`` is pinned to ``"test"`` so the orphan lives at
+    ``<tmp_path>/ws/queue-test/.ralph/pending-pr/ORPHAN-1``.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    repo = workspace / "queue"
+    repo = workspace / "queue-test"
     repo.mkdir()
     (repo / ".git").mkdir()
     queue = repo / ".ralph"
@@ -45,6 +46,7 @@ def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     scripts_dir.mkdir(parents=True)
     _make_orphan(queue / "pending-pr", "ORPHAN-1")
     monkeypatch.setenv("RALPH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "test")
     return repo
 
 

@@ -1,10 +1,12 @@
 """Shared fixtures for ``ralph_executor`` tests.
 
 After the queue-repo-split (PBI EXECUTOR-QUEUE-REPO-SPLIT), the queue is
-a separate clone at ``<workspace_root>/queue/`` cloned from
+a separate clone at ``<workspace_root>/queue-<instance_id>/`` cloned from
 ``cfg.queue_repo`` rather than a branch on the source repo. The
 ``fake_repo`` fixture builds that queue clone with an empty ``.ralph/``
-skeleton on ``main`` and returns its path.
+skeleton on ``main`` and returns its path. ``cfg_for_repo`` pins the
+fixture ``instance_id`` to ``"test"`` so the clone lives at
+``<workspace_root>/queue-test/``.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from ralph_executor.config import ExecutorConfig
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_ROOT = REPO_ROOT / "prompt"
 
+TEST_INSTANCE_ID = "test"
+
 
 def _git(cwd: Path, *args: str) -> str:
     result = subprocess.run(
@@ -41,18 +45,21 @@ def _git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def fake_repo(tmp_path: Path) -> Iterator[Path]:
-    """Materialise a queue clone at ``<tmp_path>/ws/queue`` with ``.ralph/``.
+    """Materialise a queue clone at ``<tmp_path>/ws/queue-test`` with ``.ralph/``.
 
     Builds a bare remote at ``<tmp_path>/queue.git`` seeded with the
     ``.ralph/`` skeleton on ``main`` and a sibling clone at
-    ``<tmp_path>/ws/queue``. Returns the clone path. The bare remote
-    path is reachable as ``<tmp_path>/queue.git`` for tests that need
-    to query / push to ``origin``.
+    ``<tmp_path>/ws/queue-<instance_id>``. Returns the clone path. The
+    bare remote path is reachable as ``<tmp_path>/queue.git`` for tests
+    that need to query / push to ``origin``. The clone directory name is
+    namespaced by ``TEST_INSTANCE_ID`` to match the multi-ralph
+    ``queue_clone_path(workspace_root, instance_id)`` resolution that
+    ``cfg_for_repo`` pins via ``instance_id="test"``.
     """
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    clone = workspace / "queue"
+    clone = workspace / f"queue-{TEST_INSTANCE_ID}"
 
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(bare)],
@@ -230,8 +237,10 @@ def cfg_for_repo(
 ) -> ExecutorConfig:
     """Build an ExecutorConfig pointing at the queue clone + fake claude.
 
-    ``workspace_root`` is ``<tmp_path>/ws`` so ``<workspace_root>/queue``
-    resolves to the ``fake_repo`` clone built by that fixture. The bare
+    ``workspace_root`` is ``<tmp_path>/ws`` and ``instance_id`` is
+    ``"test"`` (``TEST_INSTANCE_ID``), so
+    ``queue_clone_path(workspace_root, instance_id)`` resolves to the
+    ``fake_repo`` clone at ``<tmp_path>/ws/queue-test/``. The bare
     remote at ``<tmp_path>/queue.git`` is the ``queue_repo`` URL.
     """
     bare = tmp_path / "queue.git"
@@ -270,6 +279,7 @@ def cfg_for_repo(
         claude_session_timeout_seconds=1200,
         same_file_min_prs=10,
         same_file_window_hours=24.0,
+        instance_id=TEST_INSTANCE_ID,
     )
 
 

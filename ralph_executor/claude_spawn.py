@@ -58,15 +58,19 @@ def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
 
     Replicated here rather than imported to avoid a ``claude_spawn`` ->
     ``loop`` circular import (``loop`` already imports ``spawn_claude_p``
-    from this module). The body must stay in sync with
-    ``ralph_executor.loop._queue_repo_root``; that function is the single
-    source of truth for the queue-clone path in non-spawn code paths.
+    from this module). The body delegates to
+    ``ralph_executor.queue_path.queue_clone_path`` — a leaf module with
+    no internal imports, so it does not re-introduce the cycle. That
+    helper is the single source of truth for the per-instance queue
+    clone directory; ``loop._queue_repo_root`` shares the same delegate.
     The PLAN template proposed a ``cfg.use_worktrees`` branch, but
     ``load_config`` rejects ``use_worktrees=False`` at config-load time,
     so the branch is unreachable; this replica mirrors the loop helper
     exactly.
     """
-    return cfg.workspace_root / "queue"
+    from ralph_executor.queue_path import queue_clone_path
+
+    return queue_clone_path(cfg.workspace_root, cfg.instance_id)
 
 
 @dataclass(frozen=True)

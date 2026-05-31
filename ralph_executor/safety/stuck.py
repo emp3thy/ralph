@@ -101,8 +101,9 @@ def move_to_blocked(*, cfg: ExecutorConfig, pbi: PBI, reason: str) -> Path:
     # Lazy import to break the safety <-> queue.movements import cycle
     # (see the module-level note above the import block).
     from ralph_executor.queue.movements import move_current_to_blocked
+    from ralph_executor.queue_path import queue_clone_path
 
-    queue_repo = cfg.workspace_root / "queue"
+    queue_repo = queue_clone_path(cfg.workspace_root, cfg.instance_id)
     pbi_dir = queue_repo / ".ralph" / "current" / pbi.id
     if not pbi_dir.is_dir():
         raise ValueError(f"PBI {pbi.id} is not in .ralph/current/ (looked at {pbi_dir})")
@@ -143,7 +144,9 @@ def handle_stuck(
     catch ``PushRebaseConflict`` get a recoverable signal when the queue
     branch raced.
     """
-    queue_repo = cfg.workspace_root / "queue"
+    from ralph_executor.queue_path import queue_clone_path
+
+    queue_repo = queue_clone_path(cfg.workspace_root, cfg.instance_id)
     pbi_dir = queue_repo / ".ralph" / "current" / pbi.id
     if not detect_stuck(pbi_dir):
         return None
