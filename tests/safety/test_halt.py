@@ -197,3 +197,68 @@ def test_halt_and_acknowledge_sentinel_timestamp_matches_meta_bug(
     assert f"halted_at: {frozen.isoformat()}" in content
     # META-BUG created_at must also match (pre-existing behaviour).
     assert meta.created_at == frozen
+
+
+# ----------------------------------------------------------------------
+# T12: META-BUG carries tripped_by_instance
+# ----------------------------------------------------------------------
+
+
+def test_halt_and_acknowledge_records_instance_id(
+    repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RALPH_HALT_WEBHOOK", raising=False)
+    meta = halt_and_acknowledge(
+        repo=repo_dir,
+        signals=[_signal()],
+        now=datetime(2026, 5, 31, tzinfo=UTC),
+        tripped_by_instance="ralph-a",
+    )
+    text = meta.path.read_text(encoding="utf-8")
+    assert "tripped_by_instance: ralph-a" in text
+
+
+def test_write_meta_bug_omits_instance_line_when_unset(repo_dir: Path) -> None:
+    snapshot = StateSnapshot(
+        repo_path=repo_dir,
+        inbox=(),
+        current=(),
+        pending_pr=(),
+        done=(),
+        blocked=(),
+        taken_at=datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC),
+    )
+    meta = write_meta_bug(repo=repo_dir, snapshot=snapshot, signals=[_signal()])
+    text = meta.path.read_text(encoding="utf-8")
+    assert "tripped_by_instance" not in text
+
+
+def test_write_meta_bug_emits_instance_line_inside_frontmatter(repo_dir: Path) -> None:
+    snapshot = StateSnapshot(
+        repo_path=repo_dir,
+        inbox=(),
+        current=(),
+        pending_pr=(),
+        done=(),
+        blocked=(),
+        taken_at=datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC),
+    )
+    meta = write_meta_bug(
+        repo=repo_dir,
+        snapshot=snapshot,
+        signals=[_signal()],
+        tripped_by_instance="ralph-b",
+    )
+    lines = meta.path.read_text(encoding="utf-8").splitlines()
+    # Frontmatter shape: opening "---" at line 0; closing "---" is the next
+    # "---" line. tripped_by_instance must sit between summary and closing.
+    assert lines[0] == "---"
+    closing_idx = next(
+        i for i, line in enumerate(lines[1:], start=1) if line == "---"
+    )
+    summary_idx = next(i for i, line in enumerate(lines) if line.startswith("summary:"))
+    instance_idx = next(
+        i for i, line in enumerate(lines) if line.startswith("tripped_by_instance:")
+    )
+    assert summary_idx < instance_idx < closing_idx
+    assert lines[instance_idx] == "tripped_by_instance: ralph-b"

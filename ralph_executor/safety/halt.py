@@ -131,8 +131,15 @@ def write_meta_bug(
     snapshot: StateSnapshot,
     signals: list[CycleSignal],
     now: datetime | None = None,
+    tripped_by_instance: str = "",
 ) -> MetaBug:
-    """Render the META-BUG markdown file and return its dataclass."""
+    """Render the META-BUG markdown file and return its dataclass.
+
+    ``tripped_by_instance`` (multi-ralph): when non-empty, the frontmatter
+    gains a ``tripped_by_instance: <id>`` line between ``summary:`` and the
+    closing ``---``. Operators reading a META-BUG see which ralph instance
+    tripped the cycle detector.
+    """
     created_at = now or datetime.now(tz=UTC)
     meta_id = _meta_bug_id(created_at)
     blocked_root = repo / _BLOCKED_RELATIVE
@@ -148,6 +155,10 @@ def write_meta_bug(
         "status: blocked",
         f"created_at: {created_at.isoformat()}",
         f"summary: {summary}",
+    ]
+    if tripped_by_instance:
+        lines.append(f"tripped_by_instance: {tripped_by_instance}")
+    lines.extend([
         "---",
         "",
         f"# {meta_id}",
@@ -159,7 +170,7 @@ def write_meta_bug(
         "",
         "## Signals",
         "",
-    ]
+    ])
     for signal in signals:
         lines.extend(
             [
@@ -318,6 +329,7 @@ def halt_and_acknowledge(
     signals: list[CycleSignal],
     now: datetime | None = None,
     webhook_env: str = "RALPH_HALT_WEBHOOK",
+    tripped_by_instance: str = "",
 ) -> MetaBug:
     """Snapshot state, write META-BUG + sentinel, fire webhook.
 
@@ -325,6 +337,10 @@ def halt_and_acknowledge(
     is expected to raise :class:`HaltedError` immediately after -- there
     is no return-to-loop path once a META-BUG is written. The current
     PBI is intentionally NOT moved.
+
+    ``tripped_by_instance`` (multi-ralph): forwarded to
+    :func:`write_meta_bug` so the META-BUG frontmatter records the ralph
+    instance that tripped the cycle detector.
     """
     snapshot = snapshot_state(repo)
     meta = write_meta_bug(
@@ -332,6 +348,7 @@ def halt_and_acknowledge(
         snapshot=snapshot,
         signals=list(signals),
         now=now,
+        tripped_by_instance=tripped_by_instance,
     )
     write_halt_sentinel(repo=repo, meta_bug_id=meta.id, now=now)
     webhook_url = os.environ.get(webhook_env, "").strip() or None
