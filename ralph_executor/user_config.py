@@ -83,14 +83,6 @@ def _read_path_key(key: str) -> Path | None:
     return Path(raw.strip()).expanduser()
 
 
-def read_ralph_home() -> Path | None:
-    """Return the ``ralph_home`` value from the user config, or None.
-
-    Errors on malformed TOML / wrong-type value / unreadable file.
-    """
-    return _read_path_key("ralph_home")
-
-
 def read_workspace_root() -> Path | None:
     """Return the ``workspace_root`` value from the user config, or None.
 
@@ -209,10 +201,10 @@ def _write_user_config(updates: dict[str, object]) -> Path:
 
     Reads the existing file (if any), updates the given keys, and writes
     back. Unknown / non-scalar pre-existing keys are dropped from the
-    rewritten output — same trade-off as the original
-    ``write_ralph_home`` rewrite path, but now key-merging instead of
-    whole-file-clobber so adding a new key (``queue_repo``) doesn't lose
-    the existing one (``ralph_home``).
+    rewritten output: key-merging (not whole-file clobber) preserves
+    co-existing user-level knobs (``workspace_root`` / ``queue_repo`` /
+    ``queue_branch`` / ``skills_root`` / ``claude_skills_dir``) when any
+    one of them is rewritten.
     """
     cfg_file = user_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
@@ -242,21 +234,11 @@ def _write_user_config(updates: dict[str, object]) -> Path:
     return cfg_file
 
 
-def write_ralph_home(value: Path) -> Path:
-    """Persist ``ralph_home`` to ``~/.ralph/config.toml``.
-
-    Merges with existing keys so subsequent writes of other knobs
-    (``queue_repo``, ``skills_root``, ...) survive. Returns the path
-    that was written so callers can echo it back to the user.
-    """
-    return _write_user_config({"ralph_home": str(value)})
-
-
 def write_queue_repo(url: str) -> Path:
     """Persist ``queue_repo`` to ``~/.ralph/config.toml``.
 
-    Merges with existing keys so ``ralph_home`` (and any future user-
-    level knobs) are preserved.
+    Merges with existing keys so ``workspace_root`` (and any future
+    user-level knobs) are preserved.
     """
     return _write_user_config({"queue_repo": url})
 
