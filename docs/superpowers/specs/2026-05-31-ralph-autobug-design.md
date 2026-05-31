@@ -1,7 +1,7 @@
 # ralph autobug — design
 
 **Date:** 2026-05-31
-**Status:** Draft, pending user review.
+**Status:** Approved 2026-05-31 — implementation plan committed at `782d14a` (v3).
 **Author:** Claude / gethin (brainstorming session)
 
 ## Summary

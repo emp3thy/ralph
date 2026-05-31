@@ -1,5 +1,7 @@
 # ralph autobug v1 — implementation plan (v3 — confidence-rated, full task bodies)
 
+**Status:** Approved 2026-05-31. Pending execution; user will re-validate after current ralph run completes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When the ralph executor or its Claude subprocess crashes, automatically file a deduplicated bug PBI to the ralph queue capturing the crash, so future iterations work the fix without operator hand-filing.
