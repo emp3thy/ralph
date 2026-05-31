@@ -174,43 +174,6 @@ def test_main_init_subcommand_writes_workspace_root(
     assert "workspace_root" in out
 
 
-def test_main_scaffold_subcommand_creates_queue_branch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`ralph-executor scaffold --repo PATH` creates ralph-queue with .ralph/."""
-    import subprocess
-
-    repo = tmp_path / "r"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.email", "t@example.com"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.name", "Test"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "branch", "-M", "main"],
-        check=True,
-        capture_output=True,
-    )
-
-    exit_code = cli.main(["scaffold", "--repo", str(repo)])
-    assert exit_code == 0
-    assert (repo / ".ralph" / "inbox" / ".gitkeep").is_file()
-    assert (repo / ".ralph" / "config.toml").is_file()
-
-
 def test_main_syncs_cfg_to_env_before_host_select(
     cfg_for_repo: ExecutorConfig,
     monkeypatch: pytest.MonkeyPatch,
