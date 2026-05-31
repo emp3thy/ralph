@@ -89,12 +89,12 @@ def test_main_exits_2_on_config_error(
     from ralph_executor.config import ConfigError
 
     def _explode() -> ExecutorConfig:
-        raise ConfigError("RALPH_REPO_PATH is required")
+        raise ConfigError("queue_repo is required")
 
     monkeypatch.setattr(cli, "load_config", _explode)
     exit_code = cli.main(["--once"])
     assert exit_code == 2
-    assert "RALPH_REPO_PATH" in capsys.readouterr().err
+    assert "queue_repo" in capsys.readouterr().err
 
 
 def test_main_calls_prepare_host_environment_before_loop(

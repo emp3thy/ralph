@@ -20,10 +20,9 @@ def _make_orphan(pending_dir: Path, pbi_id: str) -> Path:
 def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Layout the queue-clone topology the post-split CLI expects.
 
-    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``
-    (not ``cfg.repo_path``), so ``RALPH_WORKSPACE`` is monkeypatched to
-    ``<tmp_path>/ws`` and the orphan is placed at
-    ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
+    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``,
+    so ``RALPH_WORKSPACE`` is monkeypatched to ``<tmp_path>/ws`` and the
+    orphan is placed at ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -38,9 +37,10 @@ def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
         'queue_repo = "https://github.com/example/queue"\n',
         encoding="utf-8",
     )
-    # Reconcile resolves the scripts dir from cfg.repo_path / skills/pr-github/scripts.
-    # The CLI rejects with exit 2 if that dir is missing, so create it (empty —
-    # reconcile_all is mocked in these tests so the script itself isn't invoked).
+    # Reconcile resolves the scripts dir from the ralph executor source tree
+    # (skills/pr-github/scripts) — the CLI rejects with exit 2 if that dir is
+    # missing under the queue clone, so create it (empty — reconcile_all is
+    # mocked in these tests so the script itself isn't invoked).
     scripts_dir = repo / "skills" / "pr-github" / "scripts"
     scripts_dir.mkdir(parents=True)
     _make_orphan(queue / "pending-pr", "ORPHAN-1")
@@ -48,8 +48,8 @@ def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     return repo
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_subcommand_calls_reconcile_all(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -67,10 +67,8 @@ def test_reconcile_subcommand_calls_reconcile_all(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
-    # Post-T4: reconcile no longer accepts --repo; the queue clone path
-    # is derived from RALPH_WORKSPACE (set by the fake_repo_with_orphan
-    # fixture).
+    # Reconcile derives the queue clone path from RALPH_WORKSPACE, which
+    # is set by the fake_repo_with_orphan fixture.
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
@@ -80,8 +78,8 @@ def test_reconcile_subcommand_calls_reconcile_all(
     assert "moved_to_inbox" in out
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_dry_run_flag_flows_through(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ralph_executor.sweep.types import ReconcileReport
@@ -95,15 +93,14 @@ def test_reconcile_dry_run_flag_flows_through(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
     exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
     assert captured_calls == [True]
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_subcommand_reports_no_orphans_cleanly(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -115,7 +112,6 @@ def test_reconcile_subcommand_reports_no_orphans_cleanly(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
@@ -123,8 +119,8 @@ def test_reconcile_subcommand_reports_no_orphans_cleanly(
     assert "no orphans" in out
 
 
+@pytest.mark.usefixtures("fake_repo_with_orphan")
 def test_reconcile_summary_counts_include_errors(
-    fake_repo_with_orphan: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -150,7 +146,6 @@ def test_reconcile_summary_counts_include_errors(
     monkeypatch.setattr("ralph_executor.cli.reconcile_all", _fake_reconcile_all)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
@@ -184,7 +179,6 @@ def test_reconcile_subcommand_prints_current_section_when_stale_orphan_present(
     )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 0
@@ -217,7 +211,6 @@ def test_reconcile_subcommand_current_dry_run_does_not_delete(
     )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(fake_repo_with_orphan))
     exit_code = cli_main(["reconcile", "--dry-run"])
 
     assert exit_code == 0
@@ -242,16 +235,14 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
         'queue_repo = "https://github.com/example/queue"\n',
         encoding="utf-8",
     )
-    # Post-T3: _pr_skill_scripts_path resolves against the ralph executor
-    # source tree, not cfg.repo_path. Stub it to an absent path so the CLI
-    # guard fails fast.
+    # _pr_skill_scripts_path resolves against the ralph executor source
+    # tree. Stub it to an absent path so the CLI guard fails fast.
     bogus = tmp_path / "no" / "such" / "scripts"
     monkeypatch.setattr(
         "ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus
     )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
-    monkeypatch.setenv("RALPH_REPO_PATH", str(repo))
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 2
