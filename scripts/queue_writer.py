@@ -75,6 +75,7 @@ def acquire_queue_clone(
     queue_repo: str,
     queue_branch: str,
     *,
+    instance_id: str | None = None,
     timeout: float = 120.0,
 ) -> Path:
     """Idempotent queue clone for operator skills.
@@ -82,9 +83,26 @@ def acquire_queue_clone(
     Mirrors ``ralph_executor.queue_clone.ensure_queue_clone``. The branch
     is forwarded unchanged; the operator's ``~/.ralph/config.toml`` knob is
     resolved by the caller via ``resolve_queue_branch``.
+
+    Multi-ralph: when ``instance_id`` is supplied, the clone destination is
+    namespaced via ``queue_clone_path(workspace_root, instance_id)``.
+    Backwards compat: ``instance_id=None`` keeps the legacy
+    ``<workspace_root>/queue/`` path so callers updated by T15–T18 of the
+    multi-ralph plan migrate one at a time.
     """
+    dest: Path | None = None
+    if instance_id is not None:
+        from ralph_executor.queue_path import queue_clone_path
+
+        dest = queue_clone_path(workspace_root, instance_id)
     try:
-        return ensure_queue_clone(workspace_root, queue_repo, queue_branch, timeout=timeout)
+        return ensure_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            dest=dest,
+            timeout=timeout,
+        )
     except QueueCloneError as exc:
         raise QueueWriterError(str(exc)) from exc
 
@@ -189,6 +207,46 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
             f"queue_branch in ~/.ralph/config.toml must be a plain branch name (got {from_toml!r})"
         )
     return from_toml
+
+
+def resolve_instance_id(cli_value: str | None = None) -> str:
+    """Resolve ``instance_id`` for operator skills.
+
+    Order: ``--instance-id`` CLI flag → ``instance_id`` in
+    ``~/.ralph/config.toml`` → sanitised hostname. Returns the validated
+    instance id. Raises ``QueueWriterError`` when the resolved value is
+    empty or fails the ``INSTANCE_ID_REGEX`` validator.
+
+    ``ConfigError`` from a malformed user TOML is re-raised as
+    ``QueueWriterError`` so skills only handle one exception type.
+    """
+    from ralph_executor.config import ConfigError
+    from ralph_executor.identity import (
+        InstanceIdError,
+        default_instance_id,
+        sanitize_instance_id,
+        validate_instance_id,
+    )
+    from ralph_executor.user_config import read_instance_id
+
+    if cli_value is not None:
+        candidate = sanitize_instance_id(cli_value)
+        try:
+            return validate_instance_id(candidate)
+        except InstanceIdError as exc:
+            raise QueueWriterError(f"--instance-id: {exc}") from exc
+    try:
+        from_toml = read_instance_id()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+    candidate = from_toml or default_instance_id()
+    try:
+        return validate_instance_id(sanitize_instance_id(candidate))
+    except InstanceIdError as exc:
+        raise QueueWriterError(
+            f"instance_id not resolvable ({exc}); pass --instance-id or set it via "
+            "`ralph-executor init`"
+        ) from exc
 
 
 def is_path_in_head(repo: Path, rel_path: str) -> bool:

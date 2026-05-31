@@ -77,11 +77,13 @@ def test_acquire_queue_clone_returns_path(tmp_path: Path, monkeypatch: pytest.Mo
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         seen["workspace"] = workspace_root
         seen["queue_repo"] = queue_repo
         seen["queue_branch"] = queue_branch
+        seen["dest"] = dest
         seen["timeout"] = timeout
         return workspace_root / "queue"
 
@@ -93,6 +95,7 @@ def test_acquire_queue_clone_returns_path(tmp_path: Path, monkeypatch: pytest.Mo
         "workspace": tmp_path,
         "queue_repo": "https://github.com/example/q",
         "queue_branch": "main",
+        "dest": None,
         "timeout": 120.0,
     }
 
@@ -108,6 +111,7 @@ def test_acquire_queue_clone_forwards_timeout(
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         captured["timeout"] = timeout
@@ -131,6 +135,7 @@ def test_acquire_queue_clone_wraps_queue_clone_error(
         queue_repo: str,
         queue_branch: str,
         *,
+        dest: Path | None = None,
         timeout: float = 120.0,
     ) -> Path:
         raise QueueCloneError("git fetch failed (exit 128): could not auth")
@@ -409,13 +414,141 @@ def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_ensure(workspace_root, queue_repo, queue_branch, *, timeout=120.0):
+    def fake_ensure(workspace_root, queue_repo, queue_branch, *, dest=None, timeout=120.0):
         captured["queue_branch"] = queue_branch
         return workspace_root / "queue"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
     acquire_queue_clone(tmp_path, "https://github.com/test/queue", "ralph-queue")
     assert captured["queue_branch"] == "ralph-queue"
+
+
+def test_resolve_instance_id_cli_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.queue_writer import resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
+    )
+    assert resolve_instance_id("ralph-cli") == "ralph-cli"
+
+
+def test_resolve_instance_id_sanitises_cli_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.queue_writer import resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    assert resolve_instance_id("Ralph.A") == "ralph-a"
+
+
+def test_resolve_instance_id_rejects_invalid_cli_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.queue_writer import QueueWriterError, resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    with pytest.raises(QueueWriterError, match="--instance-id"):
+        resolve_instance_id("!!!")
+
+
+def test_resolve_instance_id_falls_back_to_toml(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.queue_writer import resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
+    )
+    assert resolve_instance_id(None) == "ralph-toml"
+
+
+def test_resolve_instance_id_falls_back_to_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.queue_writer import resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "MyBox")
+    assert resolve_instance_id(None) == "mybox"
+
+
+def test_resolve_instance_id_empty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.queue_writer import QueueWriterError, resolve_instance_id
+
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "")
+    with pytest.raises(QueueWriterError, match="instance_id not resolvable"):
+        resolve_instance_id(None)
+
+
+def test_resolve_instance_id_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ralph_executor.config import ConfigError
+    from scripts.queue_writer import QueueWriterError, resolve_instance_id
+
+    def fake_read() -> str | None:
+        raise ConfigError(
+            "/fake/.ralph/config.toml: instance_id must be a non-empty string, got int"
+        )
+
+    monkeypatch.setattr("ralph_executor.user_config.read_instance_id", fake_read)
+    with pytest.raises(QueueWriterError) as excinfo:
+        resolve_instance_id(None)
+    assert "instance_id" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConfigError)
+
+
+def test_acquire_queue_clone_namespaces_dest_when_instance_id_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        dest: Path | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["dest"] = dest
+        return dest if dest is not None else workspace_root / "queue"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+    result = acquire_queue_clone(
+        tmp_path,
+        "https://github.com/example/q",
+        "ralph-queue",
+        instance_id="ralph-a",
+    )
+    assert captured["dest"] == tmp_path / "queue-ralph-a"
+    assert result == tmp_path / "queue-ralph-a"
+
+
+def test_acquire_queue_clone_legacy_path_when_instance_id_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        dest: Path | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["dest"] = dest
+        return workspace_root / "queue"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+    acquire_queue_clone(tmp_path, "https://github.com/example/q", "ralph-queue")
+    assert captured["dest"] is None
 
 
 def test_append_history_creates_or_extends_history_md(tmp_path: Path) -> None:
