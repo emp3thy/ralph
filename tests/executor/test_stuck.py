@@ -74,9 +74,7 @@ def test_move_to_blocked_commits_rename_and_leaves_clean_tree(
     # Simulate Claude having written STUCK.md before exit.
     (pbi.path / "STUCK.md").write_text("blocking: dependency missing\n", encoding="utf-8")
 
-    blocked_path = move_to_blocked(
-        cfg=cfg_for_repo, pbi=pbi, reason="blocking: dependency missing"
-    )
+    blocked_path = move_to_blocked(cfg=cfg_for_repo, pbi=pbi, reason="blocking: dependency missing")
 
     assert blocked_path == fake_repo / ".ralph" / "blocked" / "WI-1234"
     assert blocked_path.is_dir()
