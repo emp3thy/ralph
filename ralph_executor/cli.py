@@ -650,70 +650,92 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(cfg.log_level)
 
     log.info(
-        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s main=%s)",
+        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s main=%s instance=%s)",
         cfg.repo_path,
         cfg.queue_repo,
         cfg.queue_branch,
         cfg.main_branch,
+        cfg.instance_id,
     )
 
-    # Sync TOML-sourced project identifiers / alerting into the process
-    # env BEFORE host_select runs. host_select.verify_auth_env and the
-    # pr-<host> skill read these by name from the environment; this
-    # single bridge lets operators write them once in
-    # `.ralph/config.toml` instead of exporting per shell.
-    # Skips empty values so existing env values aren't clobbered with "".
-    for name, value in (
-        ("GH_OWNER", cfg.gh_owner),
-        ("ADO_ORG_URL", cfg.ado_org_url),
-        ("ADO_PROJECT", cfg.ado_project),
-        ("RALPH_HALT_WEBHOOK", cfg.halt_webhook),
-    ):
-        if value:
-            os.environ[name] = value
+    # Acquire the per-workspace lockfile BEFORE any side effects (env
+    # bridge, host-skill staging, iteration). The OS releases it on
+    # process exit even if release() is never called; the try/finally
+    # below guarantees release on every Python-level exit path too.
+    from ralph_executor.lockfile import LockHeldError, WorkspaceLock
+    from ralph_executor.queue_path import queue_clone_path
 
-    # Stage host-specific skills BEFORE any iteration. If this fails,
-    # Ralph can't operate against the chosen host -- abort immediately
-    # so the operator fixes their env rather than silently running
-    # against missing or stale skill directories.
+    lock_path = queue_clone_path(cfg.workspace_root, cfg.instance_id) / ".ralph.lock"
+    lock = WorkspaceLock(lock_path, instance_id=cfg.instance_id)
     try:
-        host = prepare_host_environment(host_override=cfg.git_host or None)
-        log.info("host environment ready: host=%s", host)
-    except HostSelectionError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        lock.acquire()
+    except LockHeldError as exc:
+        print(
+            f"error: another ralph already running on this workspace: {exc}",
+            file=sys.stderr,
+        )
         return 2
 
-    iteration_count = _resolve_iteration_count(args)
-
     try:
-        if iteration_count is not None:
-            # Run exactly N iterations.
-            for i in range(iteration_count):
-                result = iterate_once(cfg)
-                log.info(
-                    "iteration %d/%d outcome=%s pbi=%s",
-                    i + 1,
-                    iteration_count,
-                    result.outcome,
-                    result.pbi_id,
-                )
+        # Sync TOML-sourced project identifiers / alerting into the process
+        # env BEFORE host_select runs. host_select.verify_auth_env and the
+        # pr-<host> skill read these by name from the environment; this
+        # single bridge lets operators write them once in
+        # `.ralph/config.toml` instead of exporting per shell.
+        # Skips empty values so existing env values aren't clobbered with "".
+        for name, value in (
+            ("GH_OWNER", cfg.gh_owner),
+            ("ADO_ORG_URL", cfg.ado_org_url),
+            ("ADO_PROJECT", cfg.ado_project),
+            ("RALPH_HALT_WEBHOOK", cfg.halt_webhook),
+        ):
+            if value:
+                os.environ[name] = value
+
+        # Stage host-specific skills BEFORE any iteration. If this fails,
+        # Ralph can't operate against the chosen host -- abort immediately
+        # so the operator fixes their env rather than silently running
+        # against missing or stale skill directories.
+        try:
+            host = prepare_host_environment(host_override=cfg.git_host or None)
+            log.info("host environment ready: host=%s", host)
+        except HostSelectionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+        iteration_count = _resolve_iteration_count(args)
+
+        try:
+            if iteration_count is not None:
+                # Run exactly N iterations.
+                for i in range(iteration_count):
+                    result = iterate_once(cfg)
+                    log.info(
+                        "iteration %d/%d outcome=%s pbi=%s",
+                        i + 1,
+                        iteration_count,
+                        result.outcome,
+                        result.pbi_id,
+                    )
+                    if result.outcome == "halted":
+                        log.warning("loop halted -- exiting")
+                        return 0
+                return 0
+            # Run until interrupted.
+            for result in run_loop(cfg):
+                log.info("iteration outcome=%s pbi=%s", result.outcome, result.pbi_id)
                 if result.outcome == "halted":
                     log.warning("loop halted -- exiting")
                     return 0
             return 0
-        # Run until interrupted.
-        for result in run_loop(cfg):
-            log.info("iteration outcome=%s pbi=%s", result.outcome, result.pbi_id)
-            if result.outcome == "halted":
-                log.warning("loop halted -- exiting")
-                return 0
-        return 0
-    except KeyboardInterrupt:
-        log.info("interrupted; exiting cleanly")
-        return 0
-    except Exception:  # noqa: BLE001 -- top-level safety net
-        log.exception("unhandled exception in ralph-executor")
-        return 1
+        except KeyboardInterrupt:
+            log.info("interrupted; exiting cleanly")
+            return 0
+        except Exception:  # noqa: BLE001 -- top-level safety net
+            log.exception("unhandled exception in ralph-executor")
+            return 1
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

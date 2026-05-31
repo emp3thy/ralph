@@ -979,3 +979,81 @@ def test_init_assume_yes_writes_default_queue_branch(
     rc = cli.main(["init", "--ralph-home", str(target), "--yes"])
     assert rc == 0
     assert user_config.read_queue_branch() == "ralph-queue"
+
+
+def test_main_exits_when_lockfile_held(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If another process holds the workspace lockfile, main returns 2
+    without entering the iteration loop and prints a clear error."""
+    from ralph_executor.lockfile import WorkspaceLock
+    from ralph_executor.queue_path import queue_clone_path
+
+    iterate_calls: list[ExecutorConfig] = []
+
+    def _record_iterate(cfg: ExecutorConfig) -> IterationResult:
+        iterate_calls.append(cfg)
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(cli, "iterate_once", _record_iterate)
+
+    lock_path = (
+        queue_clone_path(cfg_for_repo.workspace_root, cfg_for_repo.instance_id)
+        / ".ralph.lock"
+    )
+    other = WorkspaceLock(lock_path, instance_id="other")
+    other.acquire()
+    try:
+        rc = cli.main(["--once"])
+    finally:
+        other.release()
+
+    assert rc == 2
+    assert iterate_calls == []
+    err = capsys.readouterr().err.lower()
+    assert "another ralph already running" in err
+
+
+def test_main_releases_lockfile_on_success(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a clean run, the lockfile is released so a subsequent invocation
+    can acquire it (try/finally release on every exit path)."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(
+        cli,
+        "iterate_once",
+        lambda cfg: IterationResult(outcome="idle", pbi_id=None),
+    )
+
+    assert cli.main(["--once"]) == 0
+    assert cli.main(["--once"]) == 0
+
+
+def test_main_releases_lockfile_on_iteration_exception(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the iteration loop raises, the lockfile is still released."""
+    def _explode(cfg: ExecutorConfig) -> IterationResult:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(cli, "iterate_once", _explode)
+
+    rc = cli.main(["--once"])
+    assert rc == 1  # top-level safety net
+    # Second invocation must be able to re-acquire the lock.
+    monkeypatch.setattr(
+        cli,
+        "iterate_once",
+        lambda cfg: IterationResult(outcome="idle", pbi_id=None),
+    )
+    assert cli.main(["--once"]) == 0
