@@ -1,9 +1,9 @@
 """End-to-end smoke test: spawn ``claude -p`` against a sample PBI.
 
 This test is **opt-in**. It is skipped unless ``RALPH_PROMPT_SMOKE=1`` is
-set in the environment. It exists for engineers iterating on
-``prompt/PROMPT.md`` to verify that Ralph's actual behaviour matches the
-prompt's intent.
+set in the environment. It exists for engineers iterating on the
+``prompt/`` topic tree to verify that Ralph's actual behaviour matches
+the assembled standing-prompt's intent.
 
 Prerequisites:
 
@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROMPT_PATH = REPO_ROOT / "prompt" / "PROMPT.md"
+PROMPT_ROOT = REPO_ROOT / "prompt"
 SAMPLE_FEATURE = REPO_ROOT / "samples" / "feature-WI-1234"
 
 SMOKE_ENV_FLAG = "RALPH_PROMPT_SMOKE"
@@ -68,9 +68,9 @@ def tmp_ralph_workspace(tmp_path: Path) -> Path:
     """Build a minimal git workspace with .ralph/current/<PBI-id>/ wired up.
 
     Returns the workspace root. The workspace contains the sample feature
-    PBI copied into ``.ralph/current/WI-1234/`` and the PROMPT.md copied
-    to ``prompt/PROMPT.md`` so Ralph's read paths match the production
-    layout exactly.
+    PBI copied into ``.ralph/current/WI-1234/`` and the per-topic
+    ``prompt/`` tree copied verbatim so the composer can assemble the
+    standing prompt at spawn time exactly as production does.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -92,10 +92,8 @@ def tmp_ralph_workspace(tmp_path: Path) -> Path:
         check=True,
     )
 
-    # Copy PROMPT.md into the workspace at the canonical path.
-    prompt_dir = workspace / "prompt"
-    prompt_dir.mkdir()
-    shutil.copy2(PROMPT_PATH, prompt_dir / "PROMPT.md")
+    # Copy the prompt/ topic tree into the workspace at the canonical path.
+    shutil.copytree(PROMPT_ROOT, workspace / "prompt")
 
     # Copy the sample feature PBI into .ralph/current/WI-1234/.
     target_pbi = workspace / ".ralph" / "current" / "WI-1234"
@@ -123,25 +121,37 @@ def tmp_ralph_workspace(tmp_path: Path) -> Path:
 
 
 def _run_claude(workspace: Path) -> subprocess.CompletedProcess[str]:
-    """Spawn ``claude -p`` against the workspace with PROMPT.md as system."""
-    prompt_text = (workspace / "prompt" / "PROMPT.md").read_text(encoding="utf-8")
+    """Spawn ``claude -p`` against the workspace mirroring production.
+
+    Composes the standing prompt for ``feature`` (the sample PBI's type)
+    via ``compose_prompt``, writes it to
+    ``<workspace>/.ralph/state/standing-prompt-WI-1234.md``, and points
+    ``-p`` at that file. This mirrors ``claude_spawn._build_argv`` so the
+    smoke exercises the same injection mechanism production uses (a file
+    on disk, not an inline ``--append-system-prompt`` argument).
+    """
+    from ralph_executor.prompt_composer import compose_prompt
+
+    prompt_root = workspace / "prompt"
+    # Smoke uses the feature default -- sample is a feature PBI.
+    standing = compose_prompt(prompt_root, "feature")
+
+    state_dir = workspace / ".ralph" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    standing_path = state_dir / "standing-prompt-WI-1234.md"
+    standing_path.write_text(standing, encoding="utf-8")
+
     user_message = (
-        "Begin iteration on the PBI in .ralph/current/. Read PROMPT.md "
-        "(included as your system prompt) and follow the read order it "
-        "specifies, then advance the PBI by exactly one step and exit."
+        f"Read {standing_path} for your standing instructions. Then "
+        "begin iteration on the PBI in .ralph/current/WI-1234, advance "
+        "it by exactly one step, and exit."
     )
 
-    # Use --append-system-prompt so PROMPT.md is layered on top of
-    # Claude Code's default system prompt. --output-format json gives us
-    # a parseable result. --dangerously-skip-permissions is required for
-    # non-interactive runs (mirrors the ROSA pod config).
     return subprocess.run(
         [
             "claude",
             "-p",
             user_message,
-            "--append-system-prompt",
-            prompt_text,
             "--output-format",
             "json",
             "--dangerously-skip-permissions",

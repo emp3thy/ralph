@@ -1,10 +1,9 @@
-"""Structural tests for ``prompt/PROMPT.md``.
+"""Structural tests for the assembled prompt.
 
-PROMPT.md is the standing instruction file that the executor injects into
-every ``claude -p`` invocation. Its content is static markdown, not code,
-so the test here is shape-based: required sections exist, the file is
-within reasonable size bounds, and it references the per-type read order
-the spec mandates.
+The standing prompt now lives under ``prompt/0N-topic/`` and is
+assembled by ``compose_prompt`` at spawn time. These tests load the
+assembled string for each ``PBIType`` and assert that required headings
+and load-bearing phrases appear in the appropriate per-type assembly.
 """
 
 from __future__ import annotations
@@ -13,83 +12,111 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-PROMPT_PATH = REPO_ROOT / "prompt" / "PROMPT.md"
+from ralph_executor.prompt_composer import compose_prompt
 
-REQUIRED_SECTION_HEADINGS: tuple[str, ...] = (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PROMPT_ROOT = REPO_ROOT / "prompt"
+
+# Headings expected in each per-type assembly.
+HEADINGS_ALL_TYPES: tuple[str, ...] = (
     "Who you are",
-    "What you read",
-    "How to work a feature PBI",
-    "How to work a bug PBI",
-    "How to work a PR-feedback PBI",
     "When to write STUCK.md",
     "How to ship a PR",
-    "Elevated-attention categories",
-    "Reviewer feedback — treat respectfully, challenge with reasoning",
     "What you never do",
 )
+HEADINGS_FEATURE_ONLY: tuple[str, ...] = ("How to work a feature PBI",)
+HEADINGS_BUG_ONLY: tuple[str, ...] = ("How to work a bug PBI",)
+HEADINGS_PR_FEEDBACK_ONLY: tuple[str, ...] = (
+    "How to work a PR-feedback PBI",
+    "Elevated-attention categories",
+    "Reviewer feedback",
+)
 
-REQUIRED_PHRASES: tuple[str, ...] = (
-    # File reading order anchors (per spec)
-    ".ralph/current/",
-    "PROMPT.md",
+# Phrases that must appear in every assembled prompt (load-bearing).
+PHRASES_ALL_TYPES: tuple[str, ...] = (
     "HISTORY.md",
-    "PBI.md",
-    "PLAN.md",
+    "MUST carry a `target_repo`",
+)
+PHRASES_BUG_ONLY: tuple[str, ...] = (
     "BUG.md",
     "REPRODUCE.md",
     "docs/INVESTIGATE.md",
+)
+# Elevated-attention categories were inlined into the pr-feedback workflow
+# override in Task 10 — they describe reviewer-comment handling and do not
+# apply to feature/bug iterations.
+PHRASES_PR_FEEDBACK_ONLY: tuple[str, ...] = (
     "ORIGINAL.md",
     "FEEDBACK.md",
-    # Skills and tooling
-    "ado-pr",
-    # Elevated categories
-    "test deletion",
-    "scope creep",
-    "permission widening",
-    "large diff",
-    # Standing reminder on respectful feedback
     "respectfully",
     "challenge",
+    "test deletion",
+    "permission widening",
+    "large diff",
 )
 
 
-def test_prompt_file_exists() -> None:
-    assert PROMPT_PATH.is_file(), (
-        f"PROMPT.md missing at {PROMPT_PATH}. Plan 6 must create prompt/PROMPT.md."
+def _assembled(pbi_type: str) -> str:
+    return compose_prompt(PROMPT_ROOT, pbi_type)
+
+
+@pytest.mark.parametrize("pbi_type", ["feature", "bug", "pr-feedback"])
+@pytest.mark.parametrize("heading", HEADINGS_ALL_TYPES)
+def test_assembled_contains_shared_heading(pbi_type: str, heading: str) -> None:
+    assert heading in _assembled(pbi_type), (
+        f"assembled {pbi_type} prompt missing required heading: {heading!r}"
     )
 
 
-def test_prompt_size_bounds() -> None:
-    """Drift guard. The prompt must be substantial but not bloated."""
-    text = PROMPT_PATH.read_text(encoding="utf-8")
-    char_count = len(text)
-    # Lower bound: anything materially shorter than this can't possibly
-    # cover the required sections from the spec.
-    assert char_count >= 4_000, (
-        f"PROMPT.md is only {char_count} chars; expected >= 4000. Something is missing."
+@pytest.mark.parametrize("heading", HEADINGS_FEATURE_ONLY)
+def test_feature_only_headings(heading: str) -> None:
+    assembled = _assembled("feature")
+    assert heading in assembled, f"feature prompt missing heading {heading!r}"
+
+
+@pytest.mark.parametrize("heading", HEADINGS_BUG_ONLY)
+def test_bug_only_headings(heading: str) -> None:
+    assembled = _assembled("bug")
+    assert heading in assembled, f"bug prompt missing heading {heading!r}"
+
+
+@pytest.mark.parametrize("heading", HEADINGS_PR_FEEDBACK_ONLY)
+def test_pr_feedback_only_headings(heading: str) -> None:
+    assembled = _assembled("pr-feedback")
+    assert heading in assembled, f"pr-feedback prompt missing heading {heading!r}"
+
+
+@pytest.mark.parametrize("pbi_type", ["feature", "bug", "pr-feedback"])
+@pytest.mark.parametrize("phrase", PHRASES_ALL_TYPES)
+def test_assembled_contains_shared_phrase(pbi_type: str, phrase: str) -> None:
+    assert phrase in _assembled(pbi_type), (
+        f"assembled {pbi_type} prompt missing required phrase: {phrase!r}"
     )
-    # Upper bound: token budget guard. If PROMPT.md grows past this,
-    # split it or trim -- Ralph pays the cost on every iteration.
-    assert char_count <= 25_000, (
-        f"PROMPT.md is {char_count} chars; expected <= 25000. Trim or split."
-    )
 
 
-@pytest.mark.parametrize("heading", REQUIRED_SECTION_HEADINGS)
-def test_prompt_contains_required_section(heading: str) -> None:
-    text = PROMPT_PATH.read_text(encoding="utf-8")
-    assert heading in text, f"PROMPT.md is missing required section heading: {heading!r}"
+@pytest.mark.parametrize("phrase", PHRASES_BUG_ONLY)
+def test_bug_only_phrases(phrase: str) -> None:
+    assert phrase in _assembled("bug")
 
 
-@pytest.mark.parametrize("phrase", REQUIRED_PHRASES)
-def test_prompt_contains_required_phrase(phrase: str) -> None:
-    text = PROMPT_PATH.read_text(encoding="utf-8")
-    assert phrase in text, f"PROMPT.md is missing required phrase: {phrase!r}"
+@pytest.mark.parametrize("phrase", PHRASES_PR_FEEDBACK_ONLY)
+def test_pr_feedback_only_phrases(phrase: str) -> None:
+    assert phrase in _assembled("pr-feedback")
 
 
-def test_prompt_has_no_placeholders() -> None:
-    """PROMPT.md ships as-is to Claude; no TODOs or <placeholder> tokens."""
-    text = PROMPT_PATH.read_text(encoding="utf-8")
+@pytest.mark.parametrize("pbi_type", ["feature", "bug", "pr-feedback"])
+def test_assembled_has_no_placeholder_tokens(pbi_type: str) -> None:
+    assembled = _assembled(pbi_type)
     for bad in ("TODO", "TBD", "<placeholder>", "FIXME"):
-        assert bad not in text, f"PROMPT.md contains placeholder token {bad!r} -- fill it in."
+        assert bad not in assembled, (
+            f"assembled {pbi_type} prompt contains placeholder token {bad!r}"
+        )
+
+
+@pytest.mark.parametrize("pbi_type", ["feature", "bug", "pr-feedback"])
+def test_assembled_size_bounds(pbi_type: str) -> None:
+    """Assembled prompt must be substantial but not bloated. Mirrors the
+    legacy single-file bounds (4 KB lower, 25 KB upper)."""
+    assembled = _assembled(pbi_type)
+    n = len(assembled)
+    assert 4_000 <= n <= 25_000, f"assembled {pbi_type} prompt is {n} chars (must be 4k-25k)"
