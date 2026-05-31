@@ -513,6 +513,9 @@ def load_config() -> ExecutorConfig:
     ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
     empty string means "use claude CLI's OAuth session".
     """
+    from ralph_executor.user_config import _warn_stale_ralph_home_in_user_config
+
+    _warn_stale_ralph_home_in_user_config()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     repo_path = _resolve_repo_path()
 

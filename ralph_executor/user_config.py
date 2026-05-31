@@ -261,3 +261,30 @@ def write_queue_branch(branch: str) -> Path:
     Merges with existing keys so ``queue_repo`` / ``ralph_home`` survive.
     """
     return _write_user_config({"queue_branch": branch})
+
+
+def _warn_stale_ralph_home_in_user_config() -> None:
+    """Emit a one-time WARNING if ``~/.ralph/config.toml`` still has ``ralph_home``.
+
+    Called once at the top of ``load_config``. The key is no longer read
+    anywhere — silent removal would leave operators wondering why their
+    ``--workspace NAME`` invocations stopped resolving. The WARNING points
+    at the file path so the operator can delete the stale line.
+    """
+    cfg_file = user_config_path()
+    if not cfg_file.is_file():
+        return
+    try:
+        with cfg_file.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, OSError):
+        # Malformed / unreadable user TOML surfaces its own ConfigError
+        # via _load_user_config when read for real keys; suppress here
+        # so the warning helper never crashes startup.
+        return
+    if "ralph_home" in data:
+        log.warning(
+            "%s: 'ralph_home' key is no longer supported and is ignored. "
+            "Delete the line; the executor uses 'workspace_root' instead.",
+            cfg_file,
+        )
