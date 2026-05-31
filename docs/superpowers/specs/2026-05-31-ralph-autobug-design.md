@@ -44,7 +44,7 @@ ralph_executor/autobug/
   detect.py             # trigger router: dedup + fuses + emit orchestration
   signature.py          # signature hashing (Python + subprocess variants)
   dedup.py              # scan queue state for matching signature
-  compose.py            # build PBI.md + OBSERVED.md (defensive, never raises)
+  compose.py            # build BUG.md + REPRODUCE.md (defensive, never raises)
   emit.py               # queue write + push_with_rebase
   fuses.py              # rate_check + recursion_check + rollup helpers
 ```
@@ -395,10 +395,10 @@ def detect_python_crash(exc, context):
 
 ### Composer never raises
 
-Every section of `PBI.md` is wrapped in `_safe`. If a section fails, the section is replaced with a placeholder; the rest of the body still composes.
+Every section of `BUG.md` is wrapped in `_safe`. If a section fails, the section is replaced with a placeholder; the rest of the body still composes.
 
 ```python
-def build_pbi_md(exc, context) -> str:
+def build_bug_md(exc, context) -> str:
     parts = ["# autobug — {}".format(_safe(lambda: _short_title(exc), "unknown crash"))]
     parts.append(_section("Stacktrace", _safe(lambda: _format_traceback(exc), "<traceback unavailable>")))
     parts.append(_section("Environment", _safe(lambda: _env_snapshot(context), "<env unavailable>")))
