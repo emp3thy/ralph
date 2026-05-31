@@ -29,6 +29,7 @@ from scripts.pbi_reader import (  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -75,6 +76,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="BRANCH",
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
+    )
     return parser.parse_args(argv)
 
 
@@ -83,6 +89,7 @@ _COLUMN_ORDER: tuple[str, ...] = (
     "STATE",
     "ID",
     "TYPE",
+    "OWNER",
     "SEVERITY",
     "AGE",
     "TITLE",
@@ -124,6 +131,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
             row.state,
             row.pbi_id,
             row.pbi_type,
+            row.owner or "—",
             row.severity,
             _age_string(row.created_at),
             row.title,
@@ -132,6 +140,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
         "?",
         row.state,
         row.pbi_dir.name,
+        "?",
         "?",
         "?",
         "?",
@@ -184,6 +193,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
             "state": row.state,
             "id": row.pbi_id,
             "type": row.pbi_type,
+            "owner": row.owner,
             "severity": row.severity,
             "attempts": row.attempts,
             "created_at": _iso(row.created_at),
@@ -197,6 +207,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
         "state": row.state,
         "id": row.pbi_dir.name,
         "type": None,
+        "owner": None,
         "severity": None,
         "attempts": None,
         "created_at": None,
@@ -233,7 +244,10 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
-        queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        instance_id = resolve_instance_id(args.instance_id)
+        queue_clone = acquire_queue_clone(
+            workspace_root, queue_repo, queue_branch, instance_id=instance_id
+        )
     except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

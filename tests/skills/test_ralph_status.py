@@ -124,8 +124,16 @@ def _seed_pbi(
     *,
     entry_file: str = "PBI.md",
     content: str | None = None,
+    claim_instance_id: str | None = None,
+    claim_payload: str | None = None,
 ) -> None:
-    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back."""
+    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back.
+
+    When ``claim_instance_id`` is supplied, a ``CLAIM.json`` is written
+    alongside the entry file naming that instance as the owner. When
+    ``claim_payload`` is supplied, the raw string is written verbatim
+    (used to seed malformed CLAIM.json fixtures).
+    """
     work = tmp_path / f"seed-{pbi_id}-{state}"
     subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
     _configure_identity(work)
@@ -134,6 +142,15 @@ def _seed_pbi(
     text = content if content is not None else _pbi_md(pbi_id=pbi_id, status=state)
     (pbi_dir / entry_file).write_text(text, encoding="utf-8")
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    if claim_payload is not None:
+        (pbi_dir / "CLAIM.json").write_text(claim_payload, encoding="utf-8")
+    elif claim_instance_id is not None:
+        claim = {
+            "instance_id": claim_instance_id,
+            "claimed_at": "2026-05-31T12:00:00+00:00",
+            "hostname": "test-host",
+        }
+        (pbi_dir / "CLAIM.json").write_text(json.dumps(claim, indent=2), encoding="utf-8")
     _git(work, "add", f".ralph/{state}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state}")
     _git(work, "push", "origin", "ralph-queue")
@@ -235,7 +252,7 @@ def test_default_lists_all_states_with_target_column(
     header_line = stdout.splitlines()[0]
     assert "TARGET" in header_line
     assert "REPO" not in header_line, "header should no longer carry the legacy REPO column"
-    for column in ("STATE", "ID", "TYPE", "SEVERITY", "AGE", "TITLE"):
+    for column in ("STATE", "ID", "TYPE", "OWNER", "SEVERITY", "AGE", "TITLE"):
         assert column in header_line
     for pbi_id in (WI_FEATURE, WI_BUG, WI_CURRENT, WI_PENDING, WI_BLOCKED):
         assert pbi_id in stdout, f"missing {pbi_id} in:\n{stdout}"
@@ -327,6 +344,7 @@ def test_json_envelope_shape(
         "state",
         "id",
         "type",
+        "owner",
         "severity",
         "attempts",
         "created_at",
@@ -563,13 +581,22 @@ def test_status_acquires_ralph_queue_by_default(
 ) -> None:
     """ralph-status calls acquire_queue_clone with queue_branch='ralph-queue' by default."""
     workspace, queue_repo = seeded_queue
-    calls: list[tuple[Path, str, str]] = []
+    calls: list[tuple[Path, str, str, str | None]] = []
 
     real_acquire = status_module.acquire_queue_clone
 
-    def fake_acquire(workspace_root: Path, repo: str, branch: str) -> Path:
-        calls.append((workspace_root, repo, branch))
-        return real_acquire(workspace_root, repo, branch)
+    def fake_acquire(
+        workspace_root: Path,
+        repo: str,
+        branch: str,
+        *,
+        instance_id: str | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        calls.append((workspace_root, repo, branch, instance_id))
+        return real_acquire(
+            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout
+        )
 
     monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
 
@@ -577,4 +604,190 @@ def test_status_acquires_ralph_queue_by_default(
         ["--workspace", str(workspace), "--queue-repo", queue_repo, "--json"]
     )
     assert exit_code == 0, capsys.readouterr().err
-    assert [branch for _ws, _repo, branch in calls] == ["ralph-queue"]
+    assert [branch for _ws, _repo, branch, _id in calls] == ["ralph-queue"]
+    # Multi-ralph: instance_id resolves from hostname even without --instance-id;
+    # acquire_queue_clone receives a non-empty value so the namespaced clone path
+    # is used (not the legacy <workspace>/queue/).
+    assert calls[0][3] is not None and calls[0][3] != ""
+
+
+# ----------------------------------------------------------------------
+# T15: OWNER column + --instance-id flag
+# ----------------------------------------------------------------------
+
+
+def test_status_shows_owner_column_for_claimed_current_pbi(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Current PBI with a CLAIM.json shows the claim's instance_id in OWNER."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        WI_CURRENT,
+        content=_pbi_md(
+            pbi_id=WI_CURRENT,
+            status="current",
+            target_repo=TARGET_AUTH,
+            title="Claimed PBI",
+        ),
+        claim_instance_id="ralph-a",
+    )
+    exit_code = status_module.main(
+        ["--workspace", str(workspace), "--queue-repo", queue_repo]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    stdout = capsys.readouterr().out
+    header = stdout.splitlines()[0]
+    assert "OWNER" in header
+    pbi_line = next(line for line in stdout.splitlines() if WI_CURRENT in line)
+    assert "ralph-a" in pbi_line
+
+
+def test_status_owner_column_renders_dash_when_unclaimed(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Current PBI without CLAIM.json renders the owner cell as a dash."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        WI_CURRENT,
+        content=_pbi_md(pbi_id=WI_CURRENT, status="current", target_repo=TARGET_AUTH),
+    )
+    exit_code = status_module.main(
+        ["--workspace", str(workspace), "--queue-repo", queue_repo]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    stdout = capsys.readouterr().out
+    pbi_line = next(line for line in stdout.splitlines() if WI_CURRENT in line)
+    assert "—" in pbi_line
+
+
+def test_status_owner_column_renders_malformed_marker(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Malformed CLAIM.json surfaces as the literal '<malformed>' marker."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        WI_CURRENT,
+        content=_pbi_md(pbi_id=WI_CURRENT, status="current", target_repo=TARGET_AUTH),
+        claim_payload="not json at all",
+    )
+    exit_code = status_module.main(
+        ["--workspace", str(workspace), "--queue-repo", queue_repo, "--json"]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    row = next(r for r in payload["rows"] if r["id"] == WI_CURRENT)
+    assert row["owner"] == "<malformed>"
+
+
+def test_status_owner_field_in_json(
+    queue_env: tuple[Path, str],
+    status_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """JSON envelope carries the owner field on every row."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        WI_CURRENT,
+        content=_pbi_md(pbi_id=WI_CURRENT, status="current", target_repo=TARGET_AUTH),
+        claim_instance_id="ralph-b",
+    )
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "inbox",
+        WI_FEATURE,
+        content=_pbi_md(pbi_id=WI_FEATURE, status="inbox", target_repo=TARGET_AUTH),
+    )
+    exit_code = status_module.main(
+        ["--workspace", str(workspace), "--queue-repo", queue_repo, "--json"]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    by_id = {row["id"]: row for row in payload["rows"]}
+    assert by_id[WI_CURRENT]["owner"] == "ralph-b"
+    # Non-current rows always carry owner=None (no CLAIM.json semantics outside current/).
+    assert by_id[WI_FEATURE]["owner"] is None
+
+
+def test_status_instance_id_flag_propagates_to_acquire(
+    seeded_queue: tuple[Path, str],
+    status_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance-id overrides hostname / TOML and reaches acquire_queue_clone."""
+    workspace, queue_repo = seeded_queue
+    seen: list[str | None] = []
+    real_acquire = status_module.acquire_queue_clone
+
+    def fake_acquire(
+        workspace_root: Path,
+        repo: str,
+        branch: str,
+        *,
+        instance_id: str | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        seen.append(instance_id)
+        return real_acquire(
+            workspace_root, repo, branch, instance_id=instance_id, timeout=timeout
+        )
+
+    monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
+    exit_code = status_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--queue-repo",
+            queue_repo,
+            "--instance-id",
+            "ralph-z",
+            "--json",
+        ]
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    assert seen == ["ralph-z"]
+
+
+def test_status_rejects_invalid_instance_id(
+    seeded_queue: tuple[Path, str],
+    status_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--instance-id '!!!' sanitises to empty and is rejected with exit 2."""
+    workspace, queue_repo = seeded_queue
+    exit_code = status_module.main(
+        [
+            "--workspace",
+            str(workspace),
+            "--queue-repo",
+            queue_repo,
+            "--instance-id",
+            "!!!",
+        ]
+    )
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "instance_id" in err.lower()

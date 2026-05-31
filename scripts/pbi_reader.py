@@ -78,6 +78,10 @@ class PBIRow:
     updated_at: datetime | None
     title: str
     target_repo: str
+    # Multi-ralph: instance_id from CLAIM.json for current/ rows. None for
+    # other states (no claim file expected) or for current/ rows that lack
+    # one. Literal "<malformed>" when CLAIM.json fails to parse.
+    owner: str | None = None
 
     def relative_pbi_dir(self) -> str:
         try:
@@ -265,6 +269,18 @@ def read_pbi(
     target_repo_raw = parsed.get("target_repo")
     target_repo = target_repo_raw if isinstance(target_repo_raw, str) else ""
 
+    owner: str | None = None
+    if state == "current":
+        from ralph_executor.claim import ClaimParseError, read_claim
+
+        try:
+            claim = read_claim(pbi_dir)
+        except ClaimParseError:
+            owner = "<malformed>"
+        else:
+            if claim is not None:
+                owner = claim.instance_id
+
     return PBIRow(
         repo_path=repo_path,
         repo_name=repo_name,
@@ -278,6 +294,7 @@ def read_pbi(
         updated_at=_coerce_datetime(parsed.get("updated_at")),
         title=_extract_title(body, fallback=pbi_id),
         target_repo=target_repo,
+        owner=owner,
     )
 
 
