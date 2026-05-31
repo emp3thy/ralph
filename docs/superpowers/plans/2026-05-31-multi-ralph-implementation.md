@@ -1,4 +1,4 @@
-# Multi-ralph Implementation Plan (v2 — confidence-rated)
+# Multi-ralph Implementation Plan (v3 — confidence-rated, sub-91% lifted)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -1420,19 +1420,23 @@ git commit -m "multi-ralph: META-BUG carries tripped_by_instance"
 
 ---
 
-## Task T13: Cross-platform workspace lockfile — **confidence: 88%**
+## Task T13: Cross-platform workspace lockfile — **confidence: 92%** (lifted from 88)
 
 **Files:** `ralph_executor/lockfile.py` (new), `tests/executor/test_lockfile.py` (new)
+
+**v3 lift evidence:** Spike on this machine confirmed `fcntl.flock(LOCK_EX | LOCK_NB)` raises `[Errno 13] Permission denied` on the SAME-PROCESS second acquire via a different file handle. Windows `msvcrt.locking(LK_NBLCK, 1)` per Win32 `LockFileEx` semantics should behave the same way, but Windows-specific test goes behind a platform gate so POSIX runs do not false-confirm Windows behavior.
 
 **Step 0 mitigations:**
 - POSIX uses `fcntl.flock` (whole-file advisory lock). Windows uses `msvcrt.locking` which locks N bytes from the current file position; seek to byte 0 first, lock 1 byte. Position reset is critical — without it the lock targets undefined offsets.
 - `WorkspaceLock` opens the file in `a+b` mode (append-binary, read+write). Truncate after lock, write payload, flush.
+- Per-platform test gating so the Windows path is tested under Windows CI and the POSIX path under POSIX CI.
 
 - [ ] **Step 1: Failing tests**
 
 ```python
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -1441,12 +1445,28 @@ from ralph_executor.lockfile import LockHeldError, WorkspaceLock
 
 
 def test_acquire_then_release(tmp_path: Path) -> None:
+    """Cross-platform: file exists after acquire."""
     lock = WorkspaceLock(tmp_path / "queue-a" / ".ralph.lock", instance_id="ralph-a")
     with lock:
         assert (tmp_path / "queue-a" / ".ralph.lock").is_file()
 
 
-def test_second_acquire_raises_same_process(tmp_path: Path) -> None:
+def test_lock_payload_includes_pid_and_instance(tmp_path: Path) -> None:
+    """Cross-platform: payload schema."""
+    path = tmp_path / "queue-a" / ".ralph.lock"
+    lock = WorkspaceLock(path, instance_id="ralph-a")
+    with lock:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["instance_id"] == "ralph-a"
+        assert payload["pid"] == os.getpid()
+        assert "hostname" in payload
+        assert "started_at" in payload
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX fcntl.flock semantics only")
+def test_second_acquire_raises_posix(tmp_path: Path) -> None:
+    """POSIX-only: fcntl.flock(LOCK_EX | LOCK_NB) blocks same-process second
+    acquire on a different file handle (spike-confirmed: [Errno 13])."""
     path = tmp_path / "queue-a" / ".ralph.lock"
     first = WorkspaceLock(path, instance_id="ralph-a")
     second = WorkspaceLock(path, instance_id="ralph-a")
@@ -1458,15 +1478,20 @@ def test_second_acquire_raises_same_process(tmp_path: Path) -> None:
         first.release()
 
 
-def test_lock_payload_includes_pid_and_instance(tmp_path: Path) -> None:
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows msvcrt.locking semantics only")
+def test_second_acquire_raises_windows(tmp_path: Path) -> None:
+    """Windows-only: msvcrt.locking(LK_NBLCK, 1) is expected to block a
+    same-process second acquire on a different file handle (LockFileEx
+    behavior). Test runs only on Windows CI to confirm."""
     path = tmp_path / "queue-a" / ".ralph.lock"
-    lock = WorkspaceLock(path, instance_id="ralph-a")
-    with lock:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["instance_id"] == "ralph-a"
-        assert payload["pid"] == os.getpid()
-        assert "hostname" in payload
-        assert "started_at" in payload
+    first = WorkspaceLock(path, instance_id="ralph-a")
+    second = WorkspaceLock(path, instance_id="ralph-a")
+    first.acquire()
+    try:
+        with pytest.raises(LockHeldError):
+            second.acquire()
+    finally:
+        first.release()
 ```
 
 - [ ] **Step 2: FAIL**
@@ -1945,13 +1970,24 @@ git commit -m "multi-ralph: ralph-promote refuses cross-instance current/ transf
 
 ---
 
-## Task T18: `ralph-recover` skill — **confidence: 87%**
+## Task T18: `ralph-recover` skill — **confidence: 94%** (lifted from 87)
 
 **Files:** `skills/ralph-recover/SKILL.md`, `skills/ralph-recover/scripts/__init__.py`, `skills/ralph-recover/scripts/recover.py` (new); `tests/skills/test_ralph_recover.py` (new)
 
+**v3 lift evidence:** Source-read of `scripts/queue_writer.py:200-450` (confirmed) revealed battle-tested helpers used by `ralph-promote` that this skill must reuse rather than reinvent:
+
+- `find_pbi_directory(repo, pbi_id)` — search-all-states helper
+- `read_frontmatter` / `write_frontmatter` / `update_frontmatter_fields(entry_file, updates)` — YAML-correct frontmatter rewrites; auto-stamps `updated_at`. Replaces the v2 free-form `_rewrite_lines` regex.
+- `append_history(pbi_dir, actor, action, detail)` — structured `---\n- timestamp:\n- actor:\n- action:\n- detail:` format matching the rest of the queue. Per operator decision: `actor="ralph-recover"` literal.
+- `commit_paths` confirmed at `queue_writer.py:251-254` to stage BOTH deletions (missing-on-disk paths) and additions in one commit.
+
+Plus: `src_dir.rename(dst_dir)` → `shutil.move(str(src_dir), str(dst_dir))` so Windows cross-volume cases work (mirrors T8 mitigation).
+
 **Step 0 mitigations:**
-- Use `commit_paths` + `push` from `scripts/queue_writer` (already used by `ralph-cancel`) — no raw subprocess git, no shutil-fallback branch (avoids the partial-state risk in v1).
-- Frontmatter rewrites go through a single `_rewrite_lines` helper that handles `status:`, `attempts:`, `updated_at:` — not free-form regex. Mirrors `_rewrite_status` in `ralph_executor.queue.movements`.
+- Use `commit_paths` + `push` from `scripts/queue_writer` (same pattern as `ralph-cancel` / `ralph-promote`) — no raw subprocess git.
+- Frontmatter rewrites go through `update_frontmatter_fields` (existing helper). NO custom `_rewrite_lines` regex.
+- HISTORY entries via `append_history(actor="ralph-recover", action="recover", detail=...)`.
+- Source dir move via `shutil.move` not `Path.rename` (cross-volume safe).
 
 - [ ] **Step 1: Failing tests**
 
@@ -1992,17 +2028,21 @@ from ralph_executor.claim import CLAIM_FILENAME, read_claim  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
+    append_history,
     commit_paths,
+    find_pbi_directory,
     push,
     resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
+    update_frontmatter_fields,
 )
 
 
 DESTINATIONS = ("inbox", "blocked")
 _ENTRY_FILENAMES = ("PBI.md", "BUG.md", "FEEDBACK.md")
+_ACTOR = "ralph-recover"
 
 
 @dataclass
@@ -2035,56 +2075,6 @@ def _find_entry_file(pbi_dir: Path) -> Path:
     raise QueueWriterError(f"PBI {pbi_dir.name}: no entry file found")
 
 
-def _rewrite_lines(
-    entry_file: Path, *, status: str | None, attempts: int | None
-) -> None:
-    text = entry_file.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        raise QueueWriterError(f"{entry_file}: no opening frontmatter fence")
-    end = -1
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            end = idx
-            break
-    if end < 0:
-        raise QueueWriterError(f"{entry_file}: no closing frontmatter fence")
-
-    now_iso = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-    saw_status = saw_attempts = saw_updated = False
-    for idx in range(1, end):
-        stripped = lines[idx].lstrip()
-        if status is not None and stripped.startswith("status:"):
-            lines[idx] = f"status: {status}\n"
-            saw_status = True
-        elif attempts is not None and stripped.startswith("attempts:"):
-            lines[idx] = f"attempts: {attempts}\n"
-            saw_attempts = True
-        elif stripped.startswith("updated_at:"):
-            lines[idx] = f"updated_at: {now_iso}\n"
-            saw_updated = True
-    if status is not None and not saw_status:
-        lines.insert(end, f"status: {status}\n")
-        end += 1
-    if attempts is not None and not saw_attempts:
-        lines.insert(end, f"attempts: {attempts}\n")
-        end += 1
-    if not saw_updated:
-        lines.insert(end, f"updated_at: {now_iso}\n")
-    entry_file.write_text("".join(lines), encoding="utf-8")
-
-
-def _append_history(pbi_dir: Path, *, previous_owner: str) -> Path:
-    history = pbi_dir / "HISTORY.md"
-    now_iso = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-    note = (
-        f"\n## Recovered from instance {previous_owner} by operator — {now_iso}\n"
-    )
-    existing = history.read_text(encoding="utf-8") if history.is_file() else ""
-    history.write_text(existing + note, encoding="utf-8")
-    return history
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     try:
@@ -2112,18 +2102,31 @@ def main(argv: list[str] | None = None) -> int:
         if claim is not None:
             previous_owner = claim.instance_id
 
+        import shutil
+
         claim_file = src_dir / CLAIM_FILENAME
         if claim_file.is_file():
             claim_file.unlink()
         dst_dir.parent.mkdir(parents=True, exist_ok=True)
-        src_dir.rename(dst_dir)
+        # shutil.move handles cross-volume moves on Windows (Path.rename would
+        # raise OSError if workspace_root and the temp dir live on different drives).
+        shutil.move(str(src_dir), str(dst_dir))
 
         entry = _find_entry_file(dst_dir)
         if args.destination == "inbox":
-            _rewrite_lines(entry, status="inbox", attempts=0)
+            update_frontmatter_fields(entry, {"status": "inbox", "attempts": 0})
         else:
-            _rewrite_lines(entry, status="blocked", attempts=None)
-        _append_history(dst_dir, previous_owner=previous_owner or "<no claim>")
+            update_frontmatter_fields(entry, {"status": "blocked"})
+
+        append_history(
+            dst_dir,
+            actor=_ACTOR,
+            action="recover",
+            detail=(
+                f"recovered {args.pbi_id} from instance "
+                f"{previous_owner or '<no claim>'} to {args.destination}"
+            ),
+        )
 
         commit_sha = commit_paths(
             clone,
@@ -2166,13 +2169,22 @@ git commit -m "multi-ralph: ralph-recover manual claim-recovery skill"
 
 ---
 
-## Task T19: Two-instance integration tests — **confidence: 88%**
+## Task T19: Two-instance integration tests — **confidence: 93%** (lifted from 88)
 
 **Files:** `tests/executor/test_multi_ralph_integration.py` (new)
 
+**v3 lift evidence:** Source-read of `tests/executor/conftest.py` (confirmed) shows the canonical fixtures already exist and are reusable. The `two_ralphs` fixture is the `fake_repo` + `cfg_for_repo` pattern duplicated with distinct `workspace_root` paths + `instance_id` values, sharing one bare origin:
+
+- `fake_repo` — `git init --bare` + clone with `.ralph/` skeleton committed + `.gitignore` for `.ralph/state/` and `.ralph-work/`
+- `cfg_for_repo` — `ExecutorConfig` pointed at the clone, workspace_root = `<tmp_path>/ws`
+- `_fake_ensure_target_clone` — autouse monkeypatch swapping `target_clone.ensure_clone`
+- `write_sample_pbi` — minimal feature/bug/pr-feedback PBI writer
+
+**Cross-task dep**: T7 (route callers) already updates `tests/executor/conftest.py` to use `queue_clone_path` + the new `instance_id` field on `ExecutorConfig`. T19 inherits those changes.
+
 **Step 0 mitigations:**
-- Concrete fixture, not `NotImplementedError`. Steps explicit below.
-- T2 (claim-race) assertion tightened: post-recovery, loser's `current/<own-id>/` is empty AND winner's CLAIM.json on disk in the loser's clone after pull.
+- Reuse `fake_repo` + `cfg_for_repo` + `write_sample_pbi` rather than reinventing fixture infra. No `NotImplementedError` stub.
+- T2 (claim-race) assertion tightened: post-recovery, loser's `current/<own-id>/` is empty AND winner's CLAIM.json visible in the loser's clone after pull.
 
 - [ ] **Step 1: Failing tests**
 
@@ -2196,26 +2208,77 @@ from ralph_executor.queue_path import queue_clone_path
 def two_ralphs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ExecutorConfig, ExecutorConfig, Path]:
-    """Bare queue origin + two configs (ralph-a, ralph-b) pointed at it.
+    """Two ExecutorConfigs (ralph-a, ralph-b) sharing one bare queue origin.
 
-    Builds an origin with .ralph/inbox/{WI-1, WI-2}, both with valid
-    PBI.md frontmatter + HISTORY.md. Monkeypatches target_clone and
-    worktree helpers to no-ops so iterate_once does not touch GitHub.
+    Reuses the conftest pattern: bare origin + two clones at
+    `<tmp>/wsa/queue-ralph-a` and `<tmp>/wsb/queue-ralph-b`, both
+    pointing at the same bare. write_sample_pbi seeds two PBIs in inbox/.
+    target_clone.ensure_clone and worktree.ensure_worktree are already
+    monkeypatched autouse-style by conftest.
     """
-    # 1. Bare origin
+    import dataclasses
+
+    from tests.executor.conftest import (
+        _git, write_sample_pbi,  # exported from conftest
+    )
+
+    # 1. Bare origin with `main` initial branch.
     origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin)], check=True)
-    # 2. Seed clone, scaffold .ralph/inbox/{WI-1,WI-2}, push ralph-queue
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(origin)],
+        check=True, capture_output=True,
+    )
+
+    # 2. Seed: scaffold .ralph/{inbox,current,...} + .gitignore, push main.
     seed = tmp_path / "seed"
-    subprocess.run(["git", "clone", str(origin), str(seed)], check=True)
-    # ... scaffold helper ...
-    # 3. Two ExecutorConfigs
-    cfg_a = _build_cfg(tmp_path / "wsa", "ralph-a", str(origin))
-    cfg_b = _build_cfg(tmp_path / "wsb", "ralph-b", str(origin))
-    # 4. Monkeypatch
-    from ralph_executor import target_clone, worktree
-    monkeypatch.setattr(target_clone, "ensure_clone", _fake_ensure_clone)
-    monkeypatch.setattr(worktree, "ensure_worktree", lambda *a, **kw: None)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(seed)],
+        check=True, capture_output=True,
+    )
+    _git(seed, "config", "user.email", "test@example.com")
+    _git(seed, "config", "user.name", "Test User")
+    (seed / ".gitignore").write_text(
+        ".ralph/state/\n.ralph-work/\n", encoding="utf-8"
+    )
+    for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
+        (seed / ".ralph" / sub).mkdir(parents=True, exist_ok=True)
+        (seed / ".ralph" / sub / ".gitkeep").write_text("", encoding="utf-8")
+    # Two inbox PBIs.
+    write_sample_pbi(seed, pbi_id="WI-1", where="inbox")
+    write_sample_pbi(seed, pbi_id="WI-2", where="inbox")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "chore(queue): bootstrap + WI-1, WI-2")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-u", "origin", "main")
+
+    # 3. Two clones at the namespaced paths each instance expects.
+    clone_a = tmp_path / "wsa" / "queue-ralph-a"
+    clone_b = tmp_path / "wsb" / "queue-ralph-b"
+    clone_a.parent.mkdir(parents=True, exist_ok=True)
+    clone_b.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", str(origin), str(clone_a)], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "clone", str(origin), str(clone_b)], check=True,
+                   capture_output=True)
+    for clone in (clone_a, clone_b):
+        _git(clone, "config", "user.email", "test@example.com")
+        _git(clone, "config", "user.name", "Test User")
+
+    # 4. ExecutorConfigs. Reuse cfg_for_repo's shape; override instance_id +
+    #    workspace_root. queue_branch stays "main" to match fixture.
+    base = request.getfixturevalue("cfg_for_repo")  # base ExecutorConfig
+    cfg_a = dataclasses.replace(
+        base,
+        workspace_root=tmp_path / "wsa",
+        instance_id="ralph-a",
+        repo_path=clone_a,
+    )
+    cfg_b = dataclasses.replace(
+        base,
+        workspace_root=tmp_path / "wsb",
+        instance_id="ralph-b",
+        repo_path=clone_b,
+    )
     return cfg_a, cfg_b, origin
 
 
@@ -2322,14 +2385,22 @@ git commit -m "multi-ralph: docs — README + runbook updates"
 | T10 atomic claim | 91 | `git mv` + untracked file gotcha | redesigned to `post_mv` callback inside `_move` |
 | T11 current_pbi filter | 93 | existing test churn | bundled fix |
 | T12 META-BUG | 95 | frontmatter index | concrete `lines.append` slot |
-| T13 lockfile | 88 | Windows specifics | seek-then-lock, payload truncate, OS-release contract |
+| T13 lockfile | **92** | Windows specifics | spike-confirmed POSIX flock, per-platform test gating (was 88) |
 | T14 CLI lockfile | 92 | wrapping `main` body | explicit try/finally |
 | TA queue_writer | 90 | skill resolver layer | mirror existing resolvers exactly |
 | T15 status OWNER | 90 | PBIRow extension | explicit dataclass field + per-state population |
 | T16 cancel refuse | 92 | check placement | post-`_resolve_current_pbi` |
 | T17 promote refuse | 91 | branch placement | mirror T16, only on from-current path |
-| T18 recover skill | 87 | many edge cases | use queue_writer helpers, single atomic commit, `_rewrite_lines` not regex |
-| T19 integration | 88 | fixture build | concrete steps inline, tightened race assertion |
+| T18 recover skill | **94** | frontmatter rewrites | reuse `update_frontmatter_fields` + `append_history` + `shutil.move` (was 87) |
+| T19 integration | **93** | fixture build | reuse `fake_repo` + `cfg_for_repo` + `write_sample_pbi` from conftest (was 88) |
 | T20 docs | 96 | low | direct |
 
-All tasks ≥87%. All sub-95% tasks carry baked-in mitigations.
+All tasks ≥90%. All sub-95% tasks carry baked-in mitigations.
+
+## v3 lifts log
+
+| Task | Before | After | Method |
+|---|---|---|---|
+| T13 lockfile | 88 | 92 | Spike confirmed POSIX `fcntl.flock(LOCK_EX \| LOCK_NB)` blocks same-process second acquire. Test split into per-platform gated variants so Windows path is tested under Windows CI and POSIX path under POSIX CI. |
+| T18 recover | 87 | 94 | Source-read of `scripts/queue_writer.py` revealed `find_pbi_directory`, `read_frontmatter`/`write_frontmatter`/`update_frontmatter_fields`, `append_history(actor, action, detail)`, `commit_paths` — all battle-tested by `ralph-promote`. Custom `_rewrite_lines` removed; uses helpers. `actor="ralph-recover"` (operator decision). `shutil.move` instead of `Path.rename` for cross-volume safety. |
+| T19 integration | 88 | 93 | Source-read of `tests/executor/conftest.py` revealed `fake_repo` + `cfg_for_repo` + `write_sample_pbi` already exist; `_fake_ensure_target_clone` autouse. `two_ralphs` fixture is the conftest pattern duplicated with distinct workspace_root + instance_id. Fixture body filled in concretely (5 steps). |
