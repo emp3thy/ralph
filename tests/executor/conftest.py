@@ -10,6 +10,7 @@ skeleton on ``main`` and returns its path.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,6 +21,9 @@ from textwrap import dedent
 import pytest
 
 from ralph_executor.config import ExecutorConfig
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROMPT_ROOT = REPO_ROOT / "prompt"
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -83,6 +87,15 @@ def fake_repo(tmp_path: Path) -> Iterator[Path]:
     )
     _git(clone, "config", "user.email", "test@example.com")
     _git(clone, "config", "user.name", "Test User")
+    # Mirror the real ``prompt/`` topic tree into the queue clone and
+    # commit it so ``_build_argv`` can compose the standing prompt
+    # against a real source AND the working tree stays clean (tests
+    # like ``test_commit_all_no_changes_returns_head`` expect a clean
+    # tree). Production ships the topic tree on the queue branch; this
+    # mirrors that on the fixture's ``main`` queue branch.
+    shutil.copytree(PROMPT_ROOT, clone / "prompt")
+    _git(clone, "add", "prompt")
+    _git(clone, "commit", "-m", "test(fixture): seed prompt/ topic tree")
     yield clone
 
 

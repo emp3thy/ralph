@@ -81,19 +81,29 @@ class ClaudeOutcome:
     duration_seconds: float
 
 
-def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path) -> list[str]:
+def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path, pbi: PBI) -> list[str]:
     """Compose the argv passed to the ``claude`` binary.
 
-    ``-p`` puts Claude in non-interactive print mode. The PBI directory
-    path is forwarded both as an argument (the standing PROMPT.md tells
-    Ralph to read it) and via the ``RALPH_PBI_DIR`` environment variable
-    (which test stand-ins use to locate the PBI on disk).
+    Standing prompt (the file formerly known as ``PROMPT.md``) is
+    assembled per-PBI-type by ``compose_prompt`` and written to a
+    per-iteration file under
+    ``<queue>/.ralph/state/standing-prompt-<pbi.id>.md``. The ``-p``
+    directive tells Claude to read that file before working on the PBI.
+    Writing the prompt to a file (rather than passing it inline via
+    ``--append-system-prompt``) is required: the composed feature
+    prompt is ~12 KB and pr-feedback is ~16 KB, both exceeding the
+    Windows ``cmd.exe`` 8191-char command-line ceiling that any single
+    argv element must stay under (verified by Iteration 20 of the
+    SPLIT-PROMPT-MD-INTO-PER-TOPIC-FOLDERS-WITH-COMPOSER PBI: 16/17
+    spawn tests red with ``"The command line is too long."``). See
+    ``docs/superpowers/specs/2026-05-31-prompt-md-split-design.md``.
 
     ``pbi_dir`` is the absolute on-disk path Claude should read/write.
     In legacy single-checkout mode it equals ``pbi.path``; in worktree
     mode it points into the queue worktree (``.ralph-work/queue/.ralph/
     current/<id>/``) rather than the work worktree where Claude's cwd
-    is rooted.
+    is rooted. ``pbi`` is forwarded so the composer can pick the
+    per-type assembly (feature/bug/pr-feedback).
 
     ``--output-format stream-json --verbose`` makes Claude emit one
     line-delimited JSON event per step (system init, assistant message,
@@ -103,6 +113,15 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path) -> list[str]:
     Windows, where ``bufsize=1`` does not propagate line-buffering to
     the child's CRT (see BUG-claude-stdout-streaming-windows).
     """
+    queue_root = _queue_repo_root_for_spawn(cfg)
+    prompt_root = queue_root / "prompt"
+    standing = compose_prompt(prompt_root, pbi.type)
+
+    state_dir = queue_root / ".ralph" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    standing_path = state_dir / f"standing-prompt-{pbi.id}.md"
+    standing_path.write_text(standing, encoding="utf-8")
+
     # Order matters: the prompt string MUST immediately follow `-p`,
     # otherwise Claude's arg parser (commander/yargs style) consumes the
     # next token as the prompt value. Putting `--output-format` between
@@ -129,8 +148,8 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path) -> list[str]:
         cfg.claude_permission_mode,
         "-p",
         (
-            "Read ./prompt/PROMPT.md and work the PBI in "
-            f"{pbi_dir}. Follow the standing instructions."
+            f"Read {standing_path} for your standing instructions, "
+            f"then work the PBI in {pbi_dir}."
         ),
     ]
     return argv
@@ -545,7 +564,7 @@ def spawn_claude_p(
         )
     if not effective_cwd.is_dir():
         raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
-    argv = _build_argv(cfg, pbi_dir=effective_pbi_dir)
+    argv = _build_argv(cfg, pbi_dir=effective_pbi_dir, pbi=pbi)
     env = os.environ.copy()
     env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
     # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
