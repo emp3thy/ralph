@@ -18,13 +18,21 @@ import sys
 from pathlib import Path
 
 from ralph_executor.config import ConfigError, validate_repo_path
+from ralph_executor.identity import (
+    InstanceIdError,
+    default_instance_id,
+    sanitize_instance_id,
+    validate_instance_id,
+)
 from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
+    read_instance_id,
     read_queue_branch,
     read_queue_repo,
     read_ralph_home,
     user_config_path,
+    write_instance_id,
     write_queue_branch,
     write_queue_repo,
     write_ralph_home,
@@ -324,6 +332,43 @@ def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
             return 2
         print(f"queue_branch = {chosen_branch}")
         print(f"wrote {branch_cfg}")
+
+    # instance_id (multi-ralph T5): per-ralph identity for multi-instance
+    # operation. Mirrors queue_repo / queue_branch handling — idempotent on
+    # re-run, --yes uses the sanitised hostname, EOF on stdin falls back to
+    # the hostname default (the operator gets one chance to type a custom
+    # value but a closed/piped stdin is not a blocker).
+    existing_instance = read_instance_id()
+    if existing_instance is not None:
+        print(
+            f"instance_id already set to {existing_instance} in {user_config_path()}"
+        )
+    else:
+        host_default = default_instance_id() or "ralph"
+        if assume_yes:
+            chosen_instance = host_default
+        else:
+            print(f"Instance id [{host_default}]: ", end="", flush=True)
+            try:
+                raw = input().strip()
+            except EOFError:
+                print("")
+                raw = ""
+            chosen_instance = sanitize_instance_id(raw) if raw else host_default
+        try:
+            chosen_instance = validate_instance_id(chosen_instance)
+        except InstanceIdError as exc:
+            raise ConfigError(f"init: {exc}") from exc
+        try:
+            instance_cfg = write_instance_id(chosen_instance)
+        except OSError as exc:
+            print(
+                f"error: cannot write instance_id to user config: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"instance_id = {chosen_instance}")
+        print(f"wrote {instance_cfg}")
 
     # Best-effort tool checks. Warn, never abort: an operator might be
     # setting up on a host where claude is installed under a non-default

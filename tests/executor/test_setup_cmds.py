@@ -15,9 +15,11 @@ from ralph_executor.setup_cmds import (
     cmd_scaffold,
 )
 from ralph_executor.user_config import (
+    read_instance_id,
     read_queue_repo,
     read_ralph_home,
     user_config_path,
+    write_instance_id,
     write_queue_branch,
     write_queue_repo,
 )
@@ -210,6 +212,7 @@ def test_init_prompts_for_queue_repo_and_writes_user_config(
         [
             "https://github.com/example/ralph-queue",
             "",  # queue_branch — accept default
+            "",  # instance_id — accept hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -235,6 +238,7 @@ def test_init_reprompts_on_invalid_queue_repo(
             "ftp://nope.example.com/q",  # bad scheme → reprompt
             "https://github.com/example/queue",  # accepted
             "",  # queue_branch — accept default
+            "",  # instance_id — accept hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -258,6 +262,7 @@ def test_init_smoke_clone_failure_warns_but_writes(
         [
             "https://github.com/example/queue",
             "",  # queue_branch — accept default
+            "",  # instance_id — accept hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -297,6 +302,8 @@ def test_init_skips_queue_repo_prompt_if_already_set(
     # queue_branch (Task 10) has the same idempotence contract; seed it
     # too so the "must not prompt" guard covers both knobs.
     write_queue_branch("custom-branch")
+    # instance_id (multi-ralph T5) — same idempotence contract.
+    write_instance_id("ralph-pinned")
 
     import builtins
 
@@ -327,6 +334,70 @@ def test_init_handles_closed_stdin_on_queue_repo_prompt(
     assert "queue_repo" in out
     assert "WARNING" in out
     assert read_queue_repo() is None
+
+
+# ---------------------------------------------------------------------------
+# cmd_init — instance_id prompt (multi-ralph T5)
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_init_assume_yes_writes_hostname_instance_id(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--yes` writes the sanitised hostname as the instance_id without
+    prompting."""
+    monkeypatch.setattr("socket.gethostname", lambda: "BoxA")
+    rc = cmd_init(ralph_home=None, assume_yes=True)
+    assert rc == 0
+    assert read_instance_id() == "boxa"
+
+
+def test_cmd_init_idempotent_instance_id_no_overwrite(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An instance_id already in user_config is preserved on re-run, even
+    when --yes would otherwise pick the hostname default."""
+    write_instance_id("ralph-pinned")
+    monkeypatch.setattr("socket.gethostname", lambda: "BoxA")
+    rc = cmd_init(ralph_home=None, assume_yes=True)
+    assert rc == 0
+    assert read_instance_id() == "ralph-pinned"
+
+
+def test_cmd_init_prompts_for_instance_id(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _smoke_ok: None,
+) -> None:
+    """Interactive run prompts after queue_branch — operator typed value
+    is sanitised and validated, then persisted."""
+    import builtins
+
+    answers = iter(
+        [
+            "https://github.com/example/queue",  # queue_repo
+            "",  # queue_branch — default
+            "Ralph.A",  # instance_id — needs sanitisation
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+    rc = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert rc == 0
+    assert read_instance_id() == "ralph-a"
+
+
+def test_cmd_init_instance_id_closed_stdin_falls_back_to_hostname(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EOF on the instance_id prompt falls through to the hostname default
+    instead of crashing — matches queue_branch behaviour."""
+    monkeypatch.setattr("socket.gethostname", lambda: "fallback-host")
+    rc = cmd_init(ralph_home=fake_home / "r", assume_yes=False)
+    assert rc == 0
+    # autouse `_default_closed_stdin` raises EOFError on every input() call;
+    # instance_id falls through to hostname.
+    assert read_instance_id() == "fallback-host"
 
 
 # ---------------------------------------------------------------------------
