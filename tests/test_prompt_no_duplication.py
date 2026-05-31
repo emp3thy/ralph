@@ -41,9 +41,7 @@ def _topics_with_multiple_overrides() -> list[Path]:
     return out
 
 
-@pytest.mark.parametrize(
-    "topic", _topics_with_multiple_overrides(), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("topic", _topics_with_multiple_overrides(), ids=lambda p: p.name)
 def test_no_substantial_line_appears_in_multiple_overrides(topic: Path) -> None:
     overrides = [d for d in topic.iterdir() if d.is_dir()]
     line_sets = {sub.name: _collect_substantial_lines(sub) for sub in overrides}
@@ -51,6 +49,5 @@ def test_no_substantial_line_appears_in_multiple_overrides(topic: Path) -> None:
         common = lines_a & lines_b
         assert not common, (
             f"topic {topic.name}: lines duplicated between "
-            f"{name_a}/ and {name_b}/ — hoist to root.\n"
-            + "\n".join(sorted(common))
+            f"{name_a}/ and {name_b}/ — hoist to root.\n" + "\n".join(sorted(common))
         )

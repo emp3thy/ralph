@@ -43,6 +43,26 @@ def test_topic_with_only_irrelevant_override_raises(tmp_path: Path) -> None:
         compose_prompt(tmp_path, "feature")
 
 
+def test_missing_prompt_root_raises_compose_error(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    with pytest.raises(PromptComposeError, match="missing or not a directory"):
+        compose_prompt(missing, "feature")
+
+
+def test_prompt_root_is_file_raises_compose_error(tmp_path: Path) -> None:
+    not_a_dir = tmp_path / "prompt.txt"
+    not_a_dir.write_text("oops", encoding="utf-8")
+    with pytest.raises(PromptComposeError, match="missing or not a directory"):
+        compose_prompt(not_a_dir, "feature")
+
+
+def test_prompt_root_with_no_topic_dirs_raises_compose_error(tmp_path: Path) -> None:
+    """Plain files at the root and no subdirectories → no sections → raise."""
+    (tmp_path / "README.md").write_text("not a topic dir", encoding="utf-8")
+    with pytest.raises(PromptComposeError, match="no topic folders found under"):
+        compose_prompt(tmp_path, "feature")
+
+
 def test_valid_types_constant_matches_pbi_type_literal() -> None:
     """Guard against drift between PBIType literal and VALID_TYPES."""
     assert frozenset({"feature", "bug", "pr-feedback"}) == VALID_TYPES

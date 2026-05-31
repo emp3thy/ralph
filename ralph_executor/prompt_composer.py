@@ -35,13 +35,20 @@ def compose_prompt(prompt_root: Path, pbi_type: str) -> str:
     and returns it.
 
     Raises ``PromptComposeError`` if ``pbi_type`` is not in
-    ``VALID_TYPES``, or if any topic folder has neither a root ``.md``
-    nor a matching override.
+    ``VALID_TYPES``, if ``prompt_root`` is missing or not a directory,
+    if no topic folders are found under it, or if any topic folder has
+    neither a root ``.md`` nor a matching override.
     """
     if pbi_type not in VALID_TYPES:
         raise PromptComposeError(f"unknown pbi_type {pbi_type!r}")
+    try:
+        entries = sorted(prompt_root.iterdir())
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise PromptComposeError(
+            f"prompt_root {prompt_root} is missing or not a directory"
+        ) from exc
     sections: list[str] = []
-    for topic in sorted(prompt_root.iterdir()):
+    for topic in entries:
         if not topic.is_dir():
             continue
         override = topic / pbi_type
@@ -51,4 +58,6 @@ def compose_prompt(prompt_root: Path, pbi_type: str) -> str:
             raise PromptComposeError(f"no .md in {chosen}")
         for md in md_files:
             sections.append(md.read_text(encoding="utf-8"))
+    if not sections:
+        raise PromptComposeError(f"no topic folders found under {prompt_root}")
     return "\n\n".join(sections)

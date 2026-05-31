@@ -32,9 +32,7 @@ def _topic_dirs() -> list[Path]:
 
 @pytest.mark.parametrize("topic", _topic_dirs(), ids=lambda p: p.name)
 def test_topic_folder_name_matches_convention(topic: Path) -> None:
-    assert TOPIC_NAME.match(topic.name), (
-        f"topic folder {topic.name!r} must match ^NN-kebab-name"
-    )
+    assert TOPIC_NAME.match(topic.name), f"topic folder {topic.name!r} must match ^NN-kebab-name"
 
 
 @pytest.mark.parametrize("topic", _topic_dirs(), ids=lambda p: p.name)

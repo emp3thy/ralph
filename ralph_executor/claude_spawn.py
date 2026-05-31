@@ -147,10 +147,7 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path, pbi: PBI) -> list[str]:
         "--permission-mode",
         cfg.claude_permission_mode,
         "-p",
-        (
-            f"Read {standing_path} for your standing instructions, "
-            f"then work the PBI in {pbi_dir}."
-        ),
+        (f"Read {standing_path} for your standing instructions, then work the PBI in {pbi_dir}."),
     ]
     return argv
 

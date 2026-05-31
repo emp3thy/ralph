@@ -119,6 +119,4 @@ def test_assembled_size_bounds(pbi_type: str) -> None:
     legacy single-file bounds (4 KB lower, 25 KB upper)."""
     assembled = _assembled(pbi_type)
     n = len(assembled)
-    assert 4_000 <= n <= 25_000, (
-        f"assembled {pbi_type} prompt is {n} chars (must be 4k-25k)"
-    )
+    assert 4_000 <= n <= 25_000, f"assembled {pbi_type} prompt is {n} chars (must be 4k-25k)"
