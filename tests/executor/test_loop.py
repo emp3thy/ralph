@@ -1362,6 +1362,57 @@ def test_pull_queue_passes_namespaced_dest(
     assert captured["dest"] == tmp_path / "queue-ralph-a"
 
 
+def test_claim_writes_claim_json_atomically(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim writes ``CLAIM.json`` into ``current/<id>/`` in the SAME commit
+    as the ``git mv`` from ``inbox/<id>/``. Atomicity guarantee: a second
+    instance that fetches mid-claim cannot see the PBI in current/ without
+    its CLAIM.json (and therefore without an owner).
+    """
+    from ralph_executor.claim import read_claim
+
+    _populate_inbox(fake_repo)
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+    result = iterate_once(cfg_for_repo)
+    assert result.outcome == "claimed"
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-1234"
+    assert pbi_dir.is_dir()
+    claim = read_claim(pbi_dir)
+    assert claim is not None
+    assert claim.instance_id == cfg_for_repo.instance_id
+    # The commit that introduced CLAIM.json must also be the commit that
+    # added the moved entry file under current/<id>/ — i.e. one atomic
+    # commit, not two.
+    commit_sha = subprocess.run(
+        ["git", "-C", str(fake_repo), "log", "-1", "--format=%H", "--",
+         ".ralph/current/WI-1234/CLAIM.json"],
+        capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
+    ).stdout.strip()
+    assert commit_sha, "CLAIM.json must be tracked by git after claim"
+    files = subprocess.run(
+        ["git", "-C", str(fake_repo), "show", "--name-only", "--format=",
+         commit_sha],
+        capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
+    ).stdout
+    assert ".ralph/current/WI-1234/CLAIM.json" in files
+    assert ".ralph/current/WI-1234/PBI.md" in files
+    # The commit subject is the standard inbox→current move message.
+    subject = subprocess.run(
+        ["git", "-C", str(fake_repo), "log", "-1", "--format=%s", commit_sha],
+        capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
+    ).stdout.strip()
+    assert subject == "chore(ralph-queue): move WI-1234 from inbox to current"
+
+
 def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
     cfg_for_repo: ExecutorConfig,
     monkeypatch: pytest.MonkeyPatch,

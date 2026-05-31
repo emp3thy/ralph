@@ -12,6 +12,7 @@ The result is a new ``PBI`` dataclass reflecting the new on-disk state.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -110,6 +111,7 @@ def _move(
     expected_state: PBIStatus,
     target_state: PBIStatus,
     commit_prefix: str,
+    post_mv: Callable[[Path], None] | None = None,
 ) -> PBI:
     if pbi.status != expected_state:
         raise QueueMovementError(f"PBI {pbi.id} must be in {expected_state}, found in {pbi.status}")
@@ -136,6 +138,14 @@ def _move(
     entry_name = ENTRY_FILE_BY_TYPE[pbi.type]
     _rewrite_status(dst / entry_name, target_state)
 
+    # Atomicity hook: callers (notably ``move_inbox_to_current``) drop a
+    # ``CLAIM.json`` into ``dst`` here so ``git add -A`` inside
+    # ``commit_all`` stages it in the same commit as the ``git mv``.
+    # Writing CLAIM.json BEFORE the ``git mv`` would not work — ``git mv``
+    # on a directory leaves untracked files behind at the source path.
+    if post_mv is not None:
+        post_mv(dst)
+
     git_ops.commit_all(
         queue_repo,
         f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
@@ -155,12 +165,17 @@ def move_inbox_to_current(
     *,
     event_log: EventLog | None = None,
     now: datetime | None = None,
+    post_mv: Callable[[Path], None] | None = None,
 ) -> PBI:
     """Claim a PBI from inbox into the single-focus current folder.
 
     Emits ``PBI_OPENED`` to ``event_log`` when ``event_log`` is provided.
     The cycle detector's ``whack_a_mole`` rule consumes opens vs closes
     over a rolling window.
+
+    ``post_mv`` is forwarded to ``_move``: callers use it to drop a
+    ``CLAIM.json`` into the destination dir so the file is staged in the
+    same commit as the inbox→current ``git mv`` (atomic claim).
     """
     moved = _move(
         cfg,
@@ -168,6 +183,7 @@ def move_inbox_to_current(
         expected_state="inbox",
         target_state="current",
         commit_prefix="chore(ralph-queue)",
+        post_mv=post_mv,
     )
     if event_log is not None:
         recorded_at = now if now is not None else datetime.now(tz=UTC)

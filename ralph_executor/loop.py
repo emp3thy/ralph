@@ -567,6 +567,19 @@ def _claim_pbi_worktree(
         clone = tc_mod.ensure_clone(info, workspace_root=cfg.workspace_root)
     except tc_mod.TargetUnreachable as exc:
         raise _ClaimError(f"target unreachable: {exc}") from exc
+    import socket
+
+    from ralph_executor.claim import ClaimInfo, write_claim
+
+    claim_info = ClaimInfo(
+        instance_id=cfg.instance_id,
+        claimed_at=datetime.now(tz=UTC),
+        hostname=socket.gethostname(),
+    )
+
+    def _write_claim_post_mv(dst: Path) -> None:
+        write_claim(dst, claim_info)
+
     event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
@@ -574,6 +587,7 @@ def _claim_pbi_worktree(
             pbi,
             event_log=event_log,
             now=datetime.now(tz=UTC),
+            post_mv=_write_claim_post_mv,
         )
     finally:
         event_log.close()
