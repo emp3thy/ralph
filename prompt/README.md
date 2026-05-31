@@ -1,124 +1,90 @@
 # `prompt/` — Ralph's standing instructions
 
-This directory holds `PROMPT.md`, the single file the executor injects
-into every `claude -p` invocation. Iterating on Ralph's behaviour
-largely means iterating on this file.
+This directory holds the per-topic source files that compose Ralph's
+standing instructions. The executor calls `compose_prompt` at spawn
+time to assemble a per-PBI-type string, writes it to
+`<queue>/.ralph/state/standing-prompt-<pbi.id>.md`, and tells Claude
+to read that file via the `-p` directive. (Inline injection via
+`--append-system-prompt` was tried and reverted — the ~16 KB assembled
+feature prompt exceeds the Windows `cmd.exe` 8191-char limit. The
+file-based mechanism works on every platform.) There is no single
+`PROMPT.md` file — the content lives under topic folders.
 
-## What `PROMPT.md` is
+## Layout
 
-- The standing instructions Ralph reads at the top of every iteration.
-- **Static across PBIs.** The per-PBI variability lives in the PBI
-  directory under `.ralph/current/<PBI-id>/`. `PROMPT.md` is the same
-  every time.
-- **Token cost matters.** Ralph pays the read cost on every iteration.
-  Keep the file as short as it needs to be — no more.
-- **No placeholders.** The file ships to Claude as-is. Anything
-  looking like `TODO` / `TBD` / `<placeholder>` / `FIXME` causes the
-  structural test (`tests/test_prompt_structure.py`) to fail.
+```
+prompt/
+  01-identity/identity.md          # shared
+  02-read-order/
+    read.md                        # default (feature)
+    bug/read.md
+    pr-feedback/read.md
+  03-workflow/
+    workflow.md                    # default (feature)
+    bug/workflow.md
+    pr-feedback/workflow.md
+  04-stuck/stuck.md                # shared
+  05-shipping/
+    shipping.md                    # default (feature/bug)
+    pr-feedback/shipping.md
+  06-memory/memory.md              # shared
+  07-forbidden/forbidden.md        # shared
+  08-closing/closing.md            # shared
+```
+
+Topic folders carry a numeric prefix; alpha-sort gives the assembly
+order. Override subfolder names match the `PBIType` literal values in
+`ralph_executor/types.py` (`bug`, `pr-feedback`). `feature` has no
+override — it is the default at the root of each topic.
+
+## Composer rule
+
+For each topic folder, the composer picks the override subfolder
+matching the current PBI type if present, otherwise the topic root.
+Override semantics are **strict replace** — the override owns the
+whole topic's content; it does not merge with the root.
 
 ## How to iterate
 
-The basic loop is: edit → structural test → manual smoke → optional
-subprocess smoke → ship.
+1. **Edit** the relevant topic file. Locate the topic that owns the
+   content you want to change — use the layout above as a map.
+2. **Run lints + structural tests.**
 
-### 1. Edit `PROMPT.md`
+   ```
+   uv run pytest tests/test_prompt_topic_shape.py tests/test_prompt_no_duplication.py tests/test_prompt_structure.py tests/test_prompt_contents.py tests/test_prompt_composer.py -v
+   ```
 
-Edit the file. Keep the section headings exactly as they are — the
-structural test pins them. Adding sections is fine; removing or
-renaming an existing required heading breaks the test.
+3. **Optional opt-in smoke** against the sample feature PBI:
 
-Required section headings (the structural test asserts each one
-appears verbatim):
+   ```
+   RALPH_PROMPT_SMOKE=1 uv run pytest tests/test_prompt_smoke.py -v
+   ```
 
-- `Who you are`
-- `What you read`
-- `How to work a feature PBI`
-- `How to work a bug PBI`
-- `How to work a PR-feedback PBI`
-- `When to write STUCK.md`
-- `How to ship a PR`
-- `Elevated-attention categories`
-- `Reviewer feedback — treat respectfully, challenge with reasoning`
-- `What you never do`
+4. **Commit** with a conventional message:
 
-### 2. Run the structural test
+   ```
+   git add prompt/0N-topic/
+   git commit -m "feat(prompt): <one-line summary of the behaviour change>"
+   ```
 
-```
-uv run pytest tests/test_prompt_structure.py -v
-```
-
-This is fast (file read + string checks). It catches missing headings,
-missing required phrases, accidental placeholders, and size drift. It
-does NOT verify that Ralph behaves correctly — that is the smoke
-test's job.
-
-### 3. Manual smoke against a sample
-
-Pick a Plan 1 sample (e.g. `samples/feature-WI-1234/`) and spawn
-Claude against it by hand:
-
-```
-# Copy the sample into a tmp .ralph/current/ layout
-mkdir -p /tmp/ralph-smoke/.ralph/current/WI-1234
-cp -r samples/feature-WI-1234/* /tmp/ralph-smoke/.ralph/current/WI-1234/
-
-# Run Claude with the prompt
-cd /tmp/ralph-smoke
-claude -p --prompt-file <repo>/prompt/PROMPT.md "Begin iteration."
-```
-
-Read the transcript. Did Ralph:
-
-- Read PROMPT.md and the PBI files in the order the prompt mandates?
-- Pick up the first unchecked step in `PLAN.md`?
-- Stop after one step (rather than trying to do all five)?
-- Write a sensible `HISTORY.md` append?
-
-If any of those are wrong, the prompt is wrong. Edit and re-smoke.
-
-### 4. Optional subprocess smoke (`tests/test_prompt_smoke.py`)
-
-An automated version of the manual smoke lives at
-`tests/test_prompt_smoke.py`. It is skipped by default because
-spawning Claude Code as a subprocess can be flaky on some hosts and
-is slow. Run it locally when you want it:
-
-```
-RALPH_PROMPT_SMOKE=1 uv run pytest tests/test_prompt_smoke.py -v
-```
-
-See the test file's docstring for the prerequisites
-(`ANTHROPIC_API_KEY` set, `claude` CLI on `$PATH`, network access).
-
-### 5. Ship
-
-Once the structural test is green and you have manually smoked the
-change against at least one sample, commit with a conventional message:
-
-```
-git add prompt/PROMPT.md
-git commit -m "feat(prompt): <one-line summary of the behaviour change>"
-```
-
-## What goes in `PROMPT.md` vs the PBI directory vs `INVESTIGATE.md`
-
-Three places hold instructions for Ralph. Knowing which is which keeps
-each one focused.
+## What goes in `prompt/` vs the PBI directory vs `INVESTIGATE.md`
 
 | Information | Lives in | Why |
 |---|---|---|
-| "How Ralph works in general" — the loop, the read order, the safety lines, the PR shipping protocol | `prompt/PROMPT.md` | Stable across PBIs and services. |
-| "What this specific PBI is asking for" — context, acceptance criteria, the step-by-step plan | `.ralph/current/<PBI-id>/PBI.md` and `PLAN.md` (or BUG/REPRODUCE, or FEEDBACK) | Per-PBI. Written by humans (`ralph-new`) or by the sweep (feedback). |
+| "How Ralph works in general" — the loop, the read order, the safety lines, the PR shipping protocol | `prompt/0N-topic/` | Stable across PBIs and services. |
+| "What this specific PBI is asking for" — context, acceptance criteria, the step-by-step plan | `.ralph/current/<PBI-id>/PBI.md` and `PLAN.md` (or `BUG.md`/`REPRODUCE.md`, or `FEEDBACK.md`) | Per-PBI. Written by humans (`ralph-new`) or by the sweep (feedback). |
 | "How THIS service works" — key modules, log format, common gotchas | `docs/INVESTIGATE.md` in the service repo | Per-service. Written by the service's engineers. |
 
-If you find yourself adding per-service content to `PROMPT.md`, stop
-and put it in `docs/INVESTIGATE.md` instead. If you find yourself
-adding per-PBI content, put it in the PBI directory.
+## Single-source-of-truth invariant
+
+If you find the same rule appearing in two override files of the same
+topic, the lint will fail — hoist that content to the topic root
+instead, where it applies to all types. If a topic has shared content
+plus per-type tweaks, draw the topic boundary finer: split into two
+topics (one shared, one with overrides). Never duplicate.
 
 ## When to bump the structural test
 
-The structural test pins specific section headings and phrases. If you
-rename a heading or drop a phrase intentionally, update the test in
-the same commit — the test exists to catch accidental drift, not to
-prevent deliberate changes. A diff that touches both `PROMPT.md` and
-`tests/test_prompt_structure.py` is normal for behaviour changes.
+The structural test (`tests/test_prompt_structure.py`) pins specific
+headings and phrases per PBI type. If you rename a heading or drop a
+phrase intentionally, update the test in the same commit.
