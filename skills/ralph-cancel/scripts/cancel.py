@@ -18,12 +18,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from ralph_executor.claim import ClaimParseError, read_claim  # noqa: E402
+from ralph_executor.queue_path import queue_clone_path  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
     commit_paths,
     is_path_in_head,
     push,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -73,6 +76,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the sentinel locally but do not push.",
@@ -107,12 +115,13 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
+        instance_id = resolve_instance_id(args.instance_id)
 
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be sentinel path against the would-be clone location
             # without cloning or checking PBI existence.
-            clone = workspace_root / "queue"
+            clone = queue_clone_path(workspace_root, instance_id)
             rel_sentinel = (
                 Path(".ralph") / CURRENT_FOLDER / args.pbi_id / CANCEL_FILE_NAME
             ).as_posix()
@@ -133,9 +142,26 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        clone = acquire_queue_clone(
+            workspace_root, queue_repo, queue_branch, instance_id=instance_id,
+        )
 
         pbi_dir = _resolve_current_pbi(clone, args.pbi_id)
+
+        # Refuse if the PBI is claimed by a different instance — the operator
+        # must use ``ralph-recover`` to take a foreign claim off this PBI before
+        # cancelling it. PBIs with no CLAIM.json (legacy / mid-migration) pass
+        # through unchanged.
+        try:
+            claim = read_claim(pbi_dir)
+        except ClaimParseError as exc:
+            raise QueueWriterError(f"malformed CLAIM.json at {pbi_dir.name}: {exc}") from exc
+        if claim is not None and claim.instance_id != instance_id:
+            raise QueueWriterError(
+                f"PBI {args.pbi_id} is claimed by instance {claim.instance_id!r}, "
+                f"not {instance_id!r}. Use `ralph-recover` if you need to force."
+            )
+
         sentinel = pbi_dir / CANCEL_FILE_NAME
         rel_sentinel = sentinel.relative_to(clone).as_posix()
 
