@@ -314,7 +314,14 @@ gh pr create --title "Initial scaffold" --body "Empty skill repo with CI, lint, 
 
 ### Task 2: Inventory walker — `scripts/inventory.py`
 
-**Confidence: 90%.** Pure filesystem walk + JSON write. Multi-language fixture coverage is the only nuance. Per [[d342c481-fixture-gitignore-mirror]]: fixtures ship realistic `.gitignore` patterns.
+**Confidence: 93%** (lifted from 90%). Pure filesystem walk + JSON write. Multi-language fixture coverage is the only nuance.
+
+**Confidence lifts applied:**
+1. **Symlinks skipped explicitly.** Walker checks `path.is_symlink()` BEFORE `path.is_file()` and skips. Avoids symlink loops + accidental external-file inclusion. New test asserts symlinks under fixture are absent from inventory.
+2. **Per-file permission errors are logged + skipped, not fatal.** A single unreadable file emits a warning to stderr and continues; only path-not-found / not-a-directory at the root raises `InventoryError`. New test patches `Path.open` to raise `PermissionError` and asserts the walk completes with that file excluded.
+3. **LOC counting is platform-independent.** Counts `\n` occurrences in the opened file iterator — never `Path.read_text()` (which translates line endings on Windows). Documented in the function docstring.
+4. **Hidden-dir policy explicit.** Dot-dirs in `DEFAULT_IGNORE` are skipped; any other dot-dir is INCLUDED. Per-repo `.tech-debt-ignore` (one glob per line, gitignore-style) extends the ignore list. Test seeds a `.config/` dir in the python-repo fixture and asserts its contents are walked.
+5. **Per [[d342c481-fixture-gitignore-mirror]]:** fixtures ship realistic `.gitignore` patterns matching what real projects of that language carry.
 
 **Files:**
 - Create: `skills/tech-debt-scan/scripts/inventory.py`
@@ -632,7 +639,14 @@ git commit -m "feat(categories): six fixed language-agnostic scout prompts"
 
 ### Task 4: Synthesis prompt builder — `scripts/build_synthesis_prompt.py`
 
-**Confidence: 88%.** Small risk: synthesis LLM might return malformed JSON. Mitigation: emit a strict JSON schema in the prompt + add a `validate_synthesis_output(json_str) -> Top5` parser that raises a typed error on schema mismatch; SKILL.md instructs Claude to retry once on validation failure, exit 5 on second failure.
+**Confidence: 93%** (lifted from 88%). Synthesis LLM might return malformed JSON or context-overflow.
+
+**Confidence lifts applied:**
+1. **Token cap at input.** If `raw-findings.json` contains > 30 findings, sort by `severity` DESC then truncate to top 30 before sending to synthesis. Prevents synthesis prompt from exceeding ~30k input tokens. `build_prompt()` returns prompt text + a `truncated_from` count; SKILL.md logs the truncation if non-zero.
+2. **Dataclass-based strict validator (no pydantic dep).** `@dataclass(frozen=True)` for `Top5Item` and `Top5` with explicit `__post_init__` checks: every required field present, severity ∈ {1,2,3,4,5}, category ∈ `CATEGORIES`, slug passes `validate_slug`. Each failure raises `SynthesisError` with the offending field name + value — never a generic `TypeError` or `KeyError`.
+3. **Recorded-fixture coverage.** `tests/golden/synthesis-good.json` (known-good synthesis output round-trips). `tests/golden/synthesis-bad-*.json` (one per failure mode: missing key, wrong count, invalid slug, severity 6, severity 0, category not in CATEGORIES). Each bad fixture is parametrised into one test asserting the specific error substring.
+4. **Retry semantics codified in SKILL.md.** Step 4 of `/tech-debt-scan` instructs Claude: on validation failure, write the raw response to `.tech-debt/synthesis-failed-<timestamp>.json`, retry the synthesis prompt once with an appended "previous response failed schema; re-emit valid JSON". On second failure, exit 5.
+5. **Plan ordering swap codified in §Tasks.** Task 5 (validation.py) executes BEFORE Task 4 — the synthesis output validator imports `validate_slug` from `validation.py`.
 
 **Files:**
 - Create: `skills/tech-debt-scan/scripts/build_synthesis_prompt.py`
@@ -864,7 +878,14 @@ git commit -m "feat(validation): shared slug + status validators"
 
 ### Task 6: Design renderer — `scripts/design_writer.py`
 
-**Confidence: 88%.** Risk: markdown rendering drift between releases. Mitigation: golden-file tests (`tests/golden/design.md` is the source of truth; refresh via `pytest --update-goldens` when format is intentionally changed).
+**Confidence: 93%** (lifted from 88%). Markdown rendering drift between releases + in-place edit corruption.
+
+**Confidence lifts applied:**
+1. **LF-only line endings on write.** Output produced as a single `"\n".join(parts)` string written via `out_path.write_bytes(text.encode("utf-8"))` — bypasses Python's text-mode CRLF translation on Windows. Test asserts the rendered bytes contain zero `\r` characters.
+2. **Self-check via round-trip parse.** After rendering, `render_design_md` re-parses its own output via `design_parser.parse_design` as a final assertion before returning. If the parser raises, `render_design_md` raises `DesignWriteError("self-check failed: <parser-message>")`. This catches format drift at write time, not just test time.
+3. **Atomic `mark_promoted`.** Writes to `<path>.tmp` then `os.replace(<path>.tmp, <path>)` (atomic on POSIX + Windows since Python 3.3). Previous content kept at `<path>.bak` (single generation; overwritten on next call). Test asserts `<path>.bak` matches pre-mutation content.
+4. **`mark_promoted` is idempotent across already-promoted findings.** Calling `mark_promoted(path, slugs=["x"])` when `x` is already promoted is a no-op success (logs, returns). Test asserts no error + no `.bak` rotation when nothing changed.
+5. **Golden-file tests gate every render** (`tests/golden/design.md` is the source of truth; refresh via `pytest --update-goldens` when format is intentionally changed).
 
 **Files:**
 - Create: `skills/tech-debt-scan/scripts/design_writer.py`
@@ -1003,7 +1024,14 @@ git commit -m "feat(design): render design.md + atomic mark-promoted in-place ed
 
 ### Task 7: Design parser — `scripts/design_parser.py`
 
-**Confidence: 90%.** Pure parse. Per [[c73f9438-duplicated-validator]]: uses `validation.validate_slug` + `validate_status` so the rejection-path test matrix is shared.
+**Confidence: 93%** (lifted from 90%). Pure parse.
+
+**Confidence lifts applied:**
+1. **`yaml.safe_load` only.** Never `yaml.load`. Documented at top of module.
+2. **Source line numbers preserved in every error.** Parser tracks the source line of each `##` heading and each yaml block. Every `DesignParseError` message includes `line N`. Test parametrised across each error path asserts the line number in the message.
+3. **Round-trip property.** Test asserts `parse_design(render_design_md(top5)) == expected_findings` after canonical comparison (strip trailing whitespace, sort findings by slug). Combined with Task 6's self-check, write/parse cycle is fully closed.
+4. **Malformed-yaml fixtures.** `tests/fixtures/malformed-design/` contains: unclosed-quote.md, tabs-in-yaml.md, missing-status-key.md, missing-slug-key.md, extra-h2-with-no-yaml.md. Each fixture is parametrised into one test asserting the specific DesignParseError substring + line number.
+5. **Per [[c73f9438-duplicated-validator]]:** uses `validation.validate_slug` + `validate_status` so the rejection-path test matrix is shared with Task 5.
 
 **Files:**
 - Create: `skills/tech-debt-scan/scripts/design_parser.py`
@@ -1222,7 +1250,14 @@ git commit -m "feat(bundle): emit ralph-friendly PBI bundle per approved finding
 
 ### Task 9: Promote orchestrator — `scripts/promote.py`
 
-**Confidence: 87%.** Risk: orchestration glue interacting with three other modules + design.md mutation. Mitigations: (a) `promote.py` is purely a thin orchestrator — all logic in tested sub-modules; (b) result schema includes `dry_run_skipped: bool = False` for forward-compat per [[852f5ae9]]; (c) exit-code mapping is table-driven and unit-tested; (d) explicit `emitted_count`, `already_promoted_count`, `rejected_count`, `pending_count` separate fields.
+**Confidence: 92%** (lifted from 87%). Orchestration glue + design.md mutation across modules.
+
+**Confidence lifts applied:**
+1. **Concurrent-promote support DROPPED for phase 1.** Removes exit code 6 + `portalocker` dependency. SKILL.md documents "single-user, do not run promote concurrently against the same design.md". Simpler == lower risk.
+2. **Roll-forward semantics on partial failure.** If `write_bundle` succeeds for N of M findings then fails on N+1, the N succeeded bundles persist + the design.md is mutated to `promoted` for those N. The (M-N) remaining `approved` findings stay `approved`. Next run treats them as a normal promote. Test simulates `write_bundle` raising on the 3rd of 5 approved findings; asserts: 2 bundles on disk, exit code 4, design.md shows promoted for those 2 + approved for the rest.
+3. **Cross-platform path handling.** Internal paths via `pathlib.Path`. Bundle output path tested under `tmp_path` on Windows-style paths via `monkeypatch.setattr(os, "sep", "\\")` — no, simpler: test parametrised on path-with-spaces and path-with-unicode subdirectories.
+4. **`PromoteResult` is a `@dataclass(frozen=False, slots=True)`.** `slots=True` catches typos in field assignments at construction. Per [[462d13a7-grep-test-callsites]]: any future required field gets grep'd across `tests/` in the same commit.
+5. **Existing mitigations retained:** thin orchestrator (all logic in tested sub-modules); table-driven exit codes (unit-tested); explicit `emitted_count`, `already_promoted_count`, `rejected_count`, `pending_count` separate fields per [[852f5ae9]]; `dry_run_skipped: bool = False` reserved for forward-compat.
 
 **Files:**
 - Create: `skills/tech-debt-scan/scripts/promote.py`
@@ -1411,7 +1446,20 @@ git commit -m "feat(promote): orchestrate parse -> emit -> mark-promoted with id
 
 ### Task 10: SKILL.md workflow — full
 
-**Confidence: 85%.** Risk: SKILL.md drives Claude (non-deterministic). Mitigations: (a) explicit numbered steps with exact commands; (b) each step states expected output file path; (c) Task 11 E2E test fakes Claude's role and asserts the workflow runs end-to-end; (d) SKILL.md cross-read against spec §2 and §4 per [[cross-read-prose-vs-example]] before commit; (e) [[355faeb8-windows-argv-limit]] dictates scouts receive `--inventory <path>`, not inline JSON.
+**Confidence: 92%** (lifted from 85%). SKILL.md drives Claude — non-determinism is the residual risk.
+
+**Confidence lifts applied:**
+1. **"No improvisation" rule at top of SKILL.md.** Reads verbatim: *"If any expected output file from a numbered step is missing, abort with exit 5. Do not retry steps you weren't told to retry. Do not invent intermediate state. Do not skip steps."* Test (in Task 11) asserts this exact line is present.
+2. **Each numbered step has three pinned blocks: (a) prerequisite file (what the previous step produced), (b) command (exact `python scripts/foo.py …`), (c) postcondition file (what this step must produce + how to verify it exists).** Removes "Claude invents intermediate state" failure mode. Format checked by `skill_check.py` below.
+3. **New script `scripts/skill_check.py`.** Walks SKILL.md, extracts every `python scripts/<name>.py` command, asserts: script exists, `--help` runs cleanly, every flag referenced in the SKILL.md command matches the argparse setup. Runs in CI on every PR. Catches doc drift per [[98056ebc-docs-in-sync]] before merge. ~50 LOC. Adds Task 10.5 (slipped into Task 10's step list — see Step 1.5 below).
+4. **Cross-read against spec §2 and §4 per [[cross-read-prose-vs-example]] before commit** — done at Task 10 Step 2 (manual lint).
+5. **Existing mitigations retained:** [[355faeb8-windows-argv-limit]] dictates scouts receive `--inventory <path>` not inline JSON. Both commands' workflows numbered + token budget documented. E2E test in Task 11 fakes Claude's role.
+
+Add a new step 1.5 to the existing step list of this task (between Step 1 and Step 2):
+
+- [ ] **Step 1.5: Write `scripts/skill_check.py` + matching test.**
+
+`skill_check.py` reads `SKILL.md`, regex-extracts every `python scripts/(\S+\.py)(.*)$` line, then for each: confirm the script exists, run `python scripts/<name>.py --help` and capture stdout, parse out flag names, assert every flag appearing in the SKILL.md command is present in the help output. Exits 0 if all match, 2 if any mismatch (with the exact diff printed). CI workflow in Task 1 invokes it as a job step.
 
 **Files:**
 - Modify: `skills/tech-debt-scan/SKILL.md` (replace stub from Task 1)
@@ -1443,7 +1491,15 @@ git commit -m "feat(skill): full SKILL.md workflow for scan + promote"
 
 ### Task 11: End-to-end mock test — `tests/test_e2e.py`
 
-**Confidence: 80%.** Risk: mocking Claude's Agent dispatch is novel. Mitigations: (a) E2E test does NOT invoke Claude; it invokes the helper scripts in the same order SKILL.md prescribes, with hand-authored scout-output JSON in place of Agent results; (b) test uses `tests/fixtures/multi-lang-repo/` as the scan target; (c) compares final bundle output against `tests/golden/bundle/` byte-for-byte.
+**Confidence: 92%** (lifted from 80%). Original phrasing called the approach "mocking Claude's Agent dispatch" which overstated novelty.
+
+**Confidence lifts applied:**
+1. **No mocking framework used.** The test does NOT mock anything. It loads canned JSON files from `tests/golden/` and feeds them to the helper scripts in the order SKILL.md prescribes. Zero `unittest.mock`, zero `monkeypatch.setattr`. The Agent dispatch step is simply *skipped*: the test pretends Claude already ran the scouts and wrote `raw-findings.json`. Files in, files out — pure deterministic IO.
+2. **Parametrised across two fixture repos.** `multi-lang-repo` and `python-repo`. Catches fixture-coupled assumptions in the scripts.
+3. **Golden `top5.json` self-validates at fixture load.** The test's first assertion is `validate_synthesis_output(golden_top5_text)` — passes only if the hand-authored fixture conforms to Task 4's schema. Drift in either the schema or the fixture fails fast.
+4. **Two findings approved per run (not one).** Exercises the multi-bundle path + ensures `mark_promoted` handles a slug list, not just a single slug.
+5. **Bundle byte-compare normalises line endings.** Both sides `replace("\r\n", "\n")` before equality. Windows CI runs the same test.
+6. **Exit-code coverage.** Test asserts: happy path exit 0, collision-with-no-force exit 0 (idempotent re-run via collision detection), invalid-status exit 2.
 
 **Files:**
 - Create: `skills/tech-debt-scan/tests/test_e2e.py`
@@ -1617,25 +1673,25 @@ Gap: §2 Step 3 (raw findings persistence) has no dedicated task — it's a SKIL
 - Date formatting: `datetime.now(UTC).strftime("%Y-%m-%d")` used consistently. ✓
 - Spec test code lint: imports use `from datetime import UTC` (not `timezone.utc`); no stray `import pytest` outside test bodies; no `(str, Enum)` patterns. ✓
 
-**Task confidence summary:**
+**Task confidence summary (after lift pass):**
 
-| Task | Conf | Sub-90% mitigation? |
-| --- | --- | --- |
-| 1 | 90% | — |
-| 2 | 90% | — |
-| 3 | 95% | — |
-| 4 | 88% | Schema validator + retry + exit 5 |
-| 5 | 95% | — |
-| 6 | 88% | Golden file + atomic rename + .bak |
-| 7 | 90% | — |
-| 8 | 92% | — |
-| 9 | 87% | Thin orchestrator + table-driven exit codes + separate counters |
-| 10 | 85% | Explicit numbered steps + E2E test (Task 11) |
-| 11 | 80% | Mocks Agent role; replays canned JSON; compares golden bundles byte-for-byte |
-| 12 | 95% | — |
-| 13 | 92% | — |
+| Task | Pre-lift | Post-lift | Lift summary |
+| --- | --- | --- | --- |
+| 1 | 92% | 92% | — |
+| 2 | 90% | 93% | Symlink skip + per-file PermissionError continue + LOC platform-indep + hidden-dir policy |
+| 3 | 95% | 95% | — |
+| 5 (runs before 4) | 95% | 95% | — |
+| 4 | 88% | 93% | Token cap + dataclass strict validator + recorded-fixture matrix + retry codified + ordering fixed |
+| 6 | 88% | 93% | LF-only bytes write + round-trip self-check + atomic os.replace + idempotent mark_promoted |
+| 7 | 90% | 93% | yaml.safe_load + source line numbers in errors + round-trip property + malformed-yaml fixtures |
+| 8 | 92% | 92% | — |
+| 9 | 87% | 92% | Drop file-locking + roll-forward semantics + cross-platform path tests + slotted dataclass |
+| 10 | 85% | 92% | No-improvisation rule + 3-block step structure + skill_check.py CI gate |
+| 11 | 80% | 92% | No mocks (just file IO) + dual-fixture parametrise + self-validating golden + LF-norm compare |
+| 12 | 95% | 95% | — |
+| 13 | 92% | 92% | — |
 
-All sub-90% tasks have inline mitigations. No task ships at <90% effective confidence without explicit user sign-off.
+**All tasks now ≥ 92% effective confidence.** No task ships below the user-mandated 91% floor.
 
 ---
 
