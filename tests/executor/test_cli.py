@@ -688,6 +688,147 @@ def test_cli_queue_branch_rejects_refs_prefix(
         _apply_overrides(cfg, args)
 
 
+def test_cli_instance_id_flag_overrides_config(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--instance-id on the CLI overrides cfg.instance_id via _apply_overrides."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-config")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        instance_id="from-flag",
+        watch=False,
+    )
+    new_cfg = _apply_overrides(cfg, args)
+    assert new_cfg.instance_id == "from-flag"
+
+
+def test_cli_instance_id_flag_sanitises_value(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """A flag value like ``MyBox.example.com`` is sanitised before validation."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-config")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        instance_id="MyBox.example.com",
+        watch=False,
+    )
+    new_cfg = _apply_overrides(cfg, args)
+    assert new_cfg.instance_id == "mybox-example-com"
+
+
+def test_cli_instance_id_flag_rejects_empty_string(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--instance-id '' raises ConfigError rather than silently no-op'ing.
+
+    Mirrors the queue_branch BugBot finding: the override guard must use
+    ``is not None`` so an explicit empty value reaches the validator.
+    """
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-config")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        instance_id="",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="instance_id"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_instance_id_flag_rejects_only_punctuation(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--instance-id '!!!' sanitises to '' and is rejected by the validator."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-config")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        instance_id="!!!",
+        watch=False,
+    )
+    with pytest.raises(ConfigError, match="instance_id"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_instance_id_flag_absent_preserves_config(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """Omitting --instance-id (None) leaves cfg.instance_id unchanged."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-config")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        instance_id=None,
+        watch=False,
+    )
+    assert _apply_overrides(cfg, args).instance_id == "from-config"
+
+
+def test_cli_instance_id_flag_parsed_by_argparse(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: ``--instance-id`` lands on the parsed Namespace and is
+    forwarded into the cfg seen by ``iterate_once``."""
+    seen: list[ExecutorConfig] = []
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        seen.append(cfg)
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "iterate_once", _fake_iterate)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+
+    exit_code = cli.main(["--once", "--instance-id", "ralph-x"])
+    assert exit_code == 0
+    assert len(seen) == 1
+    assert seen[0].instance_id == "ralph-x"
+
+
 def test_main_rejects_watch_with_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

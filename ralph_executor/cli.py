@@ -145,6 +145,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "(branch name on the queue repo; default: ralph-queue)."
         ),
     )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        metavar="ID",
+        help=(
+            "Override instance_id for this run. Resolution: this flag > "
+            "RALPH_INSTANCE_ID env > project .ralph/config.toml > "
+            "~/.ralph/config.toml > sanitised hostname."
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -346,6 +356,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     queue_repo: str = cfg.queue_repo
     queue_branch: str = cfg.queue_branch
     watch_mode: bool = cfg.watch_mode
+    instance_id: str = cfg.instance_id
     changed = False
     # argparse already enforces mutual exclusion between --repo and --workspace.
     if args.repo:
@@ -383,6 +394,22 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
             )
         queue_branch = stripped
         changed = True
+    if getattr(args, "instance_id", None) is not None:
+        # `is not None` (not truthiness): `--instance-id ""` must reach the
+        # validator so an empty/invalid value surfaces a ConfigError instead
+        # of silently no-op'ing. Same trap fixed for --queue-branch above.
+        from ralph_executor.identity import (
+            InstanceIdError,
+            sanitize_instance_id,
+            validate_instance_id,
+        )
+
+        candidate = sanitize_instance_id(args.instance_id)
+        try:
+            instance_id = validate_instance_id(candidate)
+        except InstanceIdError as exc:
+            raise ConfigError(f"--instance-id: {exc}") from exc
+        changed = True
     # --watch overrides any TOML / env value; absence of the flag does NOT
     # disable a TOML watch_mode=true (operators who pinned daemon mode in
     # config keep it).
@@ -398,6 +425,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         queue_repo=queue_repo,
         queue_branch=queue_branch,
         watch_mode=watch_mode,
+        instance_id=instance_id,
     )
 
 
