@@ -154,23 +154,24 @@ def test_main_exits_2_on_host_selection_error(
     assert "git host" in err
 
 
-def test_main_init_subcommand_writes_user_config(
+def test_main_init_subcommand_writes_workspace_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`ralph-executor init --ralph-home PATH` writes ~/.ralph/config.toml."""
-    from ralph_executor.user_config import read_ralph_home
+    """`ralph-executor init --yes` writes the OS-default workspace_root."""
+    from ralph_executor.setup_cmds import _default_workspace_root
+    from ralph_executor.user_config import read_workspace_root
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    target = tmp_path / "dev" / "ralph"
 
-    exit_code = cli.main(["init", "--ralph-home", str(target), "--yes"])
+    exit_code = cli.main(["init", "--yes"])
     assert exit_code == 0
-    assert read_ralph_home() == target.resolve()
+    # --yes uses the OS default; assert the default path was written.
+    assert read_workspace_root() == _default_workspace_root().resolve()
     out = capsys.readouterr().out
-    assert str(target.resolve()) in out
+    assert "workspace_root" in out
 
 
 def test_main_scaffold_subcommand_creates_queue_branch(
@@ -553,7 +554,7 @@ def test_init_prompts_for_queue_branch(
     )
 
     # The interactive flow calls input() three times in order:
-    #   1. ralph_home prompt (blank → OS default)
+    #   1. workspace_root prompt (blank → OS default)
     #   2. queue_repo prompt (valid URL accepted)
     #   3. queue_branch prompt (blank → default "ralph-queue")
     answers = iter(
@@ -589,7 +590,7 @@ def test_init_persists_non_default_queue_branch(
 
     answers = iter(
         [
-            "",
+            "",  # workspace_root → default
             "https://github.com/test/queue",
             "custom-queue-branch",
         ]
@@ -605,13 +606,12 @@ def test_init_assume_yes_writes_default_queue_branch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`--yes` skips the prompt and writes the default ``ralph-queue``."""
+    """`--yes` skips every prompt and writes the default ``ralph-queue``."""
     from ralph_executor import user_config
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    target = tmp_path / "dev" / "ralph"
 
-    rc = cli.main(["init", "--ralph-home", str(target), "--yes"])
+    rc = cli.main(["init", "--yes"])
     assert rc == 0
     assert user_config.read_queue_branch() == "ralph-queue"

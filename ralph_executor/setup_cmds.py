@@ -1,13 +1,16 @@
 """Implementations of the ``init`` and ``scaffold`` subcommands.
 
-``ralph-executor init``      -- per-machine setup: choose where ralph
-                                workspaces live, write ``~/.ralph/config.toml``,
-                                sanity-check ``gh`` and ``claude``.
+``ralph-executor init``      -- per-machine setup: prompt for
+                                ``workspace_root`` / ``queue_repo`` /
+                                ``queue_branch``, write
+                                ``~/.ralph/config.toml``, sanity-check
+                                ``gh`` and ``claude``.
 ``ralph-executor scaffold``  -- per-repo setup: create the ``ralph-queue``
                                 branch with the ``.ralph/{inbox,current,
                                 pending-pr,done,blocked}/`` skeleton and a
                                 commented ``.ralph/config.toml`` stub, all
                                 committed locally. Push left to the operator.
+                                (T10 of KILL-RALPH-HOME removes this subcommand.)
 """
 
 from __future__ import annotations
@@ -23,11 +26,11 @@ from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
     read_queue_branch,
     read_queue_repo,
-    read_ralph_home,
+    read_workspace_root,
     user_config_path,
     write_queue_branch,
     write_queue_repo,
-    write_ralph_home,
+    write_workspace_root,
 )
 
 QUEUE_BRANCH = "ralph-queue"
@@ -137,15 +140,20 @@ CONFIG_TOML_STUB = """\
 # ---------------------------------------------------------------------------
 
 
-def _prompt_ralph_home(default: Path) -> Path:
-    """Interactive prompt with a sensible default. ``input()`` is used so
-    tests can monkeypatch it (and so the loop runs against stdin/tty).
+def _prompt_workspace_root(default: Path) -> Path:
+    """Interactive prompt for ``workspace_root`` with a sensible default.
 
-    Catches ``EOFError`` so a piped / closed stdin (CI, non-tty) behaves
-    as "accept default" rather than crashing with an unhandled traceback
-    — the dispatch in cli.py only catches ConfigError.
+    ``input()`` is used so tests can monkeypatch it (and so the loop
+    runs against stdin/tty). Catches ``EOFError`` so a piped / closed
+    stdin (CI, non-tty) behaves as "accept default" rather than crashing
+    with an unhandled traceback — the dispatch in cli.py only catches
+    ConfigError.
     """
-    print(f"Where should ralph workspaces live? [{default}]: ", end="", flush=True)
+    print(
+        f"Where should ralph workspaces live (queue clone + target clones)? [{default}]: ",
+        end="",
+        flush=True,
+    )
     try:
         raw = input().strip()
     except EOFError:
@@ -154,12 +162,15 @@ def _prompt_ralph_home(default: Path) -> Path:
     return Path(raw).expanduser() if raw else default
 
 
-def _default_ralph_home() -> Path:
-    """OS-flavoured suggestion. Not prescriptive — just the prompt
-    default; operator can type anything."""
-    if sys.platform == "win32":
-        return Path("C:/dev/ralph")
-    return Path.home() / "dev" / "ralph"
+def _default_workspace_root() -> Path:
+    """OS-flavoured suggestion for ``workspace_root``.
+
+    Not prescriptive — just the prompt default; operator can type
+    anything. ``~/ralph-workspaces`` matches the convention used in the
+    setup runbook (queue clone at ``<root>/queue/``, target clones at
+    ``<root>/clones/<owner>/<name>/``).
+    """
+    return Path.home() / "ralph-workspaces"
 
 
 def _check_tool(name: str) -> str | None:
@@ -235,49 +246,49 @@ def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
     return result.returncode == 0
 
 
-def cmd_init(*, ralph_home: Path | None, assume_yes: bool) -> int:
+def cmd_init(*, assume_yes: bool) -> int:
     """Run ``ralph-executor init``.
 
+    Prompts for ``workspace_root`` / ``queue_repo`` / ``queue_branch``
+    (in that order) and writes them to ``~/.ralph/config.toml``. Each
+    prompt is idempotent — re-running ``init`` against an already-
+    configured file is a no-op print for keys already present.
+
     Args:
-        ralph_home: explicit path from ``--ralph-home``; if None, prompt
-            unless ``--yes`` is given (in which case the OS default is
-            used non-interactively, suitable for scripting).
-        assume_yes: skip the prompt; use the OS default when ``ralph_home``
-            is None.
+        assume_yes: skip every prompt; use defaults non-interactively
+            (suitable for scripting).
 
     Returns: process exit code (0 on success, 2 on operator-recoverable
     error).
     """
-    existing = read_ralph_home()
-    if existing is not None and ralph_home is None:
-        print(f"ralph_home already set to {existing} in {user_config_path()}")
-        print("(pass --ralph-home PATH to overwrite, or edit the file directly)")
+    # workspace_root prompt
+    existing_ws = read_workspace_root()
+    if existing_ws is not None:
+        print(f"workspace_root already set to {existing_ws} in {user_config_path()}")
     else:
-        chosen: Path
-        if ralph_home is not None:
-            chosen = ralph_home.expanduser()
-        elif assume_yes:
-            chosen = _default_ralph_home()
+        if assume_yes:
+            chosen_ws = _default_workspace_root()
         else:
-            chosen = _prompt_ralph_home(_default_ralph_home())
-        chosen = chosen.resolve()
+            chosen_ws = _prompt_workspace_root(_default_workspace_root())
+        chosen_ws = chosen_ws.expanduser().resolve()
 
-        # Disk-full / permission-denied / etc. on either the ralph_home
-        # directory creation or the user-config write would otherwise
-        # surface as a raw traceback. cli.py only catches ConfigError for
-        # the init dispatch arm, so convert here.
+        # Disk-full / permission-denied / etc. on either the
+        # workspace_root directory creation or the user-config write
+        # would otherwise surface as a raw traceback. cli.py only
+        # catches ConfigError for the init dispatch arm, so convert
+        # here.
         try:
-            chosen.mkdir(parents=True, exist_ok=True)
-            written = write_ralph_home(chosen)
+            chosen_ws.mkdir(parents=True, exist_ok=True)
+            written = write_workspace_root(chosen_ws)
         except OSError as exc:
             print(f"error: cannot write user config: {exc}", file=sys.stderr)
             return 2
         print(f"wrote {written}")
-        print(f"ralph_home = {chosen}")
+        print(f"workspace_root = {chosen_ws}")
 
     # queue_repo lives at the user-level (one queue per operator). Prompt
-    # for it after ralph_home so a fresh `init` lands both knobs in one
-    # pass; a re-run with queue_repo already set is a no-op print.
+    # for it after workspace_root so a fresh `init` lands all knobs in
+    # one pass; a re-run with queue_repo already set is a no-op print.
     existing_queue = read_queue_repo()
     if existing_queue is not None:
         print(f"queue_repo already set to {existing_queue} in {user_config_path()}")

@@ -2,21 +2,27 @@
 
 Lives at ``~/.ralph/config.toml`` and holds *per-machine* knobs:
 
-  ``ralph_home``         -- directory under which every per-repo ralph
-                            workspace lives (referenced by ``--workspace NAME``)
+  ``workspace_root``     -- directory under which queue clone and every
+                            target clone are materialised
+                            (``<workspace_root>/queue/``,
+                            ``<workspace_root>/clones/<owner>/<name>/``)
+  ``queue_repo``         -- HTTPS URL of the queue repo holding ``.ralph/``
+  ``queue_branch``       -- branch on the queue repo (default ``ralph-queue``)
   ``skills_root``        -- source ``skills/`` tree containing ``pr-<host>/``
   ``claude_skills_dir``  -- where staged ``pr/`` ends up
                             (defaults to ``~/.claude/skills``)
 
-Written by ``ralph-executor init`` and read at runtime by the workspace
-resolution path and ``host_select.prepare_host_environment``. The
-matching environment variables (``$RALPH_HOME``, ``$RALPH_SKILLS_ROOT``,
+Written by ``ralph-executor init`` and read at runtime by
+``ralph_executor.config.load_config`` and
+``host_select.prepare_host_environment``. The matching environment
+variables (``$RALPH_WORKSPACE``, ``$RALPH_SKILLS_ROOT``,
 ``$RALPH_CLAUDE_SKILLS_DIR``) always override the file for the daemon /
 systemd escape-hatch case.
 
 Layout intentionally minimal: this file holds *user* preferences
-(where things live on THIS machine), not *project* knobs (which live
-in ``<repo>/.ralph/config.toml`` per Plan-7 layering).
+(where things live on THIS machine). There is no project-level TOML —
+``<repo>/.ralph/config.toml`` in a target clone is ignored with a
+WARNING at iteration time.
 """
 
 from __future__ import annotations
@@ -258,9 +264,20 @@ def write_queue_repo(url: str) -> Path:
 def write_queue_branch(branch: str) -> Path:
     """Persist ``queue_branch`` to ``~/.ralph/config.toml``.
 
-    Merges with existing keys so ``queue_repo`` / ``ralph_home`` survive.
+    Merges with existing keys so ``queue_repo`` / ``workspace_root`` survive.
     """
     return _write_user_config({"queue_branch": branch})
+
+
+def write_workspace_root(value: Path) -> Path:
+    """Persist ``workspace_root`` to ``~/.ralph/config.toml``.
+
+    Merges with existing keys so ``queue_repo`` / ``queue_branch`` /
+    other user-level knobs survive. Mirrors ``write_queue_repo`` /
+    ``write_queue_branch`` and is the single write path used by
+    ``ralph-executor init`` for the workspace_root prompt.
+    """
+    return _write_user_config({"workspace_root": str(value)})
 
 
 def _warn_stale_ralph_home_in_user_config() -> None:

@@ -165,18 +165,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # ``ralph-executor init``
     init_parser = subparsers.add_parser(
         "init",
-        help="Per-machine setup: pick ralph_home, write ~/.ralph/config.toml.",
-    )
-    init_parser.add_argument(
-        "--ralph-home",
-        type=Path,
-        metavar="PATH",
-        help="Skip the prompt and set ralph_home to PATH.",
+        help="Per-machine setup: pick workspace_root, write ~/.ralph/config.toml.",
     )
     init_parser.add_argument(
         "--yes",
         action="store_true",
-        help="Non-interactive: accept the OS default for ralph_home.",
+        help="Non-interactive: accept the OS default for workspace_root.",
     )
 
     # ``ralph-executor scaffold``
@@ -551,7 +545,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from ralph_executor.setup_cmds import cmd_init
 
         try:
-            return cmd_init(ralph_home=args.ralph_home, assume_yes=args.yes)
+            return cmd_init(assume_yes=args.yes)
         except ConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
