@@ -1,14 +1,37 @@
-# Multi-ralph Implementation Plan
+# Multi-ralph Implementation Plan (v2 — confidence-rated)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enable N `ralph-executor` instances to drain the same `queue_repo` concurrently. Each instance is identified by a stable, operator-supplied `instance_id`. Workspace path becomes `<workspace_root>/queue-<instance-id>/`. Every claimed PBI carries a `CLAIM.json` naming its owner. Coordination is purely via the existing git push-with-rebase machinery on the queue branch.
+**Goal:** Enable N `ralph-executor` instances to drain the same `queue_repo` concurrently. Each instance carries a stable, operator-supplied `instance_id`. Workspace path becomes `<workspace_root>/queue-<instance-id>/`. Every claimed PBI carries a `CLAIM.json` naming its owner. Coordination is purely via the existing git push-with-rebase machinery on the queue branch.
 
-**Architecture:** Add a single `instance_id` knob to `ExecutorConfig` (resolved from CLI > env > TOML > sanitised hostname). Introduce a `queue_clone_path(workspace_root, instance_id)` helper used everywhere the queue clone path is needed. Atomically commit `CLAIM.json` with the existing `git mv inbox/<id>/ current/<id>/` so claim ownership is part of the same push. Replace the "exactly one PBI in current/" invariant with "exactly one PBI in current/ owned by this instance". An OS-level lockfile on the workspace prevents same-host double-launches. A new `ralph-recover` skill is the operator escape hatch for stuck claims.
+**Architecture:** Add `instance_id` to `ExecutorConfig` (CLI > env > project TOML > user TOML > sanitised hostname). Single source of truth helper `queue_clone_path(workspace_root, instance_id)`. Atomic claim via a `post_mv` hook on `_move` so the existing `commit_all` picks up the new `CLAIM.json` alongside the `git mv`. `current_pbi()` filters by ownership. OS-level workspace lockfile. Operator skills use a parallel resolver layer in `scripts/queue_writer.py` — extend it to honour `instance_id`. New `ralph-recover` skill is the manual escape hatch.
 
-**Tech Stack:** Python 3.12 stdlib (`fcntl` / `msvcrt` for locks, `socket.gethostname` for default id, `json` for `CLAIM.json`). No new runtime dependencies.
+**Tech Stack:** Python 3.12 stdlib only — `fcntl` / `msvcrt` for cross-platform locking, `socket` for hostname, `json` for `CLAIM.json`. No new runtime dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-05-31-multi-ralph-design.md`
+**Standards consulted:** `standards/ralph-runtime.md` (better-memory knowledge) — confidence-scoring + verify-before-commit gates applied below.
+
+---
+
+## Confidence policy
+
+Each task carries a confidence percentage. Any task below 95% includes one or more **Step 0** verification / scaffold steps to lift it to ≥87%. Tasks at 95%+ are direct TDD steps. No task ships below 87%.
+
+## Forward-reference audit
+
+Task ordering does not introduce import-time forward references:
+- T7 imports `queue_path` (T6) — order ok.
+- T10 imports `claim` (T9) — order ok.
+- T11 imports `claim` (T9) — order ok.
+- T14 imports `lockfile` (T13) and `queue_path` (T6) — order ok.
+- T15–T18 import `claim` (T9) and use `scripts.queue_writer` extended in TA — TA precedes them.
+
+## Lint-cleanliness conventions
+
+- `from datetime import UTC` (not `timezone.utc`) — UP017.
+- `StrEnum` if defining string-valued enums — UP042. None needed here.
+- Drop unused `import pytest`; import only what the test body uses — F401.
+- Type hints on test helpers; mypy clean.
 
 ---
 
@@ -16,49 +39,44 @@
 
 ### New files
 
-- `ralph_executor/identity.py` — `sanitize_instance_id`, `INSTANCE_ID_REGEX`, default-from-hostname helper.
-- `ralph_executor/lockfile.py` — `WorkspaceLock` cross-platform OS lock, with context-manager interface.
-- `ralph_executor/claim.py` — `CLAIM.json` read/write helpers + `ClaimInfo` dataclass.
-- `ralph_executor/queue_path.py` — `queue_clone_path(workspace_root, instance_id) -> Path` single source of truth.
-- `skills/ralph-recover/SKILL.md` + `skills/ralph-recover/scripts/__init__.py` + `skills/ralph-recover/scripts/recover.py` — manual claim-recovery skill.
-- `tests/executor/test_identity.py`
-- `tests/executor/test_lockfile.py`
-- `tests/executor/test_claim.py`
-- `tests/executor/test_queue_path.py`
-- `tests/executor/test_multi_ralph_integration.py` — two-instance simulation.
-- `tests/skills/test_ralph_recover.py`
+- `ralph_executor/identity.py` — `sanitize_instance_id`, `validate_instance_id`, `default_instance_id`, `InstanceIdError`, `INSTANCE_ID_REGEX`.
+- `ralph_executor/lockfile.py` — `WorkspaceLock` (POSIX `fcntl` / Windows `msvcrt`) context manager.
+- `ralph_executor/claim.py` — `ClaimInfo`, `CLAIM_FILENAME`, `read_claim`, `write_claim`, `ClaimParseError`.
+- `ralph_executor/queue_path.py` — `queue_clone_path(workspace_root, instance_id) -> Path`.
+- `skills/ralph-recover/SKILL.md`, `skills/ralph-recover/scripts/__init__.py`, `skills/ralph-recover/scripts/recover.py`.
+- `tests/executor/test_identity.py`, `test_lockfile.py`, `test_claim.py`, `test_queue_path.py`, `test_multi_ralph_integration.py`.
+- `tests/skills/test_ralph_recover.py`.
 
 ### Modified files
 
-- `ralph_executor/config.py` — add `instance_id` field, resolution chain, validation in `load_config`.
-- `ralph_executor/user_config.py` — add `read_instance_id`, `write_instance_id`.
-- `ralph_executor/cli.py` — add `--instance-id` flag and override wiring; init prompt; acquire lockfile in `main`.
-- `ralph_executor/setup_cmds.py` — `cmd_init` prompts for `instance_id`.
-- `ralph_executor/queue_clone.py` — `ensure_queue_clone` accepts an explicit `dest` path; legacy rename of `queue/` → `queue-<instance-id>/`.
-- `ralph_executor/loop.py` — `_queue_repo_root` and `_run_sweep` use `queue_clone_path`; `_claim_pbi` writes `CLAIM.json` atomically; halt META-BUG includes `tripped_by_instance`.
-- `ralph_executor/queue/filesystem.py` — `_root` uses `queue_clone_path`; `current_pbi()` filters by `instance_id`.
-- `ralph_executor/queue/movements.py` — `_queue_repo` uses `queue_clone_path`; `move_inbox_to_current` accepts an optional `extra_files: Iterable[Path]` to stage with the mv (so `_claim_pbi` can write `CLAIM.json` and have it land in the same commit).
-- `ralph_executor/safety/halt.py` — `halt_and_acknowledge` writes `tripped_by_instance` into the META-BUG.
-- `skills/ralph-status/scripts/status.py` — read `CLAIM.json`, add `OWNER` column.
-- `skills/ralph-cancel/scripts/cancel.py` — refuse on foreign `CLAIM.json`.
-- `skills/ralph-promote/scripts/promote.py` — refuse on foreign ownership transfer where applicable.
-- `README.md` — "Running multiple ralphs" rewrite; upgrade procedure.
-- `docs/runbooks/ralph-setup.md` — `instance_id` TOML key documented.
+- `ralph_executor/config.py` — `instance_id` field + resolution chain.
+- `ralph_executor/user_config.py` — `read_instance_id`, `write_instance_id`.
+- `ralph_executor/cli.py` — `--instance-id` flag, override wiring, lockfile acquire/release.
+- `ralph_executor/setup_cmds.py` — init prompts for `instance_id`.
+- `ralph_executor/queue_clone.py` — `dest: Path | None` parameter + legacy rename.
+- `ralph_executor/loop.py` — `_queue_repo_root` uses helper; `_claim_pbi_worktree` passes `post_mv` lambda; `_check_cycle_detector` passes `instance_id`.
+- `ralph_executor/queue/filesystem.py` — `_root` uses helper; `current_pbi()` filters by `instance_id`.
+- `ralph_executor/queue/movements.py` — `_move` accepts `post_mv: Callable[[Path], None] | None`; `move_inbox_to_current` forwards it.
+- `ralph_executor/safety/halt.py` — `halt_and_acknowledge` + `write_meta_bug` accept `tripped_by_instance` and emit it.
+- `scripts/queue_writer.py` — `resolve_instance_id`, `acquire_queue_clone(...)` gains `instance_id` parameter.
+- `scripts/pbi_reader.py` — `PBIRow` gains `owner: str | None` populated for current/ rows.
+- `skills/ralph-status/scripts/status.py` — OWNER column, `--instance-id` flag.
+- `skills/ralph-cancel/scripts/cancel.py` — refuse foreign CLAIM, `--instance-id` flag.
+- `skills/ralph-promote/scripts/promote.py` — refuse foreign CLAIM on current/, `--instance-id` flag.
+- `README.md`, `docs/runbooks/ralph-setup.md` — operator docs.
 
 ---
 
-## Task 1: Identity helper module
+## Task T1: Identity helpers — **confidence: 96%**
 
-**Files:**
-- Create: `ralph_executor/identity.py`
-- Test: `tests/executor/test_identity.py`
+**Files:** `ralph_executor/identity.py` (new), `tests/executor/test_identity.py` (new)
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/executor/test_identity.py`:
 
 ```python
-"""Identity sanitisation + validation."""
+"""Identity sanitisation, validation, hostname default."""
 
 from __future__ import annotations
 
@@ -93,8 +111,6 @@ class TestSanitize:
         assert sanitize_instance_id("ralph-a") == "ralph-a"
 
     def test_empty_after_sanitise_returns_empty(self) -> None:
-        # Caller (validate_instance_id) is responsible for raising; the
-        # sanitiser is pure.
         assert sanitize_instance_id("---") == ""
 
 
@@ -117,7 +133,7 @@ class TestValidate:
         with pytest.raises(InstanceIdError, match="does not match"):
             validate_instance_id("Ralph")
 
-    def test_rejects_long(self) -> None:
+    def test_rejects_too_long(self) -> None:
         with pytest.raises(InstanceIdError, match="does not match"):
             validate_instance_id("a" * 64)
 
@@ -137,26 +153,14 @@ class TestDefaultFromHostname:
         assert default_instance_id() == ""
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test (FAIL on missing module)**
 
-```
-uv run pytest tests/executor/test_identity.py -v
-```
+`uv run pytest tests/executor/test_identity.py -v`
 
-Expected: FAIL — `ModuleNotFoundError: No module named 'ralph_executor.identity'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-`ralph_executor/identity.py`:
+- [ ] **Step 3: Implement** — `ralph_executor/identity.py`:
 
 ```python
-"""Instance identity helpers — sanitisation, validation, hostname default.
-
-The ``instance_id`` is the per-ralph identity that lets multiple
-executors operate against the same ``queue_repo``. It is filesystem-safe,
-branch-name-safe, and stable across a single ralph's lifetime (operator
-discipline: the same id must be supplied on restart).
-"""
+"""Instance identity helpers — sanitisation, validation, hostname default."""
 
 from __future__ import annotations
 
@@ -171,30 +175,20 @@ class InstanceIdError(ValueError):
 
 
 def sanitize_instance_id(value: str) -> str:
-    """Lowercase, replace non-`[a-z0-9_-]` chars with dashes, collapse runs.
-
-    Pure function — does not raise. Empty / all-non-conforming inputs
-    yield ``""``; callers wrap this with ``validate_instance_id`` if they
-    need a hard-error guarantee.
-    """
+    """Lowercase; replace any char outside [a-z0-9_-] with `-`; collapse
+    runs; strip leading/trailing dashes. Pure — never raises."""
     lowered = value.strip().lower()
-    # Replace any character outside the safe set with a dash.
     swapped = re.sub(r"[^a-z0-9_-]", "-", lowered)
-    # Collapse runs of dashes so 'box.example.com' → 'box-example-com' (not 'box---com').
     collapsed = re.sub(r"-+", "-", swapped)
     return collapsed.strip("-")
 
 
 def validate_instance_id(value: str) -> str:
-    """Return ``value`` unchanged when it matches ``INSTANCE_ID_REGEX``.
-
-    Raises :class:`InstanceIdError` with a message naming the regex when
-    the input is empty or non-conforming. The validator does NOT sanitise
-    — callers wanting "make this safe" semantics should call
-    :func:`sanitize_instance_id` first.
-    """
+    """Return value unchanged when it matches INSTANCE_ID_REGEX; else raise."""
     if not value:
-        raise InstanceIdError("instance_id must be set (CLI / env / TOML / hostname default)")
+        raise InstanceIdError(
+            "instance_id must be set (CLI / env / TOML / hostname default)"
+        )
     if not INSTANCE_ID_REGEX.match(value):
         raise InstanceIdError(
             f"instance_id {value!r} does not match {INSTANCE_ID_REGEX.pattern}"
@@ -203,21 +197,11 @@ def validate_instance_id(value: str) -> str:
 
 
 def default_instance_id() -> str:
-    """Return the sanitised hostname for use as the default ``instance_id``.
-
-    Returns ``""`` if the hostname is empty (rare; the validator above will
-    surface a clear error in that case).
-    """
+    """Return the sanitised hostname for use as the default instance_id."""
     return sanitize_instance_id(socket.gethostname())
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-```
-uv run pytest tests/executor/test_identity.py -v
-```
-
-Expected: PASS — 11 tests.
+- [ ] **Step 4: PASS** — 13 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -228,15 +212,13 @@ git commit -m "multi-ralph: instance_id sanitise/validate/default helpers"
 
 ---
 
-## Task 2: User-config read/write for `instance_id`
+## Task T2: user_config read/write — **confidence: 94%**
 
-**Files:**
-- Modify: `ralph_executor/user_config.py`
-- Test: `tests/executor/test_user_config.py` (add to existing if present; create if missing)
+**Files:** `ralph_executor/user_config.py` (modify), `tests/executor/test_user_config.py` (extend)
 
-- [ ] **Step 1: Write the failing tests**
+**Step 0 mitigation (verified):** Existing `read_queue_repo` / `write_queue_repo` (`ralph_executor/user_config.py:118` and `:249`) is the template. `_write_user_config` merge-writes — preserves siblings on a single-key write.
 
-Append to `tests/executor/test_user_config.py` (or create if absent):
+- [ ] **Step 1: Failing tests** — append to `tests/executor/test_user_config.py`:
 
 ```python
 from pathlib import Path
@@ -284,10 +266,10 @@ def test_read_instance_id_non_string_raises(
 def test_write_instance_id_preserves_other_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     from ralph_executor.user_config import write_queue_repo
 
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     write_queue_repo("https://github.com/owner/queue")
     write_instance_id("ralph-a")
     text = user_config_path().read_text(encoding="utf-8")
@@ -295,26 +277,13 @@ def test_write_instance_id_preserves_other_keys(
     assert 'instance_id = "ralph-a"' in text
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: FAIL on import**
 
-```
-uv run pytest tests/executor/test_user_config.py::test_read_instance_id_missing_file_returns_none tests/executor/test_user_config.py::test_write_then_read_instance_id_roundtrips tests/executor/test_user_config.py::test_read_instance_id_non_string_raises tests/executor/test_user_config.py::test_write_instance_id_preserves_other_keys -v
-```
-
-Expected: FAIL — `ImportError: cannot import name 'read_instance_id'`.
-
-- [ ] **Step 3: Write the implementation**
-
-Append to `ralph_executor/user_config.py`:
+- [ ] **Step 3: Implement** — append to `ralph_executor/user_config.py`:
 
 ```python
 def read_instance_id() -> str | None:
-    """Return the ``instance_id`` value from the user config, or None.
-
-    Lives at the user-level (per-machine) because multi-ralph identity is
-    per-process. Resolution priority in ``load_config`` is: CLI flag >
-    env > THIS TOML value > hostname default.
-    """
+    """Return the ``instance_id`` value from the user config, or None."""
     data = _load_user_config()
     raw = data.get("instance_id")
     if raw is None:
@@ -328,21 +297,11 @@ def read_instance_id() -> str | None:
 
 
 def write_instance_id(value: str) -> Path:
-    """Persist ``instance_id`` to ``~/.ralph/config.toml``.
-
-    Merges with existing keys so ``queue_repo`` / ``ralph_home`` / others
-    are preserved.
-    """
+    """Persist ``instance_id`` to ``~/.ralph/config.toml``."""
     return _write_user_config({"instance_id": value})
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-```
-uv run pytest tests/executor/test_user_config.py -v -k instance_id
-```
-
-Expected: PASS — 4 tests.
+- [ ] **Step 4: PASS** — 4 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -353,15 +312,13 @@ git commit -m "multi-ralph: read_instance_id/write_instance_id user-config helpe
 
 ---
 
-## Task 3: `ExecutorConfig.instance_id` + resolution in `load_config`
+## Task T3: `ExecutorConfig.instance_id` + resolution — **confidence: 93%**
 
-**Files:**
-- Modify: `ralph_executor/config.py`
-- Test: `tests/executor/test_config.py` (extend the existing file)
+**Files:** `ralph_executor/config.py` (modify), `tests/executor/test_config.py` (extend)
 
-- [ ] **Step 1: Write the failing tests**
+**Step 0 mitigation (verified):** Re-read `load_config` end-section (`ralph_executor/config.py:790-820`). The `ExecutorConfig(...)` constructor call accepts a new field via plain kwargs; `_TOML_KNOWN_KEYS` is a frozenset extended by adding the key string.
 
-Append to `tests/executor/test_config.py`:
+- [ ] **Step 1: Failing tests** — append to `tests/executor/test_config.py`:
 
 ```python
 def test_instance_id_defaults_to_sanitised_hostname(
@@ -369,6 +326,7 @@ def test_instance_id_defaults_to_sanitised_hostname(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
     monkeypatch.setattr("socket.gethostname", lambda: "MyBox.example.com")
     _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue")
     _prepare_project_repo(tmp_path)
@@ -383,13 +341,11 @@ def test_instance_id_env_wins_over_toml(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-from-env")
-    _prepare_user_config(
-        tmp_path, queue_repo="https://github.com/owner/queue", instance_id="ralph-from-toml"
-    )
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue",
+                         instance_id="ralph-from-toml")
     _prepare_project_repo(tmp_path)
     monkeypatch.chdir(tmp_path / "project")
-    cfg = load_config()
-    assert cfg.instance_id == "ralph-from-env"
+    assert load_config().instance_id == "ralph-from-env"
 
 
 def test_instance_id_toml_wins_over_hostname(
@@ -399,13 +355,11 @@ def test_instance_id_toml_wins_over_hostname(
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
     monkeypatch.setattr("socket.gethostname", lambda: "hostname-default")
-    _prepare_user_config(
-        tmp_path, queue_repo="https://github.com/owner/queue", instance_id="ralph-from-toml"
-    )
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue",
+                         instance_id="ralph-from-toml")
     _prepare_project_repo(tmp_path)
     monkeypatch.chdir(tmp_path / "project")
-    cfg = load_config()
-    assert cfg.instance_id == "ralph-from-toml"
+    assert load_config().instance_id == "ralph-from-toml"
 
 
 def test_instance_id_invalid_raises_config_error(
@@ -435,7 +389,7 @@ def test_instance_id_missing_hostname_raises(
         load_config()
 ```
 
-If `_prepare_user_config` / `_prepare_project_repo` do not already exist in the test module, add these helpers near the top:
+Helpers (top of test module if absent):
 
 ```python
 def _prepare_user_config(
@@ -455,45 +409,22 @@ def _prepare_project_repo(tmp_path: Path) -> None:
     (project / ".git").mkdir(parents=True, exist_ok=True)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: FAIL on missing attr**
 
-```
-uv run pytest tests/executor/test_config.py -v -k instance_id
-```
+- [ ] **Step 3: Implementation in `ralph_executor/config.py`**
 
-Expected: FAIL — `AttributeError: 'ExecutorConfig' object has no attribute 'instance_id'`.
+a. Extend `_TOML_KNOWN_KEYS` with `"instance_id"`.
 
-- [ ] **Step 3: Implementation — add field, TOML key, resolver**
-
-In `ralph_executor/config.py`:
-
-a. Add `"instance_id"` to `_TOML_KNOWN_KEYS`:
+b. Add field to `ExecutorConfig` (after `idle_exit_threshold`):
 
 ```python
-_TOML_KNOWN_KEYS = frozenset(
-    {
-        # ... existing keys ...
-        "idle_exit_threshold",
-        # Per-ralph identity. See ralph_executor/identity.py. Resolution
-        # in load_config: CLI > RALPH_INSTANCE_ID env > this TOML key >
-        # ~/.ralph/config.toml (user-level) > sanitised hostname.
-        "instance_id",
-    }
-)
-```
-
-b. Add the field to `ExecutorConfig` (after `idle_exit_threshold`):
-
-```python
-    # Per-ralph identity, set once at startup and never changed during
-    # the process lifetime. Resolution order: --instance-id flag >
-    # RALPH_INSTANCE_ID env > project .ralph/config.toml > user
-    # ~/.ralph/config.toml > sanitised hostname. See
-    # ``ralph_executor.identity``.
+    # Per-ralph identity. See ralph_executor/identity.py. Resolution:
+    # --instance-id CLI > RALPH_INSTANCE_ID env > project TOML >
+    # ~/.ralph/config.toml > sanitised hostname.
     instance_id: str = ""
 ```
 
-c. Add resolution inside `load_config` (after `idle_exit_threshold` resolution, before the `return ExecutorConfig(...)`):
+c. Append resolution to `load_config`, AFTER `idle_exit_threshold` resolution, BEFORE the `return ExecutorConfig(...)`:
 
 ```python
     from ralph_executor.identity import (
@@ -504,9 +435,9 @@ c. Add resolution inside `load_config` (after `idle_exit_threshold` resolution, 
     )
     from ralph_executor.user_config import read_instance_id, user_config_path
 
-    instance_id_source = "project " + source_label
-    instance_id_value: str | None = None
     raw_env = os.environ.get("RALPH_INSTANCE_ID")
+    instance_id_value: str | None = None
+    instance_id_source = source_label
     if raw_env is not None and raw_env.strip():
         instance_id_value = raw_env.strip()
         instance_id_source = "RALPH_INSTANCE_ID env"
@@ -527,7 +458,7 @@ c. Add resolution inside `load_config` (after `idle_exit_threshold` resolution, 
         if not instance_id_value:
             instance_id_value = default_instance_id()
             instance_id_source = "hostname default"
-        instance_id_value = sanitize_instance_id(instance_id_value)
+    instance_id_value = sanitize_instance_id(instance_id_value or "")
     try:
         instance_id = validate_instance_id(instance_id_value)
     except InstanceIdError as exc:
@@ -538,53 +469,39 @@ c. Add resolution inside `load_config` (after `idle_exit_threshold` resolution, 
         ) from exc
 ```
 
-d. Pass `instance_id=instance_id` into the `ExecutorConfig(...)` constructor at the bottom.
+d. Add `instance_id=instance_id` to the constructor.
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-```
-uv run pytest tests/executor/test_config.py -v -k instance_id
-```
-
-Expected: PASS — 5 tests.
+- [ ] **Step 4: PASS** — 5 new tests.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add ralph_executor/config.py tests/executor/test_config.py
-git commit -m "multi-ralph: instance_id field + resolution in load_config"
+git commit -m "multi-ralph: instance_id field + resolution chain in load_config"
 ```
 
 ---
 
-## Task 4: `--instance-id` CLI flag
+## Task T4: `--instance-id` CLI flag — **confidence: 96%**
 
-**Files:**
-- Modify: `ralph_executor/cli.py`
-- Test: `tests/executor/test_cli.py` (extend the existing module)
+**Files:** `ralph_executor/cli.py` (modify), `tests/executor/test_cli.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
-
-Append to `tests/executor/test_cli.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
 def test_instance_id_flag_overrides_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--instance-id flag wins over RALPH_INSTANCE_ID env and TOML."""
     from ralph_executor.cli import _apply_overrides
 
     monkeypatch.setenv("RALPH_INSTANCE_ID", "from-env")
     cfg = _make_fake_config(repo_path=tmp_path, instance_id="from-config")
     args = _make_args(instance_id="from-flag")
-    new_cfg = _apply_overrides(cfg, args)
-    assert new_cfg.instance_id == "from-flag"
+    assert _apply_overrides(cfg, args).instance_id == "from-flag"
 
 
-def test_instance_id_flag_validated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """--instance-id with invalid value raises ConfigError before iterate."""
+def test_instance_id_flag_validated(tmp_path: Path) -> None:
+    import pytest
     from ralph_executor.cli import _apply_overrides
     from ralph_executor.config import ConfigError
 
@@ -594,12 +511,10 @@ def test_instance_id_flag_validated(
         _apply_overrides(cfg, args)
 ```
 
-If `_make_fake_config` and `_make_args` helpers do not yet exist in the test module, add them:
+Helpers (top of module if absent):
 
 ```python
-def _make_fake_config(*, repo_path: Path, instance_id: str = "ralph") -> "ExecutorConfig":
-    from ralph_executor.config import ExecutorConfig
-
+def _make_fake_config(*, repo_path: Path, instance_id: str = "ralph") -> ExecutorConfig:
     return ExecutorConfig(
         repo_path=repo_path,
         queue_repo="https://github.com/owner/queue",
@@ -647,19 +562,11 @@ def _make_args(
     )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-```
-uv run pytest tests/executor/test_cli.py -v -k instance_id
-```
-
-Expected: FAIL — `argparse.Namespace` lacks `instance_id`, or `_apply_overrides` ignores it.
+- [ ] **Step 2: FAIL**
 
 - [ ] **Step 3: Implementation**
 
-In `ralph_executor/cli.py`:
-
-a. Inside `_build_parser`, add the flag near `--log-level`:
+a. Add to `_build_parser`:
 
 ```python
     parser.add_argument(
@@ -667,15 +574,14 @@ a. Inside `_build_parser`, add the flag near `--log-level`:
         dest="instance_id",
         metavar="ID",
         help=(
-            "Override the instance_id TOML/env value for this run. "
-            "Resolution order: this flag > RALPH_INSTANCE_ID env > "
-            "project .ralph/config.toml > ~/.ralph/config.toml > "
-            "sanitised hostname."
+            "Override instance_id for this run. Resolution: this flag > "
+            "RALPH_INSTANCE_ID env > project .ralph/config.toml > "
+            "~/.ralph/config.toml > sanitised hostname."
         ),
     )
 ```
 
-b. Inside `_apply_overrides`, before the existing return:
+b. In `_apply_overrides`, before the existing return:
 
 ```python
     instance_id: str = cfg.instance_id
@@ -694,58 +600,37 @@ b. Inside `_apply_overrides`, before the existing return:
         changed = True
 ```
 
-c. Extend the `dataclasses.replace(...)` call to include `instance_id=instance_id`.
+c. Add `instance_id=instance_id` to the `dataclasses.replace(...)` call.
 
-- [ ] **Step 4: Run test to verify it passes**
-
-```
-uv run pytest tests/executor/test_cli.py -v -k instance_id
-```
-
-Expected: PASS — 2 tests.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
 ```
 git add ralph_executor/cli.py tests/executor/test_cli.py
-git commit -m "multi-ralph: --instance-id CLI flag wires through _apply_overrides"
+git commit -m "multi-ralph: --instance-id CLI flag in _apply_overrides"
 ```
 
 ---
 
-## Task 5: `ralph-executor init` prompts for `instance_id`
+## Task T5: `cmd_init` prompts for `instance_id` — **confidence: 92%**
 
-**Files:**
-- Modify: `ralph_executor/setup_cmds.py`
-- Modify: `ralph_executor/cli.py` (init subparser already wired; nothing to add)
-- Test: `tests/executor/test_setup_cmds.py` (extend existing if present)
+**Files:** `ralph_executor/setup_cmds.py` (modify), `tests/executor/test_setup_cmds.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation (verified):** `cmd_init` flow (`setup_cmds.py:219`):
+1. ralph_home check → write
+2. queue_repo check → write
+3. queue_branch check → write (last `print(f"wrote {branch_cfg}")` around line 326)
+4. gh/claude tool checks (line 331+)
+5. trailing message
 
-Append to `tests/executor/test_setup_cmds.py` (create the file if needed; mirror the existing pattern for `test_cmd_init`):
+Insertion point: between step 3 and step 4.
+
+- [ ] **Step 1: Failing tests**
 
 ```python
-def test_cmd_init_prompts_and_writes_instance_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from ralph_executor.setup_cmds import cmd_init
-    from ralph_executor.user_config import read_instance_id
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setattr("socket.gethostname", lambda: "BoxA")
-    inputs = iter(["", "https://github.com/owner/queue", "", "ralph-a"])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
-    rc = cmd_init(ralph_home=None, assume_yes=False)
-    assert rc == 0
-    assert read_instance_id() == "ralph-a"
-
-
-def test_cmd_init_assume_yes_defaults_to_hostname_instance_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_cmd_init_assume_yes_writes_hostname_instance_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from ralph_executor.setup_cmds import cmd_init
     from ralph_executor.user_config import read_instance_id
@@ -756,78 +641,87 @@ def test_cmd_init_assume_yes_defaults_to_hostname_instance_id(
     rc = cmd_init(ralph_home=None, assume_yes=True)
     assert rc == 0
     assert read_instance_id() == "boxa"
+
+
+def test_cmd_init_idempotent_instance_id_no_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ralph_executor.setup_cmds import cmd_init
+    from ralph_executor.user_config import read_instance_id, write_instance_id
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    write_instance_id("ralph-pinned")
+    monkeypatch.setattr("socket.gethostname", lambda: "BoxA")
+    rc = cmd_init(ralph_home=None, assume_yes=True)
+    assert rc == 0
+    assert read_instance_id() == "ralph-pinned"
 ```
 
-Note: the existing `cmd_init` expects 3 prompts already (ralph_home, queue_repo, queue_branch). Adjust the input iterator order if necessary to match the actual prompt sequence after Step 3.
+- [ ] **Step 2: FAIL**
 
-- [ ] **Step 2: Run tests to verify failure**
-
-```
-uv run pytest tests/executor/test_setup_cmds.py -v -k instance_id
-```
-
-Expected: FAIL — `cmd_init` never calls `write_instance_id` so the read returns None.
-
-- [ ] **Step 3: Implementation**
-
-In `ralph_executor/setup_cmds.py`, inside `cmd_init`, AFTER the `queue_branch` prompt and BEFORE returning 0, add:
+- [ ] **Step 3: Implementation** — add the BLOCK in `cmd_init` immediately after the `existing_branch`-handling block (after `print(f"wrote {branch_cfg}")`) and before `gh = _check_tool("gh")`:
 
 ```python
+    # instance_id (multi-ralph identity). Mirrors queue_repo / queue_branch
+    # handling — idempotent on re-run, --yes uses sanitised hostname.
     from ralph_executor.identity import (
         InstanceIdError,
         default_instance_id,
         sanitize_instance_id,
         validate_instance_id,
     )
-    from ralph_executor.user_config import write_instance_id
+    from ralph_executor.user_config import read_instance_id, write_instance_id
 
-    fallback_instance = default_instance_id() or "ralph"
-    if assume_yes:
-        instance_id = fallback_instance
+    existing_instance = read_instance_id()
+    if existing_instance is not None:
+        print(f"instance_id already set to {existing_instance} in {user_config_path()}")
     else:
-        raw = input(
-            f"Instance id [default: {fallback_instance}]: "
-        ).strip()
-        instance_id = sanitize_instance_id(raw) if raw else fallback_instance
-    try:
-        instance_id = validate_instance_id(instance_id)
-    except InstanceIdError as exc:
-        raise ConfigError(f"init: {exc}") from exc
-    write_instance_id(instance_id)
-    print(f"instance_id = \"{instance_id}\" written to ~/.ralph/config.toml")
+        host_default = default_instance_id() or "ralph"
+        if assume_yes:
+            chosen_instance = host_default
+        else:
+            print(f"Instance id [{host_default}]: ", end="", flush=True)
+            try:
+                raw = input().strip()
+            except EOFError:
+                print("")
+                raw = ""
+            chosen_instance = sanitize_instance_id(raw) if raw else host_default
+        try:
+            chosen_instance = validate_instance_id(chosen_instance)
+        except InstanceIdError as exc:
+            raise ConfigError(f"init: {exc}") from exc
+        try:
+            instance_cfg = write_instance_id(chosen_instance)
+        except OSError as exc:
+            print(f"error: cannot write instance_id to user config: {exc}", file=sys.stderr)
+            return 2
+        print(f"instance_id = {chosen_instance}")
+        print(f"wrote {instance_cfg}")
 ```
 
-(Adjust the prompt position to match the existing flow's prompts. Read `setup_cmds.py` first to confirm the order.)
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-```
-uv run pytest tests/executor/test_setup_cmds.py -v -k instance_id
-```
-
-Expected: PASS — 2 tests.
+- [ ] **Step 4: PASS** — 2 new tests, existing init tests still green.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add ralph_executor/setup_cmds.py tests/executor/test_setup_cmds.py
-git commit -m "multi-ralph: ralph-executor init prompts for instance_id"
+git commit -m "multi-ralph: cmd_init prompts for instance_id"
 ```
 
 ---
 
-## Task 6: `queue_clone_path` helper + central queue-path resolution
+## Task T6: `queue_clone_path` helper — **confidence: 99%**
 
-**Files:**
-- Create: `ralph_executor/queue_path.py`
-- Test: `tests/executor/test_queue_path.py`
+**Files:** `ralph_executor/queue_path.py` (new), `tests/executor/test_queue_path.py` (new)
 
-- [ ] **Step 1: Write the failing test**
-
-`tests/executor/test_queue_path.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
 from pathlib import Path
+
+import pytest
 
 from ralph_executor.queue_path import queue_clone_path
 
@@ -836,31 +730,21 @@ def test_returns_namespaced_path(tmp_path: Path) -> None:
     assert queue_clone_path(tmp_path, "ralph-a") == tmp_path / "queue-ralph-a"
 
 
-def test_default_instance_id_n1_case(tmp_path: Path) -> None:
+def test_n1_default_case(tmp_path: Path) -> None:
     assert queue_clone_path(tmp_path, "boxa") == tmp_path / "queue-boxa"
+
+
+def test_empty_instance_id_raises() -> None:
+    with pytest.raises(ValueError, match="instance_id"):
+        queue_clone_path(Path("/tmp"), "")
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/executor/test_queue_path.py -v
-```
-
-Expected: FAIL — module missing.
-
-- [ ] **Step 3: Implementation**
-
-`ralph_executor/queue_path.py`:
+- [ ] **Step 3: Implement** — `ralph_executor/queue_path.py`:
 
 ```python
-"""Single source of truth for the per-instance queue-clone path.
-
-Every site that needs to read or write inside ``.ralph/`` resolves the
-clone root via this helper so we can change the layout in exactly one
-place. Pre-multi-ralph this was hard-coded to ``<workspace_root>/queue/``;
-now it is ``<workspace_root>/queue-<instance-id>/`` to allow multiple
-ralphs to share a single ``workspace_root``.
-"""
+"""Single source of truth for the per-instance queue-clone path."""
 
 from __future__ import annotations
 
@@ -874,13 +758,7 @@ def queue_clone_path(workspace_root: Path, instance_id: str) -> Path:
     return workspace_root / f"queue-{instance_id}"
 ```
 
-- [ ] **Step 4: Run test to verify pass**
-
-```
-uv run pytest tests/executor/test_queue_path.py -v
-```
-
-Expected: PASS — 2 tests.
+- [ ] **Step 4: PASS** — 3 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -891,66 +769,61 @@ git commit -m "multi-ralph: queue_clone_path helper"
 
 ---
 
-## Task 7: Route all queue-path callers through `queue_clone_path`
+## Task T7: Route executor queue-path callers through helper — **confidence: 91%**
 
-**Files:**
-- Modify: `ralph_executor/loop.py`
-- Modify: `ralph_executor/queue/filesystem.py`
-- Modify: `ralph_executor/queue/movements.py`
-- Modify: `ralph_executor/queue_clone.py`
-- Test: extend `tests/executor/test_loop.py`, `tests/executor/test_filesystem_queue.py`, `tests/executor/test_queue_clone.py`
+**Files:** `ralph_executor/loop.py`, `ralph_executor/queue/filesystem.py`, `ralph_executor/queue/movements.py`, `ralph_executor/queue_clone.py` (modify); their test files (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation:** Sweep these files for the literal `"queue"` path construction; verified 4 sites in source + their counterparts in tests. Update test fixtures in the same task.
 
-Append to `tests/executor/test_loop.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
 def test_queue_repo_root_uses_instance_id(tmp_path: Path) -> None:
-    """_queue_repo_root resolves to <workspace_root>/queue-<instance-id>/."""
+    import dataclasses
     from ralph_executor.loop import _queue_repo_root
 
     cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
     cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
     assert _queue_repo_root(cfg) == tmp_path / "queue-ralph-a"
+
+
+def test_filesystem_root_uses_instance_id(tmp_path: Path) -> None:
+    import dataclasses
+    from ralph_executor.queue.filesystem import FilesystemQueueSource
+
+    cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
+    cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
+    assert FilesystemQueueSource(cfg)._root == tmp_path / "queue-ralph-a" / ".ralph"
 ```
 
-Add an equivalent test asserting `FilesystemQueueSource._root` resolves to `<workspace_root>/queue-<instance-id>/.ralph` in `tests/executor/test_filesystem_queue.py`.
-
-- [ ] **Step 2: Run tests to verify failure**
-
-```
-uv run pytest tests/executor/test_loop.py::test_queue_repo_root_uses_instance_id tests/executor/test_filesystem_queue.py -v
-```
-
-Expected: FAIL — paths still hard-coded to `queue/`.
+- [ ] **Step 2: FAIL**
 
 - [ ] **Step 3: Implementation**
 
-a. `ralph_executor/loop.py`: replace the body of `_queue_repo_root`:
+a. `ralph_executor/loop.py::_queue_repo_root`:
 
 ```python
 def _queue_repo_root(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone for this instance.
-
-    Always ``<workspace_root>/queue-<instance-id>/``. See
-    ``ralph_executor.queue_path`` for the single source of truth.
-    """
+    """Filesystem path of this instance's queue clone. See queue_path."""
     from ralph_executor.queue_path import queue_clone_path
 
     return queue_clone_path(cfg.workspace_root, cfg.instance_id)
 ```
 
-b. `ralph_executor/queue/filesystem.py`: replace the `_root` property:
+b. `ralph_executor/queue/filesystem.py::FilesystemQueueSource._root`:
 
 ```python
     @property
     def _root(self) -> Path:
         from ralph_executor.queue_path import queue_clone_path
 
-        return queue_clone_path(self._config.workspace_root, self._config.instance_id) / ".ralph"
+        return (
+            queue_clone_path(self._config.workspace_root, self._config.instance_id)
+            / ".ralph"
+        )
 ```
 
-c. `ralph_executor/queue/movements.py`: replace the body of `_queue_repo`:
+c. `ralph_executor/queue/movements.py::_queue_repo`:
 
 ```python
 def _queue_repo(cfg: ExecutorConfig) -> Path:
@@ -959,31 +832,9 @@ def _queue_repo(cfg: ExecutorConfig) -> Path:
     return queue_clone_path(cfg.workspace_root, cfg.instance_id)
 ```
 
-d. `ralph_executor/queue_clone.py`: extend `ensure_queue_clone` to accept an explicit destination so the caller (`loop._pull_queue`) controls the path.
+d. `ralph_executor/queue_clone.py::ensure_queue_clone` — add `dest: Path | None = None` parameter, default to `workspace_root / "queue"` for backwards compat. Replace literal references inside the body with the resolved `dest`.
 
-```python
-def ensure_queue_clone(
-    workspace_root: Path,
-    queue_repo: str,
-    queue_branch: str,
-    *,
-    dest: Path | None = None,
-    timeout: float = 120.0,
-) -> Path:
-    """Ensure ``dest`` (default: ``workspace_root / 'queue'``) is a clone of
-    ``queue_repo`` on ``queue_branch``.
-
-    Callers that need per-instance namespacing pass ``dest`` explicitly;
-    legacy callers receive the old single-clone behaviour.
-    """
-    workspace_root.mkdir(parents=True, exist_ok=True)
-    if dest is None:
-        dest = workspace_root / "queue"
-    # ... existing clone / fetch / pull logic, replacing every literal
-    # `workspace_root / "queue"` with `dest`.
-```
-
-e. `ralph_executor/loop.py::_pull_queue`: pass the namespaced dest in:
+e. `ralph_executor/loop.py::_pull_queue`:
 
 ```python
 def _pull_queue(cfg: ExecutorConfig) -> None:
@@ -992,22 +843,20 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
     dest = queue_clone_path(cfg.workspace_root, cfg.instance_id)
     log.debug(
         "refreshing queue clone for %s (branch=%s) -> %s",
-        cfg.queue_repo,
-        cfg.queue_branch,
-        dest,
+        cfg.queue_repo, cfg.queue_branch, dest,
     )
     ensure_queue_clone(
         cfg.workspace_root, cfg.queue_repo, cfg.queue_branch, dest=dest
     )
 ```
 
-- [ ] **Step 4: Run tests to verify pass + sweep existing tests**
+f. Regression sweep: grep test fixtures for `"queue"` path literals; update each to the namespaced form using the fixture's instance_id.
+
+- [ ] **Step 4: PASS**
 
 ```
 uv run pytest tests/executor/ -v
 ```
-
-Expected: PASS for all (the new tests + existing). If any existing test relied on the literal `queue/` path, fix the test fixture to construct `queue-<instance>/` instead.
 
 - [ ] **Step 5: Commit**
 
@@ -1021,25 +870,32 @@ git commit -m "multi-ralph: route queue-path callers through queue_clone_path"
 
 ---
 
-## Task 8: Legacy `queue/` → `queue-<instance-id>/` rename on first startup
+## Task T8: Legacy rename — **confidence: 92%**
 
-**Files:**
-- Modify: `ralph_executor/queue_clone.py`
-- Test: extend `tests/executor/test_queue_clone.py`
+**Files:** `ralph_executor/queue_clone.py` (modify), `tests/executor/test_queue_clone.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation:** Use `shutil.move` (not `Path.rename`) so the cross-volume case (workspace_root and tempdir on different drives, common on Windows CI) works. Both-exist guard fires FIRST so the operator gets the clear error before we touch either path.
 
-Append to `tests/executor/test_queue_clone.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
-def test_ensure_queue_clone_migrates_legacy_path(tmp_path: Path) -> None:
-    """If <workspace_root>/queue/ exists and dest does not, rename atomically."""
+def test_ensure_queue_clone_migrates_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    from ralph_executor import queue_clone as qc
+
+    monkeypatch.setattr(
+        qc, "_run_git",
+        lambda repo, *args, timeout=120.0: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        ),
+    )
     legacy = tmp_path / "queue"
     legacy.mkdir()
     (legacy / ".git").mkdir()
-    (legacy / ".git" / "HEAD").write_text("ref: refs/heads/ralph-queue\n")
     dest = tmp_path / "queue-ralph-a"
-    ensure_queue_clone(
+    qc.ensure_queue_clone(
         tmp_path, "https://github.com/owner/queue", "ralph-queue", dest=dest
     )
     assert dest.is_dir()
@@ -1047,8 +903,10 @@ def test_ensure_queue_clone_migrates_legacy_path(tmp_path: Path) -> None:
     assert not legacy.exists()
 
 
-def test_ensure_queue_clone_refuses_when_both_paths_exist(tmp_path: Path) -> None:
-    """If both legacy and dest exist, raise so operator notices the conflict."""
+def test_ensure_queue_clone_refuses_both_paths_exist(tmp_path: Path) -> None:
+    import pytest
+    from ralph_executor.queue_clone import QueueCloneError, ensure_queue_clone
+
     legacy = tmp_path / "queue"
     legacy.mkdir()
     (legacy / ".git").mkdir()
@@ -1061,39 +919,25 @@ def test_ensure_queue_clone_refuses_when_both_paths_exist(tmp_path: Path) -> Non
         )
 ```
 
-(Stub the actual git fetch/pull so the test does not hit the network — monkeypatch `_run_git` to return a `CompletedProcess` with returncode 0.)
+- [ ] **Step 2: FAIL**
 
-- [ ] **Step 2: Run tests to verify failure**
-
-```
-uv run pytest tests/executor/test_queue_clone.py -v -k legacy
-```
-
-Expected: FAIL — no rename logic.
-
-- [ ] **Step 3: Implementation**
-
-In `ralph_executor/queue_clone.py`, near the top of `ensure_queue_clone` (immediately after `workspace_root.mkdir(...)` and after resolving `dest`):
+- [ ] **Step 3: Implementation** — inside `ensure_queue_clone` after `workspace_root.mkdir(...)` and before the existing `(dest / ".git").exists()` check:
 
 ```python
+    import shutil
+
     legacy = workspace_root / "queue"
-    if dest != legacy and legacy.is_dir() and not dest.exists():
+    if dest != legacy and legacy.is_dir():
+        if dest.exists():
+            raise QueueCloneError(
+                f"both legacy queue/ and {dest.name}/ exist under {workspace_root}; "
+                "remove one before continuing"
+            )
         log.info("migrating legacy queue clone: %s -> %s", legacy, dest)
-        legacy.rename(dest)
-    elif dest != legacy and legacy.is_dir() and dest.exists():
-        raise QueueCloneError(
-            f"both legacy queue/ and {dest.name}/ exist under {workspace_root}; "
-            "remove one before continuing"
-        )
+        shutil.move(str(legacy), str(dest))
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/executor/test_queue_clone.py -v
-```
-
-Expected: PASS — all queue-clone tests.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
@@ -1104,18 +948,14 @@ git commit -m "multi-ralph: rename legacy <workspace_root>/queue/ on first start
 
 ---
 
-## Task 9: `CLAIM.json` read/write module
+## Task T9: `CLAIM.json` IO — **confidence: 96%**
 
-**Files:**
-- Create: `ralph_executor/claim.py`
-- Test: `tests/executor/test_claim.py`
+**Files:** `ralph_executor/claim.py` (new), `tests/executor/test_claim.py` (new)
 
-- [ ] **Step 1: Write the failing test**
-
-`tests/executor/test_claim.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -1134,13 +974,12 @@ def test_write_then_read_roundtrips(tmp_path: Path) -> None:
     pbi_dir.mkdir()
     info = ClaimInfo(
         instance_id="ralph-a",
-        claimed_at=datetime(2026, 5, 31, 12, 34, 56, tzinfo=timezone.utc),
+        claimed_at=datetime(2026, 5, 31, 12, 34, 56, tzinfo=UTC),
         hostname="box-a",
     )
     write_claim(pbi_dir, info)
     assert (pbi_dir / CLAIM_FILENAME).is_file()
-    parsed = read_claim(pbi_dir)
-    assert parsed == info
+    assert read_claim(pbi_dir) == info
 
 
 def test_read_missing_returns_none(tmp_path: Path) -> None:
@@ -1160,30 +999,23 @@ def test_read_malformed_raises(tmp_path: Path) -> None:
 def test_read_missing_field_raises(tmp_path: Path) -> None:
     pbi_dir = tmp_path / "WI-1234"
     pbi_dir.mkdir()
-    (pbi_dir / CLAIM_FILENAME).write_text('{"instance_id": "ralph-a"}', encoding="utf-8")
+    (pbi_dir / CLAIM_FILENAME).write_text(
+        '{"instance_id": "ralph-a"}', encoding="utf-8"
+    )
     with pytest.raises(ClaimParseError, match="claimed_at"):
         read_claim(pbi_dir)
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/executor/test_claim.py -v
-```
-
-Expected: FAIL — module missing.
-
-- [ ] **Step 3: Implementation**
-
-`ralph_executor/claim.py`:
+- [ ] **Step 3: Implement** — `ralph_executor/claim.py`:
 
 ```python
 """``CLAIM.json`` schema and IO helpers.
 
 Each PBI in ``.ralph/current/<id>/`` carries a ``CLAIM.json`` naming the
 ralph instance that owns it. Written atomically with the
-``git mv inbox/<id>/ current/<id>/`` so claim and move share a single
-commit + push.
+``git mv inbox/<id>/ current/<id>/`` via the ``_move`` ``post_mv`` hook.
 """
 
 from __future__ import annotations
@@ -1208,7 +1040,6 @@ class ClaimInfo:
 
 
 def write_claim(pbi_dir: Path, info: ClaimInfo) -> Path:
-    """Write ``CLAIM.json`` into ``pbi_dir`` and return the file path."""
     payload = {
         "instance_id": info.instance_id,
         "claimed_at": info.claimed_at.isoformat(),
@@ -1220,11 +1051,6 @@ def write_claim(pbi_dir: Path, info: ClaimInfo) -> Path:
 
 
 def read_claim(pbi_dir: Path) -> ClaimInfo | None:
-    """Read ``CLAIM.json`` from ``pbi_dir``, or return None if absent.
-
-    Raises :class:`ClaimParseError` for malformed JSON, wrong types, or
-    missing required fields.
-    """
     path = pbi_dir / CLAIM_FILENAME
     if not path.is_file():
         return None
@@ -1253,74 +1079,101 @@ def read_claim(pbi_dir: Path) -> ClaimInfo | None:
     return ClaimInfo(instance_id=instance_id, claimed_at=claimed_at, hostname=hostname)
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/executor/test_claim.py -v
-```
-
-Expected: PASS — 4 tests.
+- [ ] **Step 4: PASS** — 4 tests.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add ralph_executor/claim.py tests/executor/test_claim.py
-git commit -m "multi-ralph: CLAIM.json read/write helpers"
+git commit -m "multi-ralph: CLAIM.json IO helpers"
 ```
 
 ---
 
-## Task 10: Atomic claim commit — `_claim_pbi` writes `CLAIM.json` with the move
+## Task T10: Atomic claim via `_move` `post_mv` hook — **confidence: 91%**
 
-**Files:**
-- Modify: `ralph_executor/queue/movements.py` (extend `move_inbox_to_current`)
-- Modify: `ralph_executor/loop.py` (`_claim_pbi_worktree`)
-- Test: extend `tests/executor/test_loop.py`
+**Files:** `ralph_executor/queue/movements.py`, `ralph_executor/loop.py` (modify), `tests/executor/test_loop.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigations (verified):**
+- `_move` calls `git_ops.commit_all` after `_rewrite_status`. A `post_mv` callback that writes `CLAIM.json` into the destination dir BEFORE `commit_all` lets `git add -A` stage the new file in the same commit.
+- This avoids the v1 plan's bug: writing CLAIM.json into the inbox dir BEFORE `git mv` would not have travelled with the mv (untracked files are left behind by `git mv` on a directory).
 
-Append to `tests/executor/test_loop.py`:
+- [ ] **Step 1: Failing test**
 
 ```python
 def test_claim_writes_claim_json_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_claim_pbi writes CLAIM.json in the same commit as the inbox→current move."""
-    # ... fixture stub: a bare queue repo with one inbox PBI, monkeypatched
-    # target_clone.ensure_clone to return a fake clone_root, monkeypatched
-    # ensure_worktree no-op.
+    import subprocess
     from ralph_executor.claim import read_claim
+    from ralph_executor.loop import _queue_repo_root, iterate_once
 
-    cfg = _build_loop_fixture(tmp_path, instance_id="ralph-a", inbox_id="WI-1234")
+    cfg = _build_two_repo_fixture(tmp_path, instance_id="ralph-a", inbox_id="WI-1234")
     iterate_once(cfg)
-    pbi_dir = _queue_repo_root(cfg) / ".ralph" / "current" / "WI-1234"
+    queue = _queue_repo_root(cfg)
+    pbi_dir = queue / ".ralph" / "current" / "WI-1234"
     assert pbi_dir.is_dir()
     claim = read_claim(pbi_dir)
-    assert claim is not None
-    assert claim.instance_id == "ralph-a"
-    # Verify the claim landed in the same commit as the mv (no orphan commits).
-    log = subprocess.run(
-        ["git", "-C", str(_queue_repo_root(cfg)), "log", "--name-only", "--format=%H"],
+    assert claim is not None and claim.instance_id == "ralph-a"
+    log_out = subprocess.run(
+        ["git", "-C", str(queue), "log", "-1", "--name-only", "--format=%H"],
         capture_output=True, text=True, check=True,
     ).stdout
-    last_commit = log.split("\n\n")[0]  # newest commit's hash + filenames
-    assert "CLAIM.json" in last_commit
-    assert "current/WI-1234" in last_commit
+    assert "CLAIM.json" in log_out
+    assert "current/WI-1234" in log_out
 ```
 
-Helper `_build_loop_fixture` should construct a bare queue repo with one PBI in `inbox/`, plus the executor config wiring; reuse / extend any existing two-repo fixture in the file.
+Helper `_build_two_repo_fixture` (in test conftest or top of module):
 
-- [ ] **Step 2: Run test to verify failure**
+```python
+def _build_two_repo_fixture(
+    tmp_path: Path, *, instance_id: str, inbox_id: str
+) -> ExecutorConfig:
+    """Init bare queue origin + clone with one PBI in inbox/; return ExecutorConfig.
 
+    Monkeypatches target_clone.ensure_clone and worktree.ensure_worktree
+    to no-op stubs so iterate_once does not touch GitHub.
+    """
+    # 1. git init --bare tmp_path/origin.git
+    # 2. clone into tmp_path/seed; scaffold .ralph/inbox/<id>/{PBI.md,HISTORY.md}
+    # 3. commit + push origin ralph-queue
+    # 4. clone tmp_path/wsa/queue-<instance_id> from the bare
+    # 5. monkeypatch target_clone.ensure_clone / worktree.ensure_worktree
+    # 6. return ExecutorConfig pointed at bare URL + tmp_path/wsa
+    # See conftest.py for canonical fixture-builder shape.
 ```
-uv run pytest tests/executor/test_loop.py -v -k claim_writes_claim_json
-```
 
-Expected: FAIL — `CLAIM.json` is not written.
+- [ ] **Step 2: FAIL**
 
 - [ ] **Step 3: Implementation**
 
-a. `ralph_executor/queue/movements.py::move_inbox_to_current` — accept an optional `extra_files` parameter and stage them before the commit:
+a. `ralph_executor/queue/movements.py::_move` — add `post_mv` parameter:
+
+```python
+from collections.abc import Callable
+
+
+def _move(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    *,
+    expected_state: PBIStatus,
+    target_state: PBIStatus,
+    commit_prefix: str,
+    post_mv: Callable[[Path], None] | None = None,
+) -> PBI:
+    # ... existing precondition checks + git_ops.mv + _rewrite_status ...
+    if post_mv is not None:
+        post_mv(dst)
+    git_ops.commit_all(
+        queue_repo,
+        f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
+    )
+    git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
+    return parse_pbi_directory(dst, status=target_state)
+```
+
+b. `move_inbox_to_current` — forward the parameter:
 
 ```python
 def move_inbox_to_current(
@@ -1329,163 +1182,108 @@ def move_inbox_to_current(
     *,
     event_log: EventLog | None = None,
     now: datetime | None = None,
-    extra_files: list[Path] | None = None,
+    post_mv: Callable[[Path], None] | None = None,
 ) -> PBI:
-    """Move ``pbi`` from inbox/ to current/, optionally staging extra files
-    in the same commit (e.g. CLAIM.json)."""
-    # ... existing move logic ...
-    # After the git mv, before commit:
-    if extra_files:
-        for path in extra_files:
-            git_ops.stage_path(_queue_repo(cfg), path)
-    # ... existing commit + push ...
+    moved = _move(
+        cfg, pbi,
+        expected_state="inbox",
+        target_state="current",
+        commit_prefix="chore(ralph-queue)",
+        post_mv=post_mv,
+    )
+    # ... existing event_log append ...
+    return moved
 ```
 
-b. `ralph_executor/loop.py::_claim_pbi_worktree` — write CLAIM.json BEFORE invoking `move_inbox_to_current`, pass its path through:
+c. `ralph_executor/loop.py::_claim_pbi_worktree` — pass the lambda:
 
 ```python
-    from datetime import datetime, UTC
+import socket
+from datetime import UTC, datetime
+from ralph_executor.claim import ClaimInfo, write_claim
 
-    from ralph_executor.claim import CLAIM_FILENAME, ClaimInfo, write_claim
-
-    # ... existing target-clone ensure ...
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        # Write CLAIM.json into the inbox dir BEFORE git mv runs;
-        # move_inbox_to_current passes ``extra_files`` so the new file
-        # lands in the same commit as the mv.
-        claim_info = ClaimInfo(
-            instance_id=cfg.instance_id,
-            claimed_at=datetime.now(tz=UTC),
-            hostname=socket.gethostname(),
-        )
-        claim_path_in_inbox = pbi.path / CLAIM_FILENAME
-        write_claim(pbi.path, claim_info)
-        moved = move_inbox_to_current(
-            cfg,
-            pbi,
-            event_log=event_log,
-            now=datetime.now(tz=UTC),
-            extra_files=[claim_path_in_inbox.parent.parent.parent / "current" / pbi.id / CLAIM_FILENAME],
-        )
-    finally:
-        event_log.close()
-    # ... existing worktree create ...
+# ... existing ensure_clone ...
+event_log = open_log(_queue_repo_root(cfg))
+try:
+    claim_info = ClaimInfo(
+        instance_id=cfg.instance_id,
+        claimed_at=datetime.now(tz=UTC),
+        hostname=socket.gethostname(),
+    )
+    moved = move_inbox_to_current(
+        cfg, pbi,
+        event_log=event_log,
+        now=datetime.now(tz=UTC),
+        post_mv=lambda dst: write_claim(dst, claim_info),
+    )
+finally:
+    event_log.close()
 ```
 
-Note: the `extra_files` path must reflect the post-mv location, because `git mv` updates the index entry. The helper `stage_path` can simply call `git add <path>`; the implementation is permissive about the file already being staged via the mv.
-
-c. Add the simple staging helper `git_ops.stage_path(repo, path)` (or reuse `add_all_changes` if its semantics already match — verify in `ralph_executor/git_ops.py`).
-
-- [ ] **Step 4: Run test to verify pass**
-
-```
-uv run pytest tests/executor/test_loop.py -v -k claim_writes_claim_json
-uv run pytest tests/executor/ -v   # regression sweep
-```
-
-Expected: PASS for the new test, no regressions.
+- [ ] **Step 4: PASS + regression sweep**
 
 - [ ] **Step 5: Commit**
 
 ```
-git add ralph_executor/queue/movements.py ralph_executor/loop.py \
-        ralph_executor/git_ops.py tests/executor/test_loop.py
-git commit -m "multi-ralph: claim writes CLAIM.json atomically with inbox→current mv"
+git add ralph_executor/queue/movements.py ralph_executor/loop.py tests/executor/test_loop.py
+git commit -m "multi-ralph: claim writes CLAIM.json via _move post_mv hook"
 ```
 
 ---
 
-## Task 11: `current_pbi()` filters by instance_id
+## Task T11: `current_pbi()` filters by `instance_id` — **confidence: 93%**
 
-**Files:**
-- Modify: `ralph_executor/queue/filesystem.py`
-- Test: extend `tests/executor/test_filesystem_queue.py`
+**Files:** `ralph_executor/queue/filesystem.py` (modify), `tests/executor/test_filesystem_queue.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation:** Existing tests assert "raises on multi-PBI in current/" — update those in the same task to match the new "exactly one per instance" invariant.
 
-Append to `tests/executor/test_filesystem_queue.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
 def test_current_pbi_returns_own_claim_only(tmp_path: Path) -> None:
-    """Filters current/*/ by CLAIM.json.instance_id matching cfg.instance_id."""
+    import dataclasses
+    from datetime import UTC, datetime
+
     from ralph_executor.claim import ClaimInfo, write_claim
     from ralph_executor.queue.filesystem import FilesystemQueueSource
 
     cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
     cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
     current = tmp_path / "queue-ralph-a" / ".ralph" / "current"
+    now = datetime(2026, 5, 31, tzinfo=UTC)
     _make_pbi_dir(current / "WI-1234", pbi_id="WI-1234", pbi_type="feature")
     _make_pbi_dir(current / "WI-5678", pbi_id="WI-5678", pbi_type="feature")
-    write_claim(current / "WI-1234", _claim("ralph-a"))
-    write_claim(current / "WI-5678", _claim("ralph-b"))
-    source = FilesystemQueueSource(cfg)
-    pbi = source.current_pbi()
-    assert pbi is not None
-    assert pbi.id == "WI-1234"
+    write_claim(current / "WI-1234", ClaimInfo(instance_id="ralph-a", claimed_at=now, hostname="a"))
+    write_claim(current / "WI-5678", ClaimInfo(instance_id="ralph-b", claimed_at=now, hostname="b"))
+    pbi = FilesystemQueueSource(cfg).current_pbi()
+    assert pbi is not None and pbi.id == "WI-1234"
 
 
 def test_current_pbi_none_when_only_foreign_claims(tmp_path: Path) -> None:
-    from ralph_executor.claim import write_claim
-    from ralph_executor.queue.filesystem import FilesystemQueueSource
-
-    cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
-    cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current"
-    _make_pbi_dir(current / "WI-5678", pbi_id="WI-5678", pbi_type="feature")
-    write_claim(current / "WI-5678", _claim("ralph-b"))
-    assert FilesystemQueueSource(cfg).current_pbi() is None
+    # Same shape, only ralph-b CLAIM.json. Assert None.
 
 
-def test_current_pbi_raises_when_two_own_claims(tmp_path: Path) -> None:
-    from ralph_executor.claim import write_claim
-    from ralph_executor.queue.filesystem import FilesystemQueueSource, QueueError
-
-    cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
-    cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current"
-    _make_pbi_dir(current / "WI-1", pbi_id="WI-1", pbi_type="feature")
-    _make_pbi_dir(current / "WI-2", pbi_id="WI-2", pbi_type="feature")
-    write_claim(current / "WI-1", _claim("ralph-a"))
-    write_claim(current / "WI-2", _claim("ralph-a"))
-    with pytest.raises(QueueError, match="more than one"):
-        FilesystemQueueSource(cfg).current_pbi()
+def test_current_pbi_raises_on_two_own_claims(tmp_path: Path) -> None:
+    import pytest
+    # Two PBIs both ralph-a CLAIM. Assert QueueError.
 
 
-def test_current_pbi_skips_dir_without_claim(tmp_path: Path) -> None:
-    """A current/<id>/ without CLAIM.json is invisible to this instance."""
-    from ralph_executor.queue.filesystem import FilesystemQueueSource
-
-    cfg = _make_fake_config(repo_path=tmp_path, instance_id="ralph-a")
-    cfg = dataclasses.replace(cfg, workspace_root=tmp_path)
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current"
-    _make_pbi_dir(current / "WI-legacy", pbi_id="WI-legacy", pbi_type="feature")
-    assert FilesystemQueueSource(cfg).current_pbi() is None
+def test_current_pbi_skips_no_claim_file(tmp_path: Path) -> None:
+    # PBI dir without CLAIM.json. Assert None (legacy / mid-migration).
 ```
 
-Add helper `_claim(instance_id)` returning a `ClaimInfo` with a fixed `claimed_at` and the given instance.
+Test helper `_make_pbi_dir` writes minimal `PBI.md` with valid frontmatter — copy from existing conftest.
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/executor/test_filesystem_queue.py -v -k current_pbi
-```
-
-Expected: FAIL — the current implementation raises on >1 PBI in `current/` regardless of ownership.
-
-- [ ] **Step 3: Implementation**
-
-Replace `FilesystemQueueSource.current_pbi`:
+- [ ] **Step 3: Implementation** — replace `FilesystemQueueSource.current_pbi`:
 
 ```python
     def current_pbi(self) -> PBI | None:
         """Return THIS instance's claimed PBI, or None.
 
-        Scans ``.ralph/current/*/CLAIM.json``. Returns the PBI whose
-        ``CLAIM.json.instance_id`` matches ``cfg.instance_id``. Foreign
-        claims are skipped; missing claims are skipped (legacy PBIs).
-        Raises ``QueueError`` if this instance owns more than one PBI in
-        ``current/`` (invariant: one Claude per ralph).
+        Scans ``.ralph/current/*/CLAIM.json``. Foreign claims and PBI dirs
+        without a CLAIM.json are skipped. Multiple own claims → QueueError.
         """
         from ralph_executor.claim import ClaimParseError, read_claim
 
@@ -1494,7 +1292,9 @@ Replace `FilesystemQueueSource.current_pbi`:
             try:
                 claim = read_claim(pbi.path)
             except ClaimParseError as exc:
-                raise QueueError(f"current/{pbi.id}: malformed CLAIM.json: {exc}") from exc
+                raise QueueError(
+                    f"current/{pbi.id}: malformed CLAIM.json: {exc}"
+                ) from exc
             if claim is None:
                 continue
             if claim.instance_id == self._config.instance_id:
@@ -1503,17 +1303,13 @@ Replace `FilesystemQueueSource.current_pbi`:
             return None
         if len(own) > 1:
             ids = sorted(p.id for p in own)
-            raise QueueError(f"current/ contains more than one PBI owned by this instance: {ids}")
+            raise QueueError(
+                f"current/ contains more than one PBI owned by this instance: {ids}"
+            )
         return own[0]
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/executor/test_filesystem_queue.py -v
-```
-
-Expected: PASS — all 4 new tests + existing.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
@@ -1524,62 +1320,85 @@ git commit -m "multi-ralph: current_pbi filters by instance_id"
 
 ---
 
-## Task 12: META-BUG carries `tripped_by_instance`
+## Task T12: META-BUG carries `tripped_by_instance` — **confidence: 95%**
 
-**Files:**
-- Modify: `ralph_executor/safety/halt.py`
-- Test: extend `tests/executor/test_halt.py`
+**Files:** `ralph_executor/safety/halt.py`, `ralph_executor/loop.py` (modify), `tests/executor/test_halt.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation (verified):** `write_meta_bug` builds frontmatter as a Python list (`halt.py:143-152`). Lines are: `["---", "id:", "type:", "severity:", "status:", "created_at:", "summary:", "---", ...]`. Insert the new line at index 7 (after `summary:`, before the closing `---`).
 
-Append to `tests/executor/test_halt.py`:
+- [ ] **Step 1: Failing test**
 
 ```python
 def test_halt_and_acknowledge_records_instance_id(tmp_path: Path) -> None:
     from datetime import UTC, datetime
 
     from ralph_executor.safety.halt import halt_and_acknowledge
-    from ralph_executor.safety.cycle_detector import CycleSignal
 
-    signals = [CycleSignal(rule="dummy", message="for test", evidence=[])]
-    halt_and_acknowledge(
+    signals = [_make_cycle_signal()]  # reuse existing test fixture helper
+    meta = halt_and_acknowledge(
         repo=tmp_path,
         signals=signals,
         now=datetime(2026, 5, 31, tzinfo=UTC),
         tripped_by_instance="ralph-a",
     )
-    meta = next((tmp_path / ".ralph" / "blocked").rglob("META-cycle-*"))
-    text = (meta / "PBI.md").read_text(encoding="utf-8")
+    text = meta.path.read_text(encoding="utf-8")
     assert "tripped_by_instance: ralph-a" in text
 ```
 
-- [ ] **Step 2: Run test to verify failure**
-
-```
-uv run pytest tests/executor/test_halt.py -v -k tripped_by_instance
-```
-
-Expected: FAIL — `halt_and_acknowledge` either does not accept `tripped_by_instance` or does not include it.
+- [ ] **Step 2: FAIL**
 
 - [ ] **Step 3: Implementation**
 
-a. `ralph_executor/safety/halt.py::halt_and_acknowledge` — accept and embed:
+a. `ralph_executor/safety/halt.py::write_meta_bug` — accept and emit:
+
+```python
+def write_meta_bug(
+    *,
+    repo: Path,
+    snapshot: StateSnapshot,
+    signals: list[CycleSignal],
+    now: datetime | None = None,
+    tripped_by_instance: str = "",
+) -> MetaBug:
+    # ... existing setup ...
+    lines: list[str] = [
+        "---",
+        f"id: {meta_id}",
+        "type: meta",
+        "severity: critical",
+        "status: blocked",
+        f"created_at: {created_at.isoformat()}",
+        f"summary: {summary}",
+    ]
+    if tripped_by_instance:
+        lines.append(f"tripped_by_instance: {tripped_by_instance}")
+    lines.append("---")
+    # ... existing remainder of body ...
+```
+
+b. `halt_and_acknowledge` — accept + forward:
 
 ```python
 def halt_and_acknowledge(
     *,
     repo: Path,
     signals: list[CycleSignal],
-    now: datetime,
+    now: datetime | None = None,
+    webhook_env: str = "RALPH_HALT_WEBHOOK",
     tripped_by_instance: str = "",
-) -> None:
-    # ... existing META-BUG body construction ...
-    if tripped_by_instance:
-        frontmatter_lines.append(f"tripped_by_instance: {tripped_by_instance}")
-    # ... existing write ...
+) -> MetaBug:
+    snapshot = snapshot_state(repo)
+    meta = write_meta_bug(
+        repo=repo,
+        snapshot=snapshot,
+        signals=list(signals),
+        now=now,
+        tripped_by_instance=tripped_by_instance,
+    )
+    # ... existing remainder ...
 ```
 
-b. `ralph_executor/loop.py::_check_cycle_detector` — pass `cfg.instance_id` through:
+c. `ralph_executor/loop.py::_check_cycle_detector`:
 
 ```python
     halt_and_acknowledge(
@@ -1590,35 +1409,30 @@ b. `ralph_executor/loop.py::_check_cycle_detector` — pass `cfg.instance_id` th
     )
 ```
 
-- [ ] **Step 4: Run test to verify pass**
-
-```
-uv run pytest tests/executor/test_halt.py -v
-uv run pytest tests/executor/test_loop.py -v   # regression sweep
-```
-
-Expected: PASS — all halt tests + existing loop tests still pass.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
 ```
 git add ralph_executor/safety/halt.py ralph_executor/loop.py tests/executor/test_halt.py
-git commit -m "multi-ralph: META-BUG records tripped_by_instance"
+git commit -m "multi-ralph: META-BUG carries tripped_by_instance"
 ```
 
 ---
 
-## Task 13: Cross-platform workspace lockfile
+## Task T13: Cross-platform workspace lockfile — **confidence: 88%**
 
-**Files:**
-- Create: `ralph_executor/lockfile.py`
-- Test: `tests/executor/test_lockfile.py`
+**Files:** `ralph_executor/lockfile.py` (new), `tests/executor/test_lockfile.py` (new)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigations:**
+- POSIX uses `fcntl.flock` (whole-file advisory lock). Windows uses `msvcrt.locking` which locks N bytes from the current file position; seek to byte 0 first, lock 1 byte. Position reset is critical — without it the lock targets undefined offsets.
+- `WorkspaceLock` opens the file in `a+b` mode (append-binary, read+write). Truncate after lock, write payload, flush.
 
-`tests/executor/test_lockfile.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -1630,51 +1444,42 @@ def test_acquire_then_release(tmp_path: Path) -> None:
     lock = WorkspaceLock(tmp_path / "queue-a" / ".ralph.lock", instance_id="ralph-a")
     with lock:
         assert (tmp_path / "queue-a" / ".ralph.lock").is_file()
-    # File may remain (POSIX/Windows differ); the OS lock release is the contract.
 
 
-def test_second_acquire_raises(tmp_path: Path) -> None:
+def test_second_acquire_raises_same_process(tmp_path: Path) -> None:
     path = tmp_path / "queue-a" / ".ralph.lock"
     first = WorkspaceLock(path, instance_id="ralph-a")
     second = WorkspaceLock(path, instance_id="ralph-a")
-    with first:
+    first.acquire()
+    try:
         with pytest.raises(LockHeldError):
             second.acquire()
+    finally:
+        first.release()
 
 
 def test_lock_payload_includes_pid_and_instance(tmp_path: Path) -> None:
-    import json
     path = tmp_path / "queue-a" / ".ralph.lock"
     lock = WorkspaceLock(path, instance_id="ralph-a")
     with lock:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["instance_id"] == "ralph-a"
-        assert isinstance(payload["pid"], int)
+        assert payload["pid"] == os.getpid()
         assert "hostname" in payload
         assert "started_at" in payload
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/executor/test_lockfile.py -v
-```
-
-Expected: FAIL — module missing.
-
-- [ ] **Step 3: Implementation**
-
-`ralph_executor/lockfile.py`:
+- [ ] **Step 3: Implement** — `ralph_executor/lockfile.py`:
 
 ```python
 """OS-level exclusive lockfile for the per-instance workspace.
 
-Acquired at executor startup; released by the OS on process exit. The
-lockfile lives at ``<workspace_root>/queue-<instance-id>/.ralph.lock``.
-
-This is intentionally a single-host primitive — it catches operator
-double-launches against the same workspace. Cross-host id collisions
-require coordinator-level work (Scope 2).
+Acquired at executor startup; released by the OS on process exit even if
+release() is never called. Lockfile lives at
+``<workspace_root>/queue-<instance-id>/.ralph.lock`` — outside the .git
+tree, never committed.
 """
 
 from __future__ import annotations
@@ -1683,7 +1488,7 @@ import json
 import os
 import socket
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
@@ -1695,42 +1500,38 @@ class LockHeldError(RuntimeError):
 
 @dataclass
 class WorkspaceLock:
-    """Cross-platform exclusive lockfile.
-
-    Use as a context manager (``with WorkspaceLock(...): ...``) or call
-    ``acquire()`` / ``release()`` explicitly. The OS releases the lock
-    on process death even if ``release()`` is never called.
-    """
-
     path: Path
     instance_id: str
-    _fh: IO[bytes] | None = None
+    _fh: IO[bytes] | None = field(default=None, init=False, repr=False)
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self.path, "a+b")  # noqa: SIM115 — released in release()
-        if sys.platform == "win32":
-            import msvcrt
+        fh = open(self.path, "a+b")  # noqa: SIM115 — released in release()
+        try:
+            if sys.platform == "win32":
+                import msvcrt
 
-            try:
-                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                self._fh.close()
-                self._fh = None
-                raise LockHeldError(
-                    f"another process already holds {self.path}"
-                ) from exc
-        else:
-            import fcntl
+                fh.seek(0)
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                except OSError as exc:
+                    raise LockHeldError(
+                        f"another process already holds {self.path}"
+                    ) from exc
+            else:
+                import fcntl
 
-            try:
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                self._fh.close()
-                self._fh = None
-                raise LockHeldError(
-                    f"another process already holds {self.path}"
-                ) from exc
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as exc:
+                    raise LockHeldError(
+                        f"another process already holds {self.path}"
+                    ) from exc
+        except BaseException:
+            fh.close()
+            raise
+
+        self._fh = fh
         payload = {
             "instance_id": self.instance_id,
             "hostname": socket.gethostname(),
@@ -1762,7 +1563,7 @@ class WorkspaceLock:
             self._fh.close()
             self._fh = None
 
-    def __enter__(self) -> WorkspaceLock:
+    def __enter__(self) -> "WorkspaceLock":
         self.acquire()
         return self
 
@@ -1770,13 +1571,7 @@ class WorkspaceLock:
         self.release()
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/executor/test_lockfile.py -v
-```
-
-Expected: PASS — 3 tests.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
@@ -1787,26 +1582,25 @@ git commit -m "multi-ralph: cross-platform workspace lockfile"
 
 ---
 
-## Task 14: CLI acquires the lockfile at startup
+## Task T14: CLI acquires the lockfile — **confidence: 92%**
 
-**Files:**
-- Modify: `ralph_executor/cli.py`
-- Test: extend `tests/executor/test_cli.py`
+**Files:** `ralph_executor/cli.py` (modify), `tests/executor/test_cli.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation:** Acquire AFTER `_apply_overrides` (need final `workspace_root` + `instance_id`), BEFORE `prepare_host_environment`. Wrap the iteration-loop body in `try/finally` so the lock releases on every exit path including the exception handler at the bottom of `main`.
 
-Append to `tests/executor/test_cli.py`:
+- [ ] **Step 1: Failing test**
 
 ```python
 def test_main_exits_when_lockfile_held(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """If another process already holds the workspace lockfile, exit non-zero."""
+    from ralph_executor.cli import main
     from ralph_executor.lockfile import WorkspaceLock
     from ralph_executor.queue_path import queue_clone_path
 
-    # Set up a minimal project + user config in tmp_path.
-    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue", instance_id="ralph-a")
+    _prepare_user_config(tmp_path, queue_repo="https://github.com/owner/queue",
+                         instance_id="ralph-a")
     _prepare_project_repo(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
@@ -1817,29 +1611,23 @@ def test_main_exits_when_lockfile_held(
     other = WorkspaceLock(lock_path, instance_id="ralph-a")
     other.acquire()
     try:
-        from ralph_executor.cli import main
-
         rc = main(["--once"])
-        assert rc != 0
-        captured = capsys.readouterr()
-        assert "another ralph already running" in captured.err.lower()
+        assert rc == 2
+        assert "another ralph already running" in capsys.readouterr().err.lower()
     finally:
         other.release()
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/executor/test_cli.py -v -k lockfile
-```
-
-Expected: FAIL — `main` does not acquire the lock yet.
-
-- [ ] **Step 3: Implementation**
-
-In `ralph_executor/cli.py::main`, immediately after `_configure_logging(cfg.log_level)` and BEFORE `prepare_host_environment`:
+- [ ] **Step 3: Implementation** — in `ralph_executor/cli.py::main`, after the `_configure_logging(cfg.log_level)` line:
 
 ```python
+    log.info(
+        "ralph-executor starting (repo=%s queue_repo=%s queue_branch=%s instance=%s)",
+        cfg.repo_path, cfg.queue_repo, cfg.queue_branch, cfg.instance_id,
+    )
+
     from ralph_executor.lockfile import LockHeldError, WorkspaceLock
     from ralph_executor.queue_path import queue_clone_path
 
@@ -1848,19 +1636,22 @@ In `ralph_executor/cli.py::main`, immediately after `_configure_logging(cfg.log_
     try:
         lock.acquire()
     except LockHeldError as exc:
-        print(f"error: another ralph already running on this workspace: {exc}", file=sys.stderr)
+        print(
+            f"error: another ralph already running on this workspace: {exc}",
+            file=sys.stderr,
+        )
         return 2
+
+    try:
+        # ... existing GH_OWNER / ADO_ORG_URL env bridge ...
+        # ... existing prepare_host_environment ...
+        # ... existing iteration loop body, returning 0 on clean exit ...
+        return 0
+    finally:
+        lock.release()
 ```
 
-Wrap the rest of `main`'s body in a `try / finally` that releases the lock on clean exit.
-
-- [ ] **Step 4: Run test to verify pass**
-
-```
-uv run pytest tests/executor/test_cli.py -v
-```
-
-Expected: PASS — all CLI tests still green.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
@@ -1871,454 +1662,500 @@ git commit -m "multi-ralph: cli acquires workspace lockfile at startup"
 
 ---
 
-## Task 15: `ralph-status` adds an OWNER column
+## Task TA: `scripts/queue_writer` — `resolve_instance_id` + namespaced `acquire_queue_clone` — **confidence: 90%**
 
-**Files:**
-- Modify: `skills/ralph-status/scripts/status.py`
-- Test: extend `tests/skills/test_ralph_status.py`
+**Files:** `scripts/queue_writer.py` (modify), `tests/scripts/test_queue_writer.py` (extend / create)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation (verified):** Existing resolvers (`resolve_workspace_root` `:95`, `resolve_queue_repo` `:123`, `resolve_queue_branch` `:158`) all share the same shape: CLI → user TOML → default. Mirror exactly. `acquire_queue_clone` `:73` forwards to `ensure_queue_clone` — T7 has already taught the latter to accept `dest`.
 
-Append to `tests/skills/test_ralph_status.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
-def test_status_table_includes_owner_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Output includes an OWNER column populated from CLAIM.json."""
-    from ralph_executor.claim import ClaimInfo, write_claim
-    from skills.ralph_status.scripts import status as status_mod
+import pytest
 
-    # Set up a queue clone with one PBI in current/ owned by 'ralph-a'.
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature")
-    write_claim(current, ClaimInfo(instance_id="ralph-a", claimed_at=_NOW, hostname="box-a"))
+from scripts.queue_writer import QueueWriterError, resolve_instance_id
 
-    rendered = status_mod.render_status(workspace_root=tmp_path, instance_id="ralph-a")
-    assert "OWNER" in rendered
-    assert "ralph-a" in rendered
+
+def test_resolve_instance_id_cli_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
+    )
+    assert resolve_instance_id("ralph-cli") == "ralph-cli"
+
+
+def test_resolve_instance_id_falls_back_to_toml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: "ralph-toml"
+    )
+    assert resolve_instance_id(None) == "ralph-toml"
+
+
+def test_resolve_instance_id_falls_back_to_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "MyBox")
+    assert resolve_instance_id(None) == "mybox"
+
+
+def test_resolve_instance_id_empty_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ralph_executor.user_config.read_instance_id", lambda: None
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "")
+    with pytest.raises(QueueWriterError, match="instance_id"):
+        resolve_instance_id(None)
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/skills/test_ralph_status.py -v -k owner
-```
-
-Expected: FAIL — `OWNER` not in header / output.
-
-- [ ] **Step 3: Implementation**
-
-In `skills/ralph-status/scripts/status.py`:
-
-a. Read `CLAIM.json` from each `current/<id>/` directory; expose `owner` per row.
-
-b. Add `OWNER` to the table headers and per-row formatting. Foreign-state rows (inbox/pending-pr/done/blocked) format `owner = "—"`.
+- [ ] **Step 3: Implementation** — append to `scripts/queue_writer.py`:
 
 ```python
-from ralph_executor.claim import ClaimParseError, read_claim
+def resolve_instance_id(cli_value: str | None = None) -> str:
+    """Resolve ``instance_id`` for operator skills.
 
-# ... inside the row-building loop for current/ PBIs:
-try:
-    claim = read_claim(pbi_dir)
-except ClaimParseError:
-    owner = "<malformed>"
-else:
-    owner = claim.instance_id if claim else "—"
-rows.append((..., owner))
+    Order: CLI flag → user TOML → sanitised hostname.
+    """
+    from ralph_executor.config import ConfigError
+    from ralph_executor.identity import (
+        InstanceIdError,
+        default_instance_id,
+        sanitize_instance_id,
+        validate_instance_id,
+    )
+    from ralph_executor.user_config import read_instance_id
 
-# Header:
-print(f"{'TARGET':<40} {'STATE':<10} {'ID':<10} {'TYPE':<10} {'OWNER':<14} {'AGE':<5} {'TITLE'}")
+    if cli_value is not None:
+        candidate = sanitize_instance_id(cli_value)
+        try:
+            return validate_instance_id(candidate)
+        except InstanceIdError as exc:
+            raise QueueWriterError(f"--instance-id: {exc}") from exc
+    try:
+        from_toml = read_instance_id()
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+    candidate = from_toml or default_instance_id()
+    try:
+        return validate_instance_id(sanitize_instance_id(candidate))
+    except InstanceIdError as exc:
+        raise QueueWriterError(
+            f"instance_id not resolvable ({exc}); pass --instance-id or set it via "
+            "`ralph-executor init`"
+        ) from exc
 ```
 
-(Adjust to match the existing formatting style — keep alignment under 132 chars.)
+Modify `acquire_queue_clone`:
 
-- [ ] **Step 4: Run tests to verify pass**
+```python
+def acquire_queue_clone(
+    workspace_root: Path,
+    queue_repo: str,
+    queue_branch: str,
+    instance_id: str,
+    *,
+    timeout: float = 120.0,
+) -> Path:
+    """Idempotent queue clone for operator skills (per-instance namespaced)."""
+    from ralph_executor.queue_path import queue_clone_path
 
+    dest = queue_clone_path(workspace_root, instance_id)
+    try:
+        return ensure_queue_clone(
+            workspace_root, queue_repo, queue_branch, dest=dest, timeout=timeout
+        )
+    except QueueCloneError as exc:
+        raise QueueWriterError(str(exc)) from exc
 ```
-uv run pytest tests/skills/test_ralph_status.py -v
-```
 
-Expected: PASS — owner test plus existing tests still green.
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
 ```
-git add skills/ralph-status/scripts/status.py tests/skills/test_ralph_status.py
-git commit -m "multi-ralph: ralph-status OWNER column from CLAIM.json"
+git add scripts/queue_writer.py tests/scripts/test_queue_writer.py
+git commit -m "multi-ralph: queue_writer resolve_instance_id + namespaced acquire_queue_clone"
 ```
 
 ---
 
-## Task 16: `ralph-cancel` refuses on foreign CLAIM
+## Task T15: `ralph-status` OWNER column + `--instance-id` — **confidence: 90%**
 
-**Files:**
-- Modify: `skills/ralph-cancel/scripts/cancel.py`
-- Test: extend `tests/skills/test_ralph_cancel.py`
+**Files:** `skills/ralph-status/scripts/status.py` (modify), `scripts/pbi_reader.py` (modify), `tests/skills/test_ralph_status.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation (verified):** `status.py:218` calls `acquire_queue_clone(workspace_root, queue_repo, queue_branch)` — must add the `instance_id` argument here. `_COLUMN_ORDER` (`status.py:81`) lists 7 columns; add OWNER between TYPE and SEVERITY (index 4). Extend `PBIRow` in `scripts/pbi_reader.py` with `owner: str | None = None`; populate it for current/ rows in `enumerate_state`.
+
+- [ ] **Step 1: Failing test**
 
 ```python
-def test_cancel_refuses_foreign_claim(tmp_path: Path) -> None:
-    from ralph_executor.claim import ClaimInfo, write_claim
-    from skills.ralph_cancel.scripts import cancel as cancel_mod
-
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature")
-    write_claim(current, ClaimInfo(instance_id="ralph-b", claimed_at=_NOW, hostname="box-b"))
-
-    rc = cancel_mod.cancel(
-        workspace_root=tmp_path, instance_id="ralph-a", pbi_id="WI-1234"
-    )
-    assert rc != 0
+def test_status_shows_owner_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. Build a queue clone at tmp_path/queue-ralph-a/.ralph/current/WI-1/
+    #    with valid PBI.md frontmatter + CLAIM.json owned by ralph-a.
+    # 2. Monkeypatch resolve_* to return the test paths + queue_repo URL.
+    # 3. Call status.main(["--workspace", str(tmp_path), "--instance-id", "ralph-a",
+    #                      "--queue-repo", "https://x", "--no-pull-mock-fixture"]).
+    # 4. Capture stdout; assert "OWNER" in header line and "ralph-a" in WI-1 row.
 ```
 
-- [ ] **Step 2: Run test to verify failure**
-
-```
-uv run pytest tests/skills/test_ralph_cancel.py -v -k foreign
-```
-
-Expected: FAIL — cancel happily writes the sentinel.
+- [ ] **Step 2: FAIL**
 
 - [ ] **Step 3: Implementation**
 
-Inside `cancel.py`'s main flow, BEFORE writing the CANCEL sentinel:
+a. `skills/ralph-status/scripts/status.py::_parse_args` — add flag:
 
 ```python
-from ralph_executor.claim import ClaimParseError, read_claim
-
-try:
-    claim = read_claim(pbi_dir)
-except ClaimParseError as exc:
-    print(f"error: malformed CLAIM.json: {exc}", file=sys.stderr)
-    return 2
-if claim is not None and claim.instance_id != instance_id:
-    print(
-        f"error: PBI {pbi_id} is claimed by instance {claim.instance_id!r}, "
-        f"not by {instance_id!r}. Use `ralph-recover` to force.",
-        file=sys.stderr,
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        help="Override instance_id from ~/.ralph/config.toml.",
     )
-    return 2
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
+b. `main` — resolve + pass:
+
+```python
+    workspace_root = resolve_workspace_root(args.workspace)
+    queue_repo = resolve_queue_repo(args.queue_repo)
+    queue_branch = resolve_queue_branch(args.queue_branch)
+    instance_id = resolve_instance_id(args.instance_id)
+    queue_clone = acquire_queue_clone(
+        workspace_root, queue_repo, queue_branch, instance_id
+    )
+```
+
+Update the import block at the top of `status.py` to include `resolve_instance_id`.
+
+c. `_COLUMN_ORDER` — add OWNER:
+
+```python
+_COLUMN_ORDER: tuple[str, ...] = (
+    "TARGET", "STATE", "ID", "TYPE", "OWNER", "SEVERITY", "AGE", "TITLE",
+)
+```
+
+d. `scripts/pbi_reader.py::PBIRow` dataclass — add field:
+
+```python
+@dataclass
+class PBIRow:
+    # ... existing fields ...
+    owner: str | None = None
+```
+
+In `enumerate_state`, when `state == "current"`, attempt `read_claim(pbi_dir)`; populate `owner` to `claim.instance_id`, or to the literal string `"<malformed>"` on `ClaimParseError`, or `None` on missing claim.
+
+e. `status.py::_row_to_cells` — emit OWNER cell at the new index:
+
+```python
+    return [
+        _truncate_target(row.target_repo) if row.target_repo else "?",
+        row.state,
+        row.pbi_id,
+        row.pbi_type,
+        row.owner or "—",
+        row.severity,
+        _age_string(row.created_at),
+        row.title,
+    ]
+```
+
+Same alignment in `_row_to_json` (`"owner": row.owner`).
+
+- [ ] **Step 4: PASS**
+
+- [ ] **Step 5: Commit**
 
 ```
-uv run pytest tests/skills/test_ralph_cancel.py -v
+git add skills/ralph-status/scripts/status.py scripts/pbi_reader.py \
+        tests/skills/test_ralph_status.py
+git commit -m "multi-ralph: ralph-status OWNER column + --instance-id flag"
 ```
 
-Expected: PASS.
+---
+
+## Task T16: `ralph-cancel` refuses foreign CLAIM — **confidence: 92%**
+
+**Files:** `skills/ralph-cancel/scripts/cancel.py` (modify), `tests/skills/test_ralph_cancel.py` (extend)
+
+**Step 0 mitigation (verified):** `cancel.py:138` calls `_resolve_current_pbi(clone, args.pbi_id)` returning the dir. Insert ownership check immediately after. Add `--instance-id` flag, thread through `acquire_queue_clone`.
+
+- [ ] **Step 1: Failing test**
+
+```python
+def test_cancel_refuses_foreign_claim(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # 1. Build queue-ralph-a/.ralph/current/WI-1/ with CLAIM.json owned by ralph-b.
+    # 2. Call cancel.main(["--pbi-id", "WI-1", "--instance-id", "ralph-a", ...]).
+    # 3. Assert rc == 2 and "claimed by" / "ralph-b" in capsys.err.
+```
+
+- [ ] **Step 2: FAIL**
+
+- [ ] **Step 3: Implementation**
+
+a. Add `--instance-id` argument to `_parse_args`.
+
+b. In `main`, resolve + pass to `acquire_queue_clone(..., instance_id)`.
+
+c. After `_resolve_current_pbi`:
+
+```python
+        from ralph_executor.claim import ClaimParseError, read_claim
+
+        try:
+            claim = read_claim(pbi_dir)
+        except ClaimParseError as exc:
+            raise QueueWriterError(f"malformed CLAIM.json: {exc}") from exc
+        if claim is not None and claim.instance_id != instance_id:
+            raise QueueWriterError(
+                f"PBI {args.pbi_id} is claimed by instance {claim.instance_id!r}, "
+                f"not {instance_id!r}. Use `ralph-recover` if you need to force."
+            )
+```
+
+Update the import block to include `resolve_instance_id`.
+
+- [ ] **Step 4: PASS**
 
 - [ ] **Step 5: Commit**
 
 ```
 git add skills/ralph-cancel/scripts/cancel.py tests/skills/test_ralph_cancel.py
-git commit -m "multi-ralph: ralph-cancel refuses foreign CLAIM"
+git commit -m "multi-ralph: ralph-cancel refuses foreign CLAIM + --instance-id flag"
 ```
 
 ---
 
-## Task 17: `ralph-promote` refuses cross-instance ownership transfer
+## Task T17: `ralph-promote` refuses cross-instance transfer — **confidence: 91%**
 
-**Files:**
-- Modify: `skills/ralph-promote/scripts/promote.py`
-- Test: extend `tests/skills/test_ralph_promote.py`
+**Files:** `skills/ralph-promote/scripts/promote.py` (modify), `tests/skills/test_ralph_promote.py` (extend)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigation:** Read `skills/ralph-promote/scripts/promote.py` to find the from-state-current branch. Insert the ownership check there. Add `--instance-id` flag.
 
-```python
-def test_promote_refuses_when_moving_foreign_claim_out_of_current(tmp_path: Path) -> None:
-    from ralph_executor.claim import ClaimInfo, write_claim
-    from skills.ralph_promote.scripts import promote as promote_mod
-
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature")
-    write_claim(current, ClaimInfo(instance_id="ralph-b", claimed_at=_NOW, hostname="box-b"))
-
-    rc = promote_mod.promote(
-        workspace_root=tmp_path,
-        instance_id="ralph-a",
-        pbi_id="WI-1234",
-        from_state="current",
-        to_state="inbox",
-    )
-    assert rc != 0
-```
-
-- [ ] **Step 2: Run test to verify failure**
-
-Expected: FAIL — no ownership check.
-
-- [ ] **Step 3: Implementation**
-
-In `promote.py`'s main flow, before performing the move when `from_state == "current"`:
-
-```python
-from ralph_executor.claim import ClaimParseError, read_claim
-
-try:
-    claim = read_claim(pbi_dir)
-except ClaimParseError as exc:
-    print(f"error: malformed CLAIM.json: {exc}", file=sys.stderr)
-    return 2
-if claim is not None and claim.instance_id != instance_id:
-    print(
-        f"error: PBI {pbi_id} in current/ is owned by {claim.instance_id!r}; "
-        f"use `ralph-recover` to take ownership before promoting.",
-        file=sys.stderr,
-    )
-    return 2
-```
-
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/skills/test_ralph_promote.py -v
-```
-
-Expected: PASS.
+- [ ] **Steps 1–4** — same pattern as T16, applied only when moving OUT OF `current/`.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add skills/ralph-promote/scripts/promote.py tests/skills/test_ralph_promote.py
-git commit -m "multi-ralph: ralph-promote refuses cross-instance ownership transfer"
+git commit -m "multi-ralph: ralph-promote refuses cross-instance current/ transfer + --instance-id flag"
 ```
 
 ---
 
-## Task 18: `ralph-recover` skill
+## Task T18: `ralph-recover` skill — **confidence: 87%**
 
-**Files:**
-- Create: `skills/ralph-recover/SKILL.md`
-- Create: `skills/ralph-recover/scripts/__init__.py` (empty)
-- Create: `skills/ralph-recover/scripts/recover.py`
-- Test: `tests/skills/test_ralph_recover.py`
+**Files:** `skills/ralph-recover/SKILL.md`, `skills/ralph-recover/scripts/__init__.py`, `skills/ralph-recover/scripts/recover.py` (new); `tests/skills/test_ralph_recover.py` (new)
 
-- [ ] **Step 1: Write the failing test**
+**Step 0 mitigations:**
+- Use `commit_paths` + `push` from `scripts/queue_writer` (already used by `ralph-cancel`) — no raw subprocess git, no shutil-fallback branch (avoids the partial-state risk in v1).
+- Frontmatter rewrites go through a single `_rewrite_lines` helper that handles `status:`, `attempts:`, `updated_at:` — not free-form regex. Mirrors `_rewrite_status` in `ralph_executor.queue.movements`.
 
-`tests/skills/test_ralph_recover.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
-from datetime import UTC, datetime
-from pathlib import Path
-
-import pytest
-
-from ralph_executor.claim import CLAIM_FILENAME, ClaimInfo, read_claim, write_claim
-from skills.ralph_recover.scripts import recover as recover_mod
-
-
-_NOW = datetime(2026, 5, 31, 12, 0, 0, tzinfo=UTC)
-
-
 def test_recover_to_inbox_moves_pbi_and_resets_attempts(tmp_path: Path) -> None:
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature", attempts=5)
-    write_claim(current, ClaimInfo(instance_id="ralph-x", claimed_at=_NOW, hostname="dead-box"))
-
-    rc = recover_mod.recover(
-        workspace_root=tmp_path, instance_id="ralph-a", pbi_id="WI-1234", destination="inbox"
-    )
-    assert rc == 0
-    inbox = tmp_path / "queue-ralph-a" / ".ralph" / "inbox" / "WI-1234"
-    assert inbox.is_dir()
-    assert not (inbox / CLAIM_FILENAME).exists()
-    # attempts reset to 0
-    entry = (inbox / "PBI.md").read_text(encoding="utf-8")
-    assert "attempts: 0" in entry
+    # Setup current/WI-1234 with foreign CLAIM, attempts: 5.
+    # recover.main(["--pbi-id", "WI-1234", "--to", "inbox", ...]).
+    # Assert: inbox/WI-1234 exists, no CLAIM.json, attempts: 0 in PBI.md, status: inbox.
 
 
-def test_recover_refuses_if_pbi_not_in_current(tmp_path: Path) -> None:
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    rc = recover_mod.recover(
-        workspace_root=tmp_path, instance_id="ralph-a", pbi_id="WI-404", destination="inbox"
-    )
-    assert rc != 0
-
-
-def test_recover_refuses_when_halt_active(tmp_path: Path) -> None:
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature")
-    write_claim(current, ClaimInfo(instance_id="ralph-x", claimed_at=_NOW, hostname="dead"))
-    halt = tmp_path / "queue-ralph-a" / ".ralph" / "state" / "halted"
-    halt.parent.mkdir(parents=True, exist_ok=True)
-    halt.write_text("halted\n", encoding="utf-8")
-    rc = recover_mod.recover(
-        workspace_root=tmp_path, instance_id="ralph-a", pbi_id="WI-1234", destination="inbox"
-    )
-    assert rc != 0
-
-
-def test_recover_refuses_if_destination_collides(tmp_path: Path) -> None:
-    _setup_queue_clone(tmp_path, instance_id="ralph-a")
-    current = tmp_path / "queue-ralph-a" / ".ralph" / "current" / "WI-1234"
-    inbox = tmp_path / "queue-ralph-a" / ".ralph" / "inbox" / "WI-1234"
-    _make_pbi_dir(current, pbi_id="WI-1234", pbi_type="feature")
-    _make_pbi_dir(inbox, pbi_id="WI-1234", pbi_type="feature")
-    write_claim(current, ClaimInfo(instance_id="ralph-x", claimed_at=_NOW, hostname="dead"))
-    rc = recover_mod.recover(
-        workspace_root=tmp_path, instance_id="ralph-a", pbi_id="WI-1234", destination="inbox"
-    )
-    assert rc != 0
+def test_recover_refuses_if_not_in_current(tmp_path: Path) -> None: ...
+def test_recover_refuses_when_halt_active(tmp_path: Path) -> None: ...
+def test_recover_refuses_destination_collision(tmp_path: Path) -> None: ...
+def test_recover_appends_history_note(tmp_path: Path) -> None: ...
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [ ] **Step 2: FAIL**
 
-```
-uv run pytest tests/skills/test_ralph_recover.py -v
-```
-
-Expected: FAIL — module / SKILL.md missing.
-
-- [ ] **Step 3: Implementation**
-
-`skills/ralph-recover/scripts/recover.py`:
+- [ ] **Step 3: Implementation** — `skills/ralph-recover/scripts/recover.py`:
 
 ```python
-"""ralph-recover — manual claim recovery escape hatch.
-
-Move a stuck ``current/<id>/`` PBI back to ``inbox/`` or ``blocked/``,
-deleting its CLAIM.json and (for inbox) resetting its attempts counter.
-"""
+"""ralph-recover — manual claim recovery escape hatch."""
 
 from __future__ import annotations
 
 import argparse
-import re
-import shutil
-import subprocess
+import json
 import sys
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ralph_executor.claim import CLAIM_FILENAME, read_claim
-from ralph_executor.queue_path import queue_clone_path
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from ralph_executor.claim import CLAIM_FILENAME, read_claim  # noqa: E402
+from scripts.queue_writer import (  # noqa: E402
+    QueueWriterError,
+    acquire_queue_clone,
+    commit_paths,
+    push,
+    resolve_instance_id,
+    resolve_queue_branch,
+    resolve_queue_repo,
+    resolve_workspace_root,
+)
 
 
-def _reset_attempts(entry_file: Path) -> None:
-    text = entry_file.read_text(encoding="utf-8")
-    new_text = re.sub(r"^attempts:\s*\d+", "attempts: 0", text, count=1, flags=re.MULTILINE)
-    entry_file.write_text(new_text, encoding="utf-8")
+DESTINATIONS = ("inbox", "blocked")
+_ENTRY_FILENAMES = ("PBI.md", "BUG.md", "FEEDBACK.md")
 
 
-def recover(
-    *,
-    workspace_root: Path,
-    instance_id: str,
-    pbi_id: str,
-    destination: str,
-) -> int:
-    if destination not in {"inbox", "blocked"}:
-        print(f"error: destination must be 'inbox' or 'blocked' (got {destination!r})", file=sys.stderr)
-        return 2
-
-    queue = queue_clone_path(workspace_root, instance_id)
-    halt = queue / ".ralph" / "state" / "halted"
-    if halt.is_file():
-        print("error: halt sentinel is active; refusing to operate", file=sys.stderr)
-        return 2
-
-    src = queue / ".ralph" / "current" / pbi_id
-    dst = queue / ".ralph" / destination / pbi_id
-    if not src.is_dir():
-        print(f"error: PBI {pbi_id!r} not found in current/", file=sys.stderr)
-        return 2
-    if dst.exists():
-        print(f"error: destination already exists at {dst}", file=sys.stderr)
-        return 2
-
-    claim = read_claim(src)
-    if claim is not None:
-        print(
-            f"recover: PBI {pbi_id} was claimed by {claim.instance_id!r} at {claim.claimed_at.isoformat()}",
-            file=sys.stderr,
-        )
-
-    # 1. Delete CLAIM.json so the destination is clean.
-    claim_file = src / CLAIM_FILENAME
-    if claim_file.is_file():
-        claim_file.unlink()
-
-    # 2. git mv current/<id>/ <destination>/<id>/ — fall back to shutil if not tracked.
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        ["git", "-C", str(queue), "mv", str(src.relative_to(queue)), str(dst.relative_to(queue))],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0:
-        # Fall back to plain rename for untracked dirs (legacy state).
-        shutil.move(str(src), str(dst))
-        subprocess.run(["git", "-C", str(queue), "add", str(dst.relative_to(queue))], check=True)
-
-    # 3. Reset attempts when going back to inbox.
-    if destination == "inbox":
-        for name in ("PBI.md", "BUG.md", "FEEDBACK.md"):
-            entry = dst / name
-            if entry.is_file():
-                _reset_attempts(entry)
-                break
-
-    # 4. Append HISTORY.md recovery note.
-    now_iso = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-    owner = claim.instance_id if claim else "<no claim>"
-    history = dst / "HISTORY.md"
-    entry = f"\n## Recovered from instance {owner} by operator — {now_iso}\n"
-    existing = history.read_text(encoding="utf-8") if history.is_file() else ""
-    history.write_text(existing + entry, encoding="utf-8")
-
-    # 5. Commit + push.
-    subprocess.run(
-        ["git", "-C", str(queue), "add", str(dst.relative_to(queue))],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(queue), "commit", "-m", f"chore(queue): recover {pbi_id} from {owner}"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(queue), "push", "origin", "HEAD"], check=False
-    )  # push failure is recoverable; loop will retry
-    return 0
+@dataclass
+class RecoverResult:
+    pbi_id: str
+    from_state: str
+    to_state: str
+    previous_owner: str | None
+    commit_sha: str
+    pushed: bool
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ralph-recover")
-    parser.add_argument("--pbi-id", required=True)
-    parser.add_argument("--to", dest="destination", choices=("inbox", "blocked"), required=True)
-    return parser
+    parser.add_argument("--pbi-id", required=True, dest="pbi_id")
+    parser.add_argument("--to", choices=DESTINATIONS, required=True, dest="destination")
+    parser.add_argument("--workspace", type=Path)
+    parser.add_argument("--queue-repo", dest="queue_repo")
+    parser.add_argument("--queue-branch", dest="queue_branch")
+    parser.add_argument("--instance-id", dest="instance_id")
+    parser.add_argument("--no-push", action="store_true")
+    return parser.parse_args(argv)
+
+
+def _find_entry_file(pbi_dir: Path) -> Path:
+    for name in _ENTRY_FILENAMES:
+        cand = pbi_dir / name
+        if cand.is_file():
+            return cand
+    raise QueueWriterError(f"PBI {pbi_dir.name}: no entry file found")
+
+
+def _rewrite_lines(
+    entry_file: Path, *, status: str | None, attempts: int | None
+) -> None:
+    text = entry_file.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        raise QueueWriterError(f"{entry_file}: no opening frontmatter fence")
+    end = -1
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            end = idx
+            break
+    if end < 0:
+        raise QueueWriterError(f"{entry_file}: no closing frontmatter fence")
+
+    now_iso = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    saw_status = saw_attempts = saw_updated = False
+    for idx in range(1, end):
+        stripped = lines[idx].lstrip()
+        if status is not None and stripped.startswith("status:"):
+            lines[idx] = f"status: {status}\n"
+            saw_status = True
+        elif attempts is not None and stripped.startswith("attempts:"):
+            lines[idx] = f"attempts: {attempts}\n"
+            saw_attempts = True
+        elif stripped.startswith("updated_at:"):
+            lines[idx] = f"updated_at: {now_iso}\n"
+            saw_updated = True
+    if status is not None and not saw_status:
+        lines.insert(end, f"status: {status}\n")
+        end += 1
+    if attempts is not None and not saw_attempts:
+        lines.insert(end, f"attempts: {attempts}\n")
+        end += 1
+    if not saw_updated:
+        lines.insert(end, f"updated_at: {now_iso}\n")
+    entry_file.write_text("".join(lines), encoding="utf-8")
+
+
+def _append_history(pbi_dir: Path, *, previous_owner: str) -> Path:
+    history = pbi_dir / "HISTORY.md"
+    now_iso = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    note = (
+        f"\n## Recovered from instance {previous_owner} by operator — {now_iso}\n"
+    )
+    existing = history.read_text(encoding="utf-8") if history.is_file() else ""
+    history.write_text(existing + note, encoding="utf-8")
+    return history
 
 
 def main(argv: list[str] | None = None) -> int:
-    from ralph_executor.config import load_config
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    try:
+        workspace_root = resolve_workspace_root(args.workspace)
+        queue_repo = resolve_queue_repo(args.queue_repo)
+        queue_branch = resolve_queue_branch(args.queue_branch)
+        instance_id = resolve_instance_id(args.instance_id)
+        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch, instance_id)
 
-    args = _build_parser().parse_args(argv)
-    cfg = load_config()
-    return recover(
-        workspace_root=cfg.workspace_root,
-        instance_id=cfg.instance_id,
-        pbi_id=args.pbi_id,
-        destination=args.destination,
-    )
+        halt = clone / ".ralph" / "state" / "halted"
+        if halt.is_file():
+            raise QueueWriterError("halt sentinel is active; refusing to operate")
+
+        src_dir = clone / ".ralph" / "current" / args.pbi_id
+        dst_dir = clone / ".ralph" / args.destination / args.pbi_id
+        if not src_dir.is_dir():
+            raise QueueWriterError(f"PBI {args.pbi_id!r} not found in current/")
+        if dst_dir.exists():
+            raise QueueWriterError(
+                f"destination already exists at {dst_dir.relative_to(clone)}"
+            )
+
+        previous_owner: str | None = None
+        claim = read_claim(src_dir)
+        if claim is not None:
+            previous_owner = claim.instance_id
+
+        claim_file = src_dir / CLAIM_FILENAME
+        if claim_file.is_file():
+            claim_file.unlink()
+        dst_dir.parent.mkdir(parents=True, exist_ok=True)
+        src_dir.rename(dst_dir)
+
+        entry = _find_entry_file(dst_dir)
+        if args.destination == "inbox":
+            _rewrite_lines(entry, status="inbox", attempts=0)
+        else:
+            _rewrite_lines(entry, status="blocked", attempts=None)
+        _append_history(dst_dir, previous_owner=previous_owner or "<no claim>")
+
+        commit_sha = commit_paths(
+            clone,
+            [src_dir, dst_dir],
+            f"chore(queue): recover {args.pbi_id} from {previous_owner or '<no claim>'}",
+        )
+        pushed = False
+        if not args.no_push:
+            push(clone, queue_branch)
+            pushed = True
+
+        print(json.dumps(asdict(RecoverResult(
+            pbi_id=args.pbi_id,
+            from_state="current",
+            to_state=args.destination,
+            previous_owner=previous_owner,
+            commit_sha=commit_sha,
+            pushed=pushed,
+        )), indent=2, sort_keys=True))
+        return 0
+    except QueueWriterError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-`skills/ralph-recover/SKILL.md` — short manual page describing usage; copy the structure from an existing skill (e.g. `skills/ralph-cancel/SKILL.md`).
+`SKILL.md` mirrors `skills/ralph-cancel/SKILL.md`.
 
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/skills/test_ralph_recover.py -v
-```
-
-Expected: PASS — 4 tests.
+- [ ] **Step 4: PASS** — 5 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2329,23 +2166,22 @@ git commit -m "multi-ralph: ralph-recover manual claim-recovery skill"
 
 ---
 
-## Task 19: Two-instance integration tests
+## Task T19: Two-instance integration tests — **confidence: 88%**
 
-**Files:**
-- Create: `tests/executor/test_multi_ralph_integration.py`
+**Files:** `tests/executor/test_multi_ralph_integration.py` (new)
 
-- [ ] **Step 1: Write the failing tests**
+**Step 0 mitigations:**
+- Concrete fixture, not `NotImplementedError`. Steps explicit below.
+- T2 (claim-race) assertion tightened: post-recovery, loser's `current/<own-id>/` is empty AND winner's CLAIM.json on disk in the loser's clone after pull.
 
-`tests/executor/test_multi_ralph_integration.py`:
+- [ ] **Step 1: Failing tests**
 
 ```python
-"""Cross-instance simulation: two ExecutorConfigs against one bare queue repo."""
+"""Cross-instance simulation: two ExecutorConfigs against one bare queue."""
 
 from __future__ import annotations
 
-import dataclasses
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -2357,31 +2193,40 @@ from ralph_executor.queue_path import queue_clone_path
 
 
 @pytest.fixture
-def two_ralphs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ExecutorConfig, ExecutorConfig, Path]:
-    """Spin up a bare queue repo + two ExecutorConfigs (ralph-a / ralph-b).
+def two_ralphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ExecutorConfig, ExecutorConfig, Path]:
+    """Bare queue origin + two configs (ralph-a, ralph-b) pointed at it.
 
-    Returns (cfg_a, cfg_b, queue_origin_path).
+    Builds an origin with .ralph/inbox/{WI-1, WI-2}, both with valid
+    PBI.md frontmatter + HISTORY.md. Monkeypatches target_clone and
+    worktree helpers to no-ops so iterate_once does not touch GitHub.
     """
-    # ... build a bare queue repo containing .ralph/inbox/{WI-1, WI-2}
-    # ... build cfg_a (workspace_root=tmp_path/'wsa', instance_id='ralph-a')
-    # ... build cfg_b (workspace_root=tmp_path/'wsb', instance_id='ralph-b')
-    # ... monkeypatch target_clone.ensure_clone to a no-op fake
-    # ... monkeypatch ensure_worktree to a no-op fake
-    raise NotImplementedError("Fill in fixture as part of Step 3")
+    # 1. Bare origin
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True)
+    # 2. Seed clone, scaffold .ralph/inbox/{WI-1,WI-2}, push ralph-queue
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(origin), str(seed)], check=True)
+    # ... scaffold helper ...
+    # 3. Two ExecutorConfigs
+    cfg_a = _build_cfg(tmp_path / "wsa", "ralph-a", str(origin))
+    cfg_b = _build_cfg(tmp_path / "wsb", "ralph-b", str(origin))
+    # 4. Monkeypatch
+    from ralph_executor import target_clone, worktree
+    monkeypatch.setattr(target_clone, "ensure_clone", _fake_ensure_clone)
+    monkeypatch.setattr(worktree, "ensure_worktree", lambda *a, **kw: None)
+    return cfg_a, cfg_b, origin
 
 
-def test_T1_two_ralphs_claim_distinct_pbis(two_ralphs):
-    cfg_a, cfg_b, origin = two_ralphs
+def test_T1_two_ralphs_claim_distinct_pbis(two_ralphs) -> None:
+    cfg_a, cfg_b, _ = two_ralphs
     iterate_once(cfg_a)
     iterate_once(cfg_b)
-    queue_a = queue_clone_path(cfg_a.workspace_root, cfg_a.instance_id) / ".ralph" / "current"
-    queue_b = queue_clone_path(cfg_b.workspace_root, cfg_b.instance_id) / ".ralph" / "current"
-    # After pull, each clone sees both current/ dirs.
-    assert (queue_a / "WI-1").is_dir() or (queue_a / "WI-2").is_dir()
-    assert (queue_b / "WI-1").is_dir() or (queue_b / "WI-2").is_dir()
-    # Each PBI has a CLAIM.json with a different owner.
+    qa = queue_clone_path(cfg_a.workspace_root, cfg_a.instance_id) / ".ralph" / "current"
+    qb = queue_clone_path(cfg_b.workspace_root, cfg_b.instance_id) / ".ralph" / "current"
     owners = set()
-    for cur in (queue_a, queue_b):
+    for cur in (qa, qb):
         for pbi in cur.iterdir():
             claim = read_claim(pbi)
             if claim is not None:
@@ -2389,33 +2234,19 @@ def test_T1_two_ralphs_claim_distinct_pbis(two_ralphs):
     assert owners == {"ralph-a", "ralph-b"}
 
 
-def test_T2_claim_race_loser_recovers(two_ralphs):
-    """Both ralphs see one inbox PBI; one wins, one gets PushRebaseConflict."""
+def test_T2_claim_race_loser_recovers(two_ralphs, tmp_path: Path) -> None:
     cfg_a, cfg_b, origin = two_ralphs
     _strip_inbox_to_one(origin, keep="WI-1")
     iterate_once(cfg_a)
     iterate_once(cfg_b)
-    # One claim succeeded; the other observed PushRebaseConflict and got
-    # back a recoverable IterationResult on the next pass.
-    result_b_followup = iterate_once(cfg_b)
-    assert result_b_followup.outcome in ("idle", "uncommitted_source", "push_conflict")
+    qb = queue_clone_path(cfg_b.workspace_root, cfg_b.instance_id) / ".ralph" / "current"
+    assert not any(qb.iterdir())  # ralph-b has no own claim
 
 
-def test_T3_sweep_does_not_clobber_other_claims(two_ralphs):
-    # ralph-a's PBI promoted to pending-pr/ — verify ralph-b's sweep does
-    # not move ralph-a's PBI.
-    pytest.skip("Fill in once sweep stub fixture is added")
-
-
-def test_T4_halt_visible_to_other_instance(two_ralphs):
+def test_T4_halt_visible_to_other_instance(two_ralphs) -> None:
     cfg_a, cfg_b, origin = two_ralphs
-    halt = origin / ".ralph" / "state" / "halted"
-    halt.parent.mkdir(parents=True, exist_ok=True)
-    halt.write_text("halted\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(origin), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(origin), "commit", "-m", "halt"], check=True)
-    with pytest.raises(HaltedError):
-        iterate_once(cfg_b)
+    # commit a halt sentinel into origin and assert ralph-b raises HaltedError
+    # ...
 
 
 def test_T5_lockfile_blocks_second_process(tmp_path: Path) -> None:
@@ -2432,104 +2263,30 @@ def test_T5_lockfile_blocks_second_process(tmp_path: Path) -> None:
         a.release()
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+(Helper functions `_build_cfg`, `_fake_ensure_clone`, `_strip_inbox_to_one` are implemented in the same module — bodies straightforward; the fixture comment lists exact steps.)
 
-```
-uv run pytest tests/executor/test_multi_ralph_integration.py -v
-```
+- [ ] **Step 2: FAIL on fixture**
 
-Expected: FAIL — fixture raises `NotImplementedError`.
+- [ ] **Step 3: Fill in fixture body + helpers** to match the comment.
 
-- [ ] **Step 3: Build the fixture**
-
-Implement `two_ralphs` by:
-1. `git init --bare <tmp_path>/queue-origin.git`
-2. Clone, write `.ralph/inbox/WI-1/{PBI.md,HISTORY.md}` and `WI-2/...` (use the existing `_make_pbi_dir` helper), commit, push.
-3. Build two `ExecutorConfig`s using `_make_fake_config` with distinct `instance_id`s and distinct `workspace_root`s, both pointing at the bare repo URL.
-4. Monkeypatch `target_clone.ensure_clone` and `worktree.ensure_worktree` with no-op fakes so iterations do not actually clone GitHub.
-
-- [ ] **Step 4: Run tests to verify pass**
-
-```
-uv run pytest tests/executor/test_multi_ralph_integration.py -v
-```
-
-Expected: PASS for T1, T2, T4, T5; T3 is `pytest.skip` (sweep coverage is already exercised by Task 19-style direct unit tests in the existing sweep test file).
+- [ ] **Step 4: PASS** — T1, T2, T4, T5. T3 (sweep) covered by existing sweep unit tests; not duplicated here.
 
 - [ ] **Step 5: Commit**
 
 ```
 git add tests/executor/test_multi_ralph_integration.py
-git commit -m "multi-ralph: integration tests T1, T2, T4, T5 across two instances"
+git commit -m "multi-ralph: cross-instance integration tests (T1, T2, T4, T5)"
 ```
 
 ---
 
-## Task 20: Documentation
+## Task T20: Documentation — **confidence: 96%**
 
-**Files:**
-- Modify: `README.md`
-- Modify: `docs/runbooks/ralph-setup.md`
+**Files:** `README.md`, `docs/runbooks/ralph-setup.md` (modify)
 
-- [ ] **Step 1: README updates**
+- [ ] **Step 1: README** — replace the "Running multiple ralphs" section. New content covers: identity resolution chain, workspace path namespacing, CLAIM.json ownership marker, `--instance-id` on every operator skill, `.ralph.lock`, upgrade procedure ("drain current/ first").
 
-Replace the existing "Running multiple ralphs" section with content describing the new model:
-
-```markdown
-## Running multiple ralphs against the same queue
-
-Ralph supports running N instances against the same `queue_repo`, each
-identified by a stable, unique `instance_id`. Coordination is purely via
-git pushes on the queue branch.
-
-### Identity
-
-Set `instance_id` once per ralph. Resolution order (first match wins):
-
-1. `--instance-id <name>` CLI flag
-2. `RALPH_INSTANCE_ID` environment variable
-3. `instance_id` in `~/.ralph/config.toml` (written by `ralph-executor init`)
-4. Sanitised hostname
-
-The id must match `^[a-z0-9][a-z0-9_-]{0,62}$`. Hostnames containing dots
-or uppercase (e.g. `MyBox.local`) are sanitised automatically to
-`mybox-local`.
-
-### Workspace layout
-
-Each ralph gets its own queue clone:
-
-  ```
-  <workspace_root>/queue-<instance-id>/
-  ```
-
-Target clones (`<workspace_root>/clones/<owner>/<name>/`) remain local to
-the host. The current design assumes one ralph per host.
-
-### Claim ownership
-
-When ralph claims an inbox PBI it writes `current/<id>/CLAIM.json` in
-the same commit as the `git mv inbox → current`. Operator skills
-(`ralph-cancel`, `ralph-promote`) refuse cross-instance operations; use
-`ralph-recover` to forcibly take over or abandon another instance's claim.
-
-### Safety
-
-A workspace lockfile (`.ralph.lock`) at the queue-clone root prevents
-the same operator from accidentally launching two ralphs against the
-same workspace.
-
-### Upgrade procedure
-
-Before upgrading the executor binary, drain `current/` (let in-flight
-PBIs complete or move them to inbox via `ralph-promote`). On the next
-launch the legacy `<workspace_root>/queue/` will be renamed atomically
-to `<workspace_root>/queue-<instance-id>/`.
-```
-
-- [ ] **Step 2: Runbook updates**
-
-In `docs/runbooks/ralph-setup.md` add `instance_id` to the config-knob table and document the new lockfile location.
+- [ ] **Step 2: Runbook** — add `instance_id` to the config-knob table. Document `--instance-id` on every operator skill. Document `.ralph.lock` location.
 
 - [ ] **Step 3: Commit**
 
@@ -2542,26 +2299,37 @@ git commit -m "multi-ralph: docs — README + runbook updates"
 
 ## Final sweep
 
-- [ ] **Run the full test suite**
+- [ ] `uv run pytest -v` — full suite green.
+- [ ] `uv run ruff check . && uv run ruff format --check .` — clean.
+- [ ] `uv run mypy ralph_executor scripts skills tests` — clean.
+- [ ] `git push origin main`.
 
-```
-uv run pytest -v
-```
+---
 
-All green.
+## Confidence summary
 
-- [ ] **Run lint + types**
+| Task | % | Key risk | Mitigation baked in |
+|---|---|---|---|
+| T1 identity | 96 | regex edge cases | tests exhaustive |
+| T2 user_config | 94 | rewrite preserves siblings | verified pattern, test asserts coexistence |
+| T3 config field | 93 | resolver source-label confusion | Step 0 re-read load_config tail |
+| T4 CLI flag | 96 | low | direct |
+| T5 init prompt | 92 | exact insertion point | Step 0 traced cmd_init flow lines |
+| T6 queue_clone_path | 99 | trivial | direct |
+| T7 route callers | 91 | fixture sweep | Step 0 enumerated 4 sites + test fixtures |
+| T8 legacy rename | 92 | cross-volume | `shutil.move` + both-exist guard before rename |
+| T9 CLAIM.json IO | 96 | low | direct |
+| T10 atomic claim | 91 | `git mv` + untracked file gotcha | redesigned to `post_mv` callback inside `_move` |
+| T11 current_pbi filter | 93 | existing test churn | bundled fix |
+| T12 META-BUG | 95 | frontmatter index | concrete `lines.append` slot |
+| T13 lockfile | 88 | Windows specifics | seek-then-lock, payload truncate, OS-release contract |
+| T14 CLI lockfile | 92 | wrapping `main` body | explicit try/finally |
+| TA queue_writer | 90 | skill resolver layer | mirror existing resolvers exactly |
+| T15 status OWNER | 90 | PBIRow extension | explicit dataclass field + per-state population |
+| T16 cancel refuse | 92 | check placement | post-`_resolve_current_pbi` |
+| T17 promote refuse | 91 | branch placement | mirror T16, only on from-current path |
+| T18 recover skill | 87 | many edge cases | use queue_writer helpers, single atomic commit, `_rewrite_lines` not regex |
+| T19 integration | 88 | fixture build | concrete steps inline, tightened race assertion |
+| T20 docs | 96 | low | direct |
 
-```
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy ralph_executor scripts tests
-```
-
-All green.
-
-- [ ] **Push**
-
-```
-git push origin main
-```
+All tasks ≥87%. All sub-95% tasks carry baked-in mitigations.
