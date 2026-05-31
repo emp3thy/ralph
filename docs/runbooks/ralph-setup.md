@@ -81,7 +81,7 @@ table, dry-run mode, Azure DevOps Phase 2) lives in
 uv run ralph-executor init
 ```
 
-Interactively prompts for `ralph_home` and `queue_repo`, then for
+Interactively prompts for `workspace_root`, `queue_repo`, and
 `queue_branch` (default `ralph-queue`). Writes them to
 `~/.ralph/config.toml`. The queue URL is smoke-tested with
 `git ls-remote`; failure prints a warning but still writes the config.
@@ -89,13 +89,13 @@ Interactively prompts for `ralph_home` and `queue_repo`, then for
 Non-interactive form:
 
 ```bash
-uv run ralph-executor init --ralph-home /opt/ralph --yes
+uv run ralph-executor init --yes
 ```
 
-`--yes` accepts the OS default for `ralph_home` and skips both the
-queue prompt and the branch prompt — `queue_branch` falls back to
-`"ralph-queue"`, and `queue_repo` must be added manually to
-`~/.ralph/config.toml` afterwards.
+`--yes` accepts the OS default for `workspace_root`
+(`~/ralph-workspaces`), skips the `queue_repo` prompt with a warning,
+and writes the default `queue_branch` (`"ralph-queue"`). `queue_repo`
+must be added manually to `~/.ralph/config.toml` afterwards.
 
 ## 4a. Configure git host
 
@@ -103,13 +103,11 @@ The executor needs `git_host` plus host-specific auth before it will
 start. Two mandatory pieces:
 
 1. Set `git_host` (and on GitHub, `gh_owner`) in
-   `<repo>/.ralph/config.toml`. The `<repo>` is the directory the
-   executor is invoked from (or pointed at via `--repo` / `--workspace`).
-   The file is git-ignored by default, so this is a per-clone
-   per-machine knob:
+   `~/.ralph/config.toml` — the same file `ralph-executor init` writes.
+   Per-machine:
 
    ```toml
-   # <repo>/.ralph/config.toml
+   # ~/.ralph/config.toml
    git_host = "github"
    gh_owner = "<your-github-username-or-org>"
    ```
@@ -139,22 +137,23 @@ Per-machine knobs. Source: `ralph_executor/user_config.py`. Written by
 
 | Key | Type | Required | Default | Env override | Description |
 |---|---|---|---|---|---|
-| `ralph_home` | string (path) | no | — | `$RALPH_HOME` | Root directory used to resolve `--workspace NAME` to `$RALPH_HOME/NAME`. Stored as a string; `~` is expanded. |
-| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue/`. Also readable from the per-queue TOML — the executor reads either. |
+| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue/`. |
 | `skills_root` | string (path) | no | source-checkout default | `$RALPH_SKILLS_ROOT` | Source `skills/` tree used by `host_select.prepare_host_environment` to find `pr-<host>/`. |
 | `claude_skills_dir` | string (path) | no | `~/.claude/skills` | `$RALPH_CLAUDE_SKILLS_DIR` | Destination directory where staged `pr/` ends up for the spawned Claude subprocess. |
-| `queue_repo` | string (URL) | yes (or set per-repo TOML / `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue/`. |
+| `queue_repo` | string (URL) | yes (or `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue/`. |
 | `queue_branch` | string | no | `ralph-queue` | `$RALPH_QUEUE_BRANCH` (executor only — skills do not read this env) | Branch on `queue_repo` that holds `.ralph/` state. |
 
-## 6. Config reference: `<queue_repo>/.ralph/config.toml`
+## 6. Config reference: operational knobs in `~/.ralph/config.toml`
 
-Per-queue knobs. Source: the `_TOML_KNOWN_KEYS` set and the
-`DEFAULT_*` constants in `ralph_executor/config.py`. Unknown top-level
-keys are logged at WARNING and ignored — forward-compat is cheap.
+All values live in the same `~/.ralph/config.toml` as section 5; the
+split between "per-machine essentials" and these "operational knobs"
+is editorial. Source: the `_TOML_KNOWN_KEYS` set and the `DEFAULT_*`
+constants in `ralph_executor/config.py`. Unknown top-level keys are
+logged at WARNING and ignored — forward-compat is cheap.
 
 | Key | Type | Default | Env override | Description |
 |---|---|---|---|---|
-| `queue_repo` | string (URL) | — (required) | none | HTTPS URL of the queue repo. Required; loop crashes without it. Operators normally set this in `~/.ralph/config.toml` once; this per-repo override is for one-off CI runs. |
+| `queue_repo` | string (URL) | — (required) | none | HTTPS URL of the queue repo. Required; loop crashes without it. Listed here for completeness — section 5 covers the same key. |
 | `queue_branch` | string | `ralph-queue` | `$RALPH_QUEUE_BRANCH` | Branch on the queue repo that holds `.ralph/` state. Must be a plain branch name — empty, `HEAD`, or `refs/heads/...` are rejected at load time. |
 | `main_branch` | string | `main` | `$RALPH_MAIN_BRANCH` | Default base branch on target repos. |
 | `max_attempts` | int | `20` | `$RALPH_MAX_ATTEMPTS` | Failed-iteration budget per PBI (only `stuck`/`error` outcomes decrement). On exhaustion the PBI moves to `blocked/`. |
@@ -175,19 +174,16 @@ keys are logged at WARNING and ignored — forward-compat is cheap.
 | `pr_check_poll_interval_seconds` | float | `30.0` | `$RALPH_PR_CHECK_POLL_INTERVAL_SECONDS` | CI-green poll interval. |
 | `use_worktrees` | bool | `true` | `$RALPH_USE_WORKTREES` | Must be `true`. The legacy single-checkout branch-dance path is gone; `load_config` rejects `false` with a migration error. |
 | `auto_merge_clean_prs` | bool | `false` | `$RALPH_AUTO_MERGE_CLEAN_PRS` | When `true`, the sweep auto-merges PRs that GitHub reports as `mergeable_state == "clean"` (CI green + required approvals + no conflicts + branch up to date). Operators opt in. |
-| `workspace_root` | string (path) | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where queue + target clones live. Same knob as in the user TOML; per-repo override wins. |
 | `same_file_min_prs` | int (> 0) | `10` | `$RALPH_SAME_FILE_MIN_PRS` | Cycle-detector `same_file_thrashing` floor: distinct PBIs that must have touched the same file inside the rolling window before the rule trips. |
 | `same_file_window_hours` | float (> 0) | `24.0` | `$RALPH_SAME_FILE_WINDOW_HOURS` | Rolling window for the same-file thrashing rule. |
 | `watch_mode` | bool | `false` | `$RALPH_WATCH_MODE` | `false` → `run_loop` exits cleanly after `idle_exit_threshold` consecutive idle iterations (intended for pods / containers). `true` → legacy daemon mode (run forever, sleep on idle). |
 | `idle_exit_threshold` | int (> 0) | `2` | `$RALPH_IDLE_EXIT_THRESHOLD` | Consecutive idle iterations before drain-on-idle exit. Raise to tolerate more transient false-idles. |
 
-Precedence (lowest → highest): defaults < per-repo TOML < env < CLI
-flag.
+Precedence (lowest → highest): defaults < `~/.ralph/config.toml` <
+env < CLI flag.
 
-Two values are intentionally not readable from TOML:
+One value is intentionally not readable from TOML:
 
-- `repo_path` — chicken-and-egg: the repo path is needed to locate the
-  TOML file itself.
 - `anthropic_api_key` — secret; env-only by policy (`ANTHROPIC_API_KEY`,
   optional — empty string falls back to Claude Code's OAuth session).
 
@@ -203,8 +199,6 @@ runs the iteration loop.
 | `--watch` | Daemon mode. Run forever, sleep `iteration_sleep_seconds` on idle. Without this flag the loop exits 0 after `idle_exit_threshold` consecutive idle iterations. Mutually exclusive with `--once` and `--iterations`. |
 | `--once` | Run a single iteration and exit. Alias for `--iterations 1`. |
 | `--iterations N` | Run exactly `N` iterations and exit. |
-| `--repo PATH` | Explicit path to the repo Ralph operates on. Overrides `$RALPH_REPO_PATH` and cwd. Mutually exclusive with `--workspace`. |
-| `--workspace NAME` | Resolve repo path against `$RALPH_HOME/NAME` (or `ralph_home` from `~/.ralph/config.toml`). `NAME` must be a plain directory name (no separators, no `.` or `..`, not absolute). |
 | `--log-level LEVEL` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Overrides `$RALPH_LOG_LEVEL` for this run. |
 | `--queue-repo URL` | Override `queue_repo` (per-run; URL validated). |
 | `--queue-branch BRANCH` | Override `queue_branch` (per-run). Plain branch name only; empty, `HEAD`, or `refs/heads/...` raise `ConfigError`. |
@@ -220,21 +214,7 @@ Per-machine setup. Writes `~/.ralph/config.toml`.
 
 | Flag | Description |
 |---|---|
-| `--ralph-home PATH` | Skip the prompt and set `ralph_home` to `PATH`. |
-| `--yes` | Non-interactive. Accept the OS default for `ralph_home`; skip the `queue_repo` and `queue_branch` prompts (`queue_branch` falls back to `"ralph-queue"`; `queue_repo` must be added manually). |
-
-#### `scaffold`
-
-Per-repo setup. Creates a `ralph-queue` branch with the `.ralph/`
-skeleton and a commented `config.toml` stub on a local checkout.
-Commits locally; does not push.
-
-| Flag | Description |
-|---|---|
-| `--repo PATH` | Explicit path to the repo to scaffold. Mutually exclusive with `--workspace`. |
-| `--workspace NAME` | Resolve target against `$RALPH_HOME/NAME` (or `ralph_home` from `~/.ralph/config.toml`). |
-| `--force` | Scaffold even if the `ralph-queue` branch already exists. |
-| `--no-config-toml` | Skip writing the `.ralph/config.toml` stub. |
+| `--yes` | Non-interactive. Accept the OS default for `workspace_root`; skip the `queue_repo` and `queue_branch` prompts (`queue_branch` falls back to `"ralph-queue"`; `queue_repo` must be added manually). |
 
 #### `migrate-queue`
 
@@ -274,18 +254,15 @@ by looking up the PR via the host API.
 
 | Flag | Description |
 |---|---|
-| `--repo PATH` | Same as the top-level flag. |
-| `--workspace NAME` | Same as the top-level flag. |
 | `--dry-run` | Print the actions that would be taken without moving any files. |
 
 ## 8. CLI reference: operator skills
 
 Skills live under `skills/ralph-*/scripts/`. All five accept a common
-set of queue-targeting flags (`--workspace`, `--queue-repo`,
-`--queue-branch`); the four mutating skills also accept `--no-push`
-and `--dry-run`. Operator skills read `queue_branch` from
-`~/.ralph/config.toml` only — they intentionally bypass
-`$RALPH_QUEUE_BRANCH` and the per-repo TOML so the operator surface
+set of queue-targeting flags (`--queue-repo`, `--queue-branch`); the
+four mutating skills also accept `--no-push` and `--dry-run`. Operator
+skills read `queue_branch` from `~/.ralph/config.toml` only — they
+intentionally bypass `$RALPH_QUEUE_BRANCH` so the operator surface
 stays on stable rails.
 
 ### `ralph-new`
@@ -449,8 +426,6 @@ Executor-specific symptoms:
 | `error: --queue-repo: ...is not a valid HTTPS URL` | CLI override is not parseable as `https://<host>/<owner>/<name>`. | Fix the URL (no trailing `.git`, no path beyond owner/name). |
 | `error: <toml-path>: use_worktrees=False is no longer supported.` | Legacy `use_worktrees = false` from before the queue-repo split. | Remove the line from TOML, unset `$RALPH_USE_WORKTREES`. |
 | `error: <toml-path>: claude_permission_mode='X' not in [...]` | Typo on `claude_permission_mode`. | Use one of `acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`, `plan`. |
-| `error: --workspace name must be a plain directory name (no separators, no '.' or '..', not absolute)` | `--workspace foo/bar` or `--workspace ..`. | Use a single-segment name. |
-| `error: --workspace needs a ralph_home root.` | Neither `$RALPH_HOME` nor `ralph_home` in `~/.ralph/config.toml`. | Run `ralph-executor init` or set `$RALPH_HOME`. |
 | Executor exits with `host environment ready: host=...` then a `HostSelectionError`. | `git_host` set but auth env vars missing (e.g. `$GH_TOKEN`). | Export the required env vars; or set `git_host = "github"` and rerun `gh auth login`. |
 | `FileNotFoundError: claude` from inside the loop. | Claude CLI not on PATH for the executor process. | Install Claude Code, run `claude --version` in the same shell, or set `claude_binary` to an absolute path. |
 | Loop exits immediately with `queue drained -- exiting after N consecutive idle iterations` and the queue has work. | The queue clone is stale (operator-side push race) or the executor is reading a different `queue_branch` than the operator skills are writing to. | Compare `cfg.queue_branch` (`ralph-executor doctor`) with the skill's resolved branch (`grep RALPH_QUEUE_BRANCH ~/.ralph/config.toml`). |
