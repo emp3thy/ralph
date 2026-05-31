@@ -14,6 +14,7 @@ ops), not by the executor itself.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -22,8 +23,10 @@ from pathlib import Path
 from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
+    read_claude_skills_dir,
     read_queue_branch,
     read_queue_repo,
+    read_skills_root,
     read_workspace_root,
     user_config_path,
     write_queue_branch,
@@ -140,6 +143,74 @@ def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
     except (subprocess.TimeoutExpired, OSError):
         return False
     return result.returncode == 0
+
+
+def _resolve_claude_skills_dir() -> Path:
+    """Resolve ``claude_skills_dir`` with the same priority as
+    ``host_select.prepare_host_environment``: env var → user_config →
+    built-in ``~/.claude/skills`` default. Kept local to
+    ``setup_cmds`` to avoid importing ``host_select`` (which would pull
+    auth-env-checking side effects into ``init``).
+    """
+    env = os.environ.get("RALPH_CLAUDE_SKILLS_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    from_cfg = read_claude_skills_dir()
+    if from_cfg is not None:
+        return from_cfg
+    return Path.home() / ".claude" / "skills"
+
+
+def _resolve_skills_root() -> Path:
+    """Resolve ``skills_root`` with the same priority order as
+    ``_resolve_claude_skills_dir``. Source-checkout default walks two
+    parents up from this file to ``<repo>/skills``.
+    """
+    env = os.environ.get("RALPH_SKILLS_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    from_cfg = read_skills_root()
+    if from_cfg is not None:
+        return from_cfg
+    return Path(__file__).resolve().parent.parent / "skills"
+
+
+def _remove_stale_ralph_add() -> None:
+    """Scrub the retired ``ralph-add`` skill from prior installs.
+
+    ``ralph-add`` was retired in commit 93d3158 (``ralph-new`` is the
+    only sanctioned adder going forward). Operators who upgraded an
+    existing install still have it staged under ``claude_skills_dir``
+    and may also have it lingering in the source-tree ``skills_root``
+    if that root predates the retirement. Both candidate paths are
+    removed here, idempotently — silently no-op when absent, one-line
+    WARNING per removed path. A removal failure is reported but does
+    not block ``cmd_init``: leaving the file is better than crashing
+    setup over a permission glitch.
+    """
+    seen: set[Path] = set()
+    for dir_path in (_resolve_claude_skills_dir(), _resolve_skills_root()):
+        stale = dir_path / "ralph-add"
+        # Same dir resolved twice (e.g. operator set
+        # RALPH_SKILLS_ROOT to ~/.claude/skills) — only check once.
+        try:
+            key = stale.resolve(strict=False)
+        except OSError:
+            key = stale
+        if key in seen:
+            continue
+        seen.add(key)
+        if not stale.is_dir():
+            continue
+        try:
+            shutil.rmtree(stale)
+        except OSError as exc:
+            print(
+                f"WARNING: failed to remove stale ralph-add at {stale}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        print(f"WARNING: removed stale ralph-add skill at {stale}")
 
 
 def cmd_init(*, assume_yes: bool) -> int:
@@ -272,6 +343,12 @@ def cmd_init(*, assume_yes: bool) -> int:
     claude = _check_tool("claude")
     if claude is None:
         print("WARNING: claude CLI not found on PATH -- install Claude Code per docs")
+
+    # Scrub the retired ralph-add skill from prior installs. Runs after
+    # config writes and tool checks so the cleanup output sits with the
+    # other warnings, just above the trailing "Done." line. Idempotent —
+    # no-op on fresh installs.
+    _remove_stale_ralph_add()
 
     print("")
     print("Done. Run `uv run ralph-executor` to drain the queue.")
