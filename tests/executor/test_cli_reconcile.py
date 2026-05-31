@@ -252,6 +252,20 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     monkeypatch.setattr("ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus)
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
+    # KILL-RALPH-HOME made queue_repo a user-config-only field, so without a
+    # user TOML load_config raises before the scripts-dir guard fires. Point
+    # Path.home() at a tmp dir holding a minimal user config so the CLI gets
+    # past load_config and reaches the scripts-dir check we want to exercise.
+    fake_home = tmp_path / "home"
+    (fake_home / ".ralph").mkdir(parents=True)
+    (fake_home / ".ralph" / "config.toml").write_text(
+        'queue_repo = "https://github.com/example/queue"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("RALPH_WORKSPACE", str(tmp_path / "ws"))
+    (tmp_path / "ws" / "queue").mkdir(parents=True)
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 2
