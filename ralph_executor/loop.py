@@ -284,8 +284,11 @@ def _persist_iteration_writes(
     queue_repo = _queue_repo_root(cfg)
     pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
     if not pbi_dir.is_dir():
-        # PBI was moved out of current/ by handle_stuck or
-        # move_current_to_pending_pr — nothing to persist here.
+        # PBI was already moved + committed + pushed by handle_stuck or
+        # move_current_to_pending_pr — both route through
+        # ``movements._move`` which runs ``git_ops.mv`` + ``commit_all``
+        # + ``push_with_rebase`` inside the same call. Nothing remains
+        # in current/ for this helper to stage.
         return
     # Use add_all_changes so deletions of tracked files (e.g. Claude
     # removing a resolved STUCK.md) are staged too — bare `git add <dir>`
@@ -711,8 +714,8 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
         if outcome.kind == "stuck":
             # --- Plan 9 Layer 1: STUCK.md detection ----------------------
             stuck_outcome = handle_stuck(
-                repo=_queue_repo_root(cfg),
-                pbi_dir=pbi.path,
+                cfg=cfg,
+                pbi=pbi,
                 now=datetime.now(tz=UTC),
                 event_log=event_log,
             )

@@ -4,16 +4,32 @@ This is per-PBI self-halt -- the loop keeps running; only the offending
 PBI is moved out of ``current/`` and into ``blocked/`` with a HISTORY.md
 audit entry recording the reason. The cycle detector observes the
 resulting ``pbi.blocked`` event through the shared event log.
+
+The folder relocation is routed through ``queue.movements.move_current_to_blocked``
+so the ``git mv`` + commit + push all happen atomically in a single
+queue-branch commit. Without that, ``shutil.move`` would leave the move
+stranded in the queue clone's working tree: ``current/<id>/*`` would
+show as ``D`` (deleted) and ``blocked/<id>/`` as ``??`` (untracked),
+origin/<queue-branch> would still show the PBI in ``current/``, and the
+loop would be unable to make forward progress on it.
 """
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ralph_executor import git_ops
+from ralph_executor.config import ExecutorConfig
 from ralph_executor.safety.events import Event, EventLog, EventType, signature_from_text
+from ralph_executor.types import PBI
+
+# ``queue.movements`` is imported lazily inside ``move_to_blocked`` to break
+# the import cycle: ``movements`` imports from ``safety.events``, and the
+# ``safety`` package's ``__init__`` re-exports from this module. A top-level
+# ``from ralph_executor.queue.movements import …`` would race the
+# half-initialised ``movements`` module during package load.
 
 _MAX_REASON_BYTES = 2048
 _TRUNCATION_MARKER = "...[truncated]"
@@ -61,36 +77,49 @@ def read_stuck_reason(pbi_dir: Path) -> str:
     return cut + _TRUNCATION_MARKER
 
 
-def move_to_blocked(*, repo: Path, pbi_dir: Path, reason: str) -> Path:
-    """Move ``pbi_dir`` from ``.ralph/current/<id>/`` to ``.ralph/blocked/<id>/``.
+def move_to_blocked(*, cfg: ExecutorConfig, pbi: PBI, reason: str) -> Path:
+    """Move the PBI from ``.ralph/current/<id>/`` to ``.ralph/blocked/<id>/``.
 
-    Appends a HISTORY.md line recording the reason. Raises ``ValueError``
-    if the directory is not under ``.ralph/current/``, and
-    ``FileExistsError`` if a sibling already occupies the blocked slot.
+    Appends a HISTORY.md line recording the reason, stages all working-tree
+    changes inside the PBI dir (so untracked files like ``STUCK.md`` and
+    any frontmatter edits the attempt counter wrote are included), then
+    delegates to :func:`queue.movements.move_current_to_blocked` for the
+    actual ``git mv`` + frontmatter status rewrite + commit + push.
+
+    Append-before-stage mirrors ``loop._move_to_blocked_with_reason`` so
+    the reason lands in the same commit as the move rather than as a
+    follow-up edit at the new path (which would re-introduce the same
+    uncommitted-edit drift the routing through ``move_current_to_blocked``
+    exists to prevent).
+
+    Raises:
+        ValueError: PBI dir is not under ``.ralph/current/<id>/``.
+        QueueMovementError: precondition violation inside the movement
+            helper (e.g. blocked target already occupied; wrong status).
+        PushRebaseConflict: queue branch raced; caller treats as recoverable.
     """
-    try:
-        relative = pbi_dir.relative_to(repo)
-    except ValueError as exc:
-        raise ValueError(f"{pbi_dir} is not inside {repo}") from exc
-    parts = relative.parts
-    if len(parts) < 3 or parts[0] != ".ralph" or parts[1] != "current":
-        raise ValueError(f"{pbi_dir} must be under .ralph/current/<pbi-id>/")
-    pbi_id = parts[2]
-    blocked_root = repo / ".ralph" / "blocked"
-    blocked_root.mkdir(parents=True, exist_ok=True)
-    target = blocked_root / pbi_id
-    if target.exists():
-        raise FileExistsError(f"blocked target already occupied: {target}; resolve manually")
-    # Move the whole directory (preserves attachments, PLAN.md, etc.).
-    shutil.move(str(pbi_dir), str(target))
-    _append_history_line(target, reason)
-    return target
+    # Lazy import to break the safety <-> queue.movements import cycle
+    # (see the module-level note above the import block).
+    from ralph_executor.queue.movements import move_current_to_blocked
+
+    queue_repo = cfg.workspace_root / "queue"
+    pbi_dir = queue_repo / ".ralph" / "current" / pbi.id
+    if not pbi_dir.is_dir():
+        raise ValueError(f"PBI {pbi.id} is not in .ralph/current/ (looked at {pbi_dir})")
+    _append_history_line(pbi_dir, reason)
+    # Without this stage step, ``git mv`` of the directory would leave
+    # untracked files (notably the ``STUCK.md`` Claude just wrote, plus
+    # any new PLAN.md/HISTORY.md entries) stranded at the source path —
+    # git mv only moves files that are in the index.
+    git_ops.add_all_changes(queue_repo, pbi_dir)
+    move_current_to_blocked(cfg, pbi)
+    return queue_repo / ".ralph" / "blocked" / pbi.id
 
 
 def handle_stuck(
     *,
-    repo: Path,
-    pbi_dir: Path,
+    cfg: ExecutorConfig,
+    pbi: PBI,
     now: datetime,
     event_log: EventLog | None = None,
 ) -> StuckOutcome | None:
@@ -108,25 +137,31 @@ def handle_stuck(
     ``signature_recurrence`` rule can spot the same blocker recurring
     across PBIs. Emission happens before ``move_to_blocked`` so the
     signature is logged even if the move fails.
+
+    The move itself is committed + pushed on the queue branch by
+    ``move_current_to_blocked`` (via ``movements._move``); callers that
+    catch ``PushRebaseConflict`` get a recoverable signal when the queue
+    branch raced.
     """
+    queue_repo = cfg.workspace_root / "queue"
+    pbi_dir = queue_repo / ".ralph" / "current" / pbi.id
     if not detect_stuck(pbi_dir):
         return None
     reason = read_stuck_reason(pbi_dir)
-    pbi_id = pbi_dir.name
     if event_log is not None:
         event_log.append(
             Event(
                 kind=EventType.SIGNATURE_OBSERVED,
                 recorded_at=now,
-                pbi_id=pbi_id,
+                pbi_id=pbi.id,
                 payload={"signature": signature_from_text(reason)},
             )
         )
-    target = move_to_blocked(repo=repo, pbi_dir=pbi_dir, reason=reason)
+    target = move_to_blocked(cfg=cfg, pbi=pbi, reason=reason)
     event = Event(
         kind=EventType.PBI_BLOCKED,
         recorded_at=now,
-        pbi_id=pbi_id,
+        pbi_id=pbi.id,
         payload={"reason": reason, "source": "stuck-self-halt"},
     )
     return StuckOutcome(blocked_path=target, reason=reason, event=event)

@@ -161,6 +161,13 @@ def test_iterate_once_moves_to_blocked_when_stuck(
     result = iterate_once(cfg_for_repo)
     assert result.outcome == "ran_stuck"
     assert (fake_repo / ".ralph" / "blocked" / "WI-1234").is_dir()
+    # Regression for BUG-HANDLE-STUCK-NO-COMMIT: the move must be
+    # committed (not stranded in the queue clone's working tree).
+    status = _git(fake_repo, "status", "--porcelain").strip()
+    assert status == "", f"working tree must be clean after stuck-move; got: {status!r}"
+    head_files = _git(fake_repo, "ls-tree", "-r", "--name-only", "HEAD")
+    assert ".ralph/blocked/WI-1234/PBI.md" in head_files
+    assert ".ralph/current/WI-1234/PBI.md" not in head_files
 
 
 def test_iterate_once_treats_error_like_partial(
@@ -918,6 +925,14 @@ def test_stuck_blocked_move_targets_queue_clone(
 
     assert result.outcome == "ran_stuck"
     assert (fake_repo / ".ralph" / "blocked" / "WI-1234").is_dir()
+    # Regression for BUG-HANDLE-STUCK-NO-COMMIT: assert the move landed
+    # as a git commit, not as stranded D/?? entries in the working tree.
+    status = _git(fake_repo, "status", "--porcelain").strip()
+    assert status == "", f"working tree must be clean after stuck-move; got: {status!r}"
+    # The most recent commit must reflect the move (R for tracked renames,
+    # A for the newly-added STUCK.md).
+    name_status = _git(fake_repo, "log", "-1", "--name-status", "--format=")
+    assert ".ralph/blocked/WI-1234/" in name_status
 
 
 def test_max_attempts_blocked_move_targets_queue_clone(

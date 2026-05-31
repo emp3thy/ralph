@@ -64,8 +64,16 @@ def fake_repo(tmp_path: Path) -> Iterator[Path]:
     _git(seed, "config", "user.email", "test@example.com")
     _git(seed, "config", "user.name", "Test User")
     _git(seed, "commit", "--allow-empty", "-m", "chore: initial main commit")
-    # Mirror production .gitignore — .ralph/state/ stays local.
-    (seed / ".gitignore").write_text(".ralph/state/\n", encoding="utf-8")
+    # Mirror production .gitignore — ``.ralph/state/`` stays local, and
+    # ``.ralph-work/`` (per-PBI worktree dirs created inside the target
+    # clone) must be ignored too. The ``fake_repo`` fixture doubles as
+    # both the queue clone AND the target clone (via the
+    # ``_fake_ensure_target_clone`` monkeypatch), so without the
+    # ``.ralph-work/`` entry the ``git add -A`` step inside
+    # ``movements._move``'s ``commit_all`` would stage the worktree dir
+    # as a gitlink and trip every test that asserts a clean working tree
+    # after a stuck/blocked move.
+    (seed / ".gitignore").write_text(".ralph/state/\n.ralph-work/\n", encoding="utf-8")
     _git(seed, "add", ".gitignore")
     _git(seed, "commit", "-m", "chore: gitignore .ralph/state/")
     for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
