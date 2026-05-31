@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from ralph_executor.prompt_composer import (
-    PromptComposeError,
     VALID_TYPES,
+    PromptComposeError,
     compose_prompt,
 )
 
@@ -45,7 +45,7 @@ def test_topic_with_only_irrelevant_override_raises(tmp_path: Path) -> None:
 
 def test_valid_types_constant_matches_pbi_type_literal() -> None:
     """Guard against drift between PBIType literal and VALID_TYPES."""
-    assert VALID_TYPES == frozenset({"feature", "bug", "pr-feedback"})
+    assert frozenset({"feature", "bug", "pr-feedback"}) == VALID_TYPES
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

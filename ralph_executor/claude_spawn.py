@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.prompt_composer import PromptComposeError, compose_prompt
+from ralph_executor.prompt_composer import compose_prompt
 from ralph_executor.subprocess_utils import popen_text, run_text
 from ralph_executor.types import PBI
 
