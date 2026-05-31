@@ -260,6 +260,44 @@ def cfg_for_repo(
     )
 
 
+def _build_minimal_cfg(tmp_path: Path, *, git_host: str = "github") -> ExecutorConfig:
+    """Construct an ExecutorConfig without ``repo_path``.
+
+    Used by tests that only need a cfg shape, not a running queue or
+    target clone. Tests that need spawning still go through
+    ``cfg_for_repo``. Today ``ExecutorConfig.repo_path`` is still a
+    required positional field, so this helper raises ``TypeError`` on
+    instantiation — that's intentional: the tests that import it are
+    skip-marked until Task 8 deletes the field.
+    """
+    return ExecutorConfig(  # type: ignore[call-arg]
+        queue_repo="file:///tmp/bare.git",
+        queue_branch="ralph-queue",
+        main_branch="main",
+        max_attempts=3,
+        log_level=20,
+        iteration_sleep_seconds=0.0,
+        claude_binary="claude",
+        claude_permission_mode="bypassPermissions",
+        anthropic_api_key="",
+        git_host=git_host,
+        gh_owner="",
+        ado_org_url="",
+        ado_project="",
+        halt_webhook="",
+        pr_check_poll_max_attempts=6,
+        pr_check_poll_interval_seconds=30.0,
+        use_worktrees=True,
+        bot_author_email="",
+        stale_days=3,
+        bash_max_timeout_ms=900_000,
+        workspace_root=tmp_path / "ws",
+        claude_session_timeout_seconds=1200,
+        same_file_min_prs=10,
+        same_file_window_hours=24.0,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _claude_path_for_subprocess(monkeypatch: pytest.MonkeyPatch, fake_claude_binary: Path) -> None:
     """Prepend the stand-in ``claude`` to PATH for any spawn under test."""

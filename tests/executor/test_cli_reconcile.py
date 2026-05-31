@@ -239,7 +239,13 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
         'queue_repo = "https://github.com/example/queue"\n',
         encoding="utf-8",
     )
-    # No skills/pr-github/scripts/ — CLI must fail fast.
+    # Post-T3: _pr_skill_scripts_path resolves against the ralph executor
+    # source tree, not cfg.repo_path. Stub it to an absent path so the CLI
+    # guard fails fast.
+    bogus = tmp_path / "no" / "such" / "scripts"
+    monkeypatch.setattr(
+        "ralph_executor.cli._pr_skill_scripts_path", lambda _cfg: bogus
+    )
     monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "ralph@example.com")
     monkeypatch.setenv("GH_TOKEN", "fake")
     monkeypatch.setenv("RALPH_REPO_PATH", str(repo))

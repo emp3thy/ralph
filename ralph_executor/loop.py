@@ -229,20 +229,28 @@ def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
 def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
     """Return the on-disk scripts directory for the configured PR skill.
 
-    ``cfg.git_host == "github"`` → ``skills/pr-github/scripts/``.
-    ``cfg.git_host == "ado"``    → ``skills/ado-pr/scripts/``.
+    The scripts live in the ralph executor source tree (``skills/pr-github/``
+    or ``skills/ado-pr/``), NOT in any target / queue clone. We resolve
+    relative to the ``ralph_executor`` package location so the lookup is
+    independent of CWD and of any operator-supplied repo path.
+
+    ``cfg.git_host == "github"`` → ``<ralph-src>/skills/pr-github/scripts/``.
+    ``cfg.git_host == "ado"``    → ``<ralph-src>/skills/ado-pr/scripts/``.
     Empty / unknown host: prefer ``pr-github`` if it exists, else fall
     back to ``ado-pr`` (existence is verified by the caller).
     """
+    import ralph_executor
+
+    ralph_src = Path(ralph_executor.__file__).resolve().parent.parent
     host = (cfg.git_host or "").strip().lower()
     if host == "github":
-        return cfg.repo_path / "skills" / "pr-github" / "scripts"
+        return ralph_src / "skills" / "pr-github" / "scripts"
     if host == "ado":
-        return cfg.repo_path / "skills" / "ado-pr" / "scripts"
-    pr_github = cfg.repo_path / "skills" / "pr-github" / "scripts"
+        return ralph_src / "skills" / "ado-pr" / "scripts"
+    pr_github = ralph_src / "skills" / "pr-github" / "scripts"
     if pr_github.is_dir():
         return pr_github
-    return cfg.repo_path / "skills" / "ado-pr" / "scripts"
+    return ralph_src / "skills" / "ado-pr" / "scripts"
 
 
 def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
