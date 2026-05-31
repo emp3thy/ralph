@@ -195,19 +195,37 @@ class FilesystemQueueSource:
         return pbis
 
     def current_pbi(self) -> PBI | None:
-        """Return the single PBI in ``current/``, or None.
+        """Return THIS instance's claimed PBI in ``current/``, or None.
 
-        Raises ``QueueError`` if more than one PBI is present —
-        ``current/`` is the single-focus folder; anything else violates
-        the executor's invariants.
+        Scans ``.ralph/current/*/CLAIM.json`` and keeps only entries whose
+        ``instance_id`` matches ``self._config.instance_id``. Foreign
+        claims and PBI dirs missing a ``CLAIM.json`` (legacy or
+        mid-migration) are skipped. Multiple own claims raise
+        ``QueueError`` — the single-focus invariant still holds within
+        an instance.
         """
-        pbis = self._list_pbis("current")
-        if not pbis:
+        from ralph_executor.claim import ClaimParseError, read_claim
+
+        own: list[PBI] = []
+        for pbi in self._list_pbis("current"):
+            try:
+                claim = read_claim(pbi.path)
+            except ClaimParseError as exc:
+                raise QueueError(
+                    f"current/{pbi.id}: malformed CLAIM.json: {exc}"
+                ) from exc
+            if claim is None:
+                continue
+            if claim.instance_id == self._config.instance_id:
+                own.append(pbi)
+        if not own:
             return None
-        if len(pbis) > 1:
-            ids = sorted(p.id for p in pbis)
-            raise QueueError(f"current/ contains more than one PBI: {ids}")
-        return pbis[0]
+        if len(own) > 1:
+            ids = sorted(p.id for p in own)
+            raise QueueError(
+                f"current/ contains more than one PBI owned by this instance: {ids}"
+            )
+        return own[0]
 
     def inbox_pbis(self) -> list[PBI]:
         """Return all inbox PBIs sorted by priority lane + created_at."""

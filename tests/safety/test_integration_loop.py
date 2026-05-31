@@ -146,7 +146,14 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
 
 def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
     """Write a minimal PBI directory into ``.ralph/current/<pbi_id>`` on the
-    queue clone's ``main`` and push to ``origin``."""
+    queue clone's ``main`` and push to ``origin``.
+
+    Also writes a ``CLAIM.json`` owned by ``test`` so the multi-ralph
+    ``current_pbi()`` ownership filter (T11) accepts the seeded PBI as
+    belonging to this instance.
+    """
+    from ralph_executor.claim import ClaimInfo, write_claim
+
     pbi_dir = repo / ".ralph" / "current" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
     (pbi_dir / "PBI.md").write_text(
@@ -159,6 +166,14 @@ def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    write_claim(
+        pbi_dir,
+        ClaimInfo(
+            instance_id="test",
+            claimed_at=datetime(2026, 5, 24, 9, 0, tzinfo=UTC),
+            hostname="test-host",
+        ),
+    )
     _git(repo, "add", f".ralph/current/{pbi_id}")
     _git(repo, "commit", "-m", f"test: seed {pbi_id} in current/")
     _git(repo, "push", "origin", "main")

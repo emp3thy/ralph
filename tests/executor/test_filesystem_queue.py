@@ -9,13 +9,31 @@ from pathlib import Path
 
 import pytest
 
+from ralph_executor.claim import CLAIM_FILENAME, ClaimInfo, write_claim
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.queue.filesystem import (
     FilesystemQueueSource,
     QueueError,
     parse_pbi_directory,
 )
-from tests.executor.conftest import write_sample_pbi
+from tests.executor.conftest import TEST_INSTANCE_ID, write_sample_pbi
+
+
+def _own_claim(now: datetime | None = None) -> ClaimInfo:
+    """ClaimInfo owned by ``TEST_INSTANCE_ID`` (matches ``cfg_for_repo``)."""
+    return ClaimInfo(
+        instance_id=TEST_INSTANCE_ID,
+        claimed_at=now or datetime(2026, 5, 31, tzinfo=UTC),
+        hostname="test-host",
+    )
+
+
+def _foreign_claim(now: datetime | None = None) -> ClaimInfo:
+    return ClaimInfo(
+        instance_id="ralph-other",
+        claimed_at=now or datetime(2026, 5, 31, tzinfo=UTC),
+        hostname="other-host",
+    )
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -86,7 +104,8 @@ def test_current_pbi_returns_none_when_empty(cfg_for_repo: ExecutorConfig) -> No
 
 
 def test_current_pbi_returns_the_one_entry(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
-    write_sample_pbi(fake_repo, pbi_id="WI-42", where="current")
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-42", where="current")
+    write_claim(pbi_dir, _own_claim())
     _git(fake_repo, "add", ".ralph/current/WI-42")
     _git(fake_repo, "commit", "-m", "current: WI-42")
     source = FilesystemQueueSource(cfg_for_repo)
@@ -96,15 +115,67 @@ def test_current_pbi_returns_the_one_entry(cfg_for_repo: ExecutorConfig, fake_re
     assert pbi.status == "current"
 
 
-def test_current_pbi_raises_when_more_than_one(
+def test_current_pbi_raises_when_more_than_one_own(
     cfg_for_repo: ExecutorConfig, fake_repo: Path
 ) -> None:
-    write_sample_pbi(fake_repo, pbi_id="WI-1", where="current")
-    write_sample_pbi(fake_repo, pbi_id="WI-2", where="current")
+    p1 = write_sample_pbi(fake_repo, pbi_id="WI-1", where="current")
+    p2 = write_sample_pbi(fake_repo, pbi_id="WI-2", where="current")
+    write_claim(p1, _own_claim())
+    write_claim(p2, _own_claim())
     _git(fake_repo, "add", ".ralph/current")
-    _git(fake_repo, "commit", "-m", "two in current")
+    _git(fake_repo, "commit", "-m", "two own claims in current")
     source = FilesystemQueueSource(cfg_for_repo)
     with pytest.raises(QueueError, match="more than one"):
+        source.current_pbi()
+
+
+def test_current_pbi_filters_to_own_claim(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """Only the PBI whose ``CLAIM.json.instance_id`` matches is returned."""
+    own_dir = write_sample_pbi(fake_repo, pbi_id="WI-own", where="current")
+    foreign_dir = write_sample_pbi(fake_repo, pbi_id="WI-foreign", where="current")
+    write_claim(own_dir, _own_claim())
+    write_claim(foreign_dir, _foreign_claim())
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "mixed-ownership current")
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.current_pbi()
+    assert pbi is not None
+    assert pbi.id == "WI-own"
+
+
+def test_current_pbi_none_when_only_foreign_claims(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    foreign_dir = write_sample_pbi(fake_repo, pbi_id="WI-foreign", where="current")
+    write_claim(foreign_dir, _foreign_claim())
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "foreign only")
+    source = FilesystemQueueSource(cfg_for_repo)
+    assert source.current_pbi() is None
+
+
+def test_current_pbi_skips_pbi_without_claim_file(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """Legacy/mid-migration: a PBI dir with no ``CLAIM.json`` is skipped."""
+    write_sample_pbi(fake_repo, pbi_id="WI-unclaimed", where="current")
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "unclaimed pbi")
+    source = FilesystemQueueSource(cfg_for_repo)
+    assert source.current_pbi() is None
+
+
+def test_current_pbi_raises_on_malformed_claim(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-broken", where="current")
+    (pbi_dir / CLAIM_FILENAME).write_text("{not json", encoding="utf-8")
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "broken claim")
+    source = FilesystemQueueSource(cfg_for_repo)
+    with pytest.raises(QueueError, match="malformed CLAIM"):
         source.current_pbi()
 
 
