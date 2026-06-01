@@ -17,7 +17,8 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import iterate_once
+from ralph_executor.lockfile import LockfileError, WorkspaceLockfile
+from ralph_executor.loop import IterationResult, iterate_once, run_loop
 from ralph_executor.sweep.runner import SweepContext, SweepResult
 from tests.executor.conftest import write_sample_pbi
 
@@ -375,3 +376,130 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         f"ralph-queue tip subject must be the claim commit "
         f"(expected={expected_subject!r}, got={subject!r})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 7: workspace lockfile acquired at startup + released on exit.
+# ---------------------------------------------------------------------------
+
+
+def test_run_loop_acquires_workspace_lockfile_at_startup(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_loop`` acquires ``<queue-clone>/.ralph.lock`` before iterating.
+
+    The stub ``iterate_once`` records that the lockfile exists on disk
+    during the iteration. The payload itself is read AFTER ``run_loop``
+    returns — Windows' ``msvcrt.locking`` byte-range lock blocks
+    in-process reads while the lock is held, so payload assertions must
+    run after release.
+    """
+    observed_existed: list[bool] = []
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        observed_existed.append((cfg.queue_clone_path / ".ralph.lock").is_file())
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+
+    list(run_loop(cfg_for_repo, max_iterations=1))
+
+    assert observed_existed == [True], "lockfile must exist on disk while iterating"
+
+    import json
+
+    payload = json.loads(
+        (cfg_for_repo.queue_clone_path / ".ralph.lock").read_text(encoding="utf-8")
+    )
+    assert payload["instance_id"] == cfg_for_repo.instance_id
+    assert payload["hostname"]
+    assert payload["pid"] > 0
+
+
+def test_run_loop_lockfile_released_on_clean_exit(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean ``run_loop`` exit releases the lockfile so the next start succeeds."""
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+
+    list(run_loop(cfg_for_repo, max_iterations=1))
+
+    # Second acquisition on the same path must succeed because the
+    # first run released the OS lock on its way out.
+    lock = WorkspaceLockfile(
+        cfg_for_repo.queue_clone_path / ".ralph.lock",
+        instance_id="probe",
+        hostname="probe-host",
+    )
+    lock.acquire()
+    try:
+        pass
+    finally:
+        lock.release()
+
+
+def test_run_loop_refuses_when_workspace_already_locked(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second ralph on the same workspace must raise ``LockfileError``.
+
+    Holding the lockfile manually before invoking ``run_loop`` simulates
+    a concurrent ralph already running on the same ``queue-<id>/`` path.
+    """
+    held = WorkspaceLockfile(
+        cfg_for_repo.queue_clone_path / ".ralph.lock",
+        instance_id="other",
+        hostname="other-host",
+    )
+    held.acquire()
+    try:
+
+        def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+            raise AssertionError("iterate_once must NOT be called when lock contended")
+
+        monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+
+        with pytest.raises(LockfileError, match="another ralph already running"):
+            list(run_loop(cfg_for_repo, max_iterations=1))
+    finally:
+        held.release()
+
+
+def test_run_loop_releases_lockfile_on_halted_error(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``HaltedError`` propagating out of ``run_loop`` still releases the lock."""
+    from ralph_executor.safety import HaltedError
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        raise HaltedError(
+            meta_bug_id="META-test",
+            meta_bug_path=cfg.queue_clone_path / ".ralph" / "blocked",
+            sentinel_path=cfg.queue_clone_path / ".ralph" / "state" / "halted",
+        )
+
+    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+
+    with pytest.raises(HaltedError):
+        list(run_loop(cfg_for_repo, max_iterations=1))
+
+    # Lock must be released — a follow-up acquire on the same path succeeds.
+    probe = WorkspaceLockfile(
+        cfg_for_repo.queue_clone_path / ".ralph.lock",
+        instance_id="probe",
+        hostname="probe-host",
+    )
+    probe.acquire()
+    probe.release()
