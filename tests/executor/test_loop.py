@@ -1126,6 +1126,20 @@ def test_claim_clones_target_and_creates_worktree_in_clone(
     def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
         ensure_clone_calls.append((info, workspace_root))
         clone_root.mkdir(parents=True, exist_ok=True)
+        # The new ``_claim_pbi_worktree`` pre-flight checks
+        # ``origin/<main_branch>`` exists in the clone before any
+        # ``move_inbox_to_current``. Materialise the ref so this happy-path
+        # test still exercises the worktree branch.
+        subprocess.run(
+            ["git", "init", "--initial-branch=main", str(clone_root)],
+            check=True,
+            capture_output=True,
+        )
+        _git(clone_root, "config", "user.email", "test@example.com")
+        _git(clone_root, "config", "user.name", "Test User")
+        _git(clone_root, "commit", "--allow-empty", "-m", "chore: initial")
+        head_sha = _git(clone_root, "rev-parse", "HEAD").strip()
+        _git(clone_root, "update-ref", "refs/remotes/origin/main", head_sha)
         return TargetClone(info=info, clone_root=clone_root)
 
     ensure_wt_calls: list[dict[str, object]] = []
@@ -1430,3 +1444,228 @@ def test_iterate_once_moves_pbi_to_blocked_when_target_unreachable(
     )
     assert "Claim failed" in history
     assert "target unreachable: network unreachable" in history
+
+
+# ----------------------------------------------------------------------
+# Regression: empty target repo (no origin/main) must NOT crash the loop
+# ----------------------------------------------------------------------
+
+
+def _init_empty_target_clone(clone_root: Path) -> None:
+    """Materialise a non-empty local git repo with NO ``origin/<main>`` ref.
+
+    Used by the empty-target-repo regression tests below. The clone has
+    an origin remote registered (so git_ops talks to it cleanly) but no
+    ``refs/remotes/origin/main`` ref — simulating a freshly-cloned empty
+    GitHub repository.
+    """
+    clone_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(clone_root)],
+        check=True,
+        capture_output=True,
+    )
+    _git(clone_root, "config", "user.email", "test@example.com")
+    _git(clone_root, "config", "user.name", "Test User")
+    _git(clone_root, "commit", "--allow-empty", "-m", "chore: initial")
+    _git(clone_root, "remote", "add", "origin", "file:///nonexistent.git")
+
+
+def test_iterate_once_moves_pbi_to_blocked_when_target_origin_main_missing(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty target repo (no ``origin/main``) must not crash iterate_once.
+
+    Pre-bug behaviour: ``ensure_worktree`` raised a raw ``GitCommandError``
+    AFTER the inbox -> current move had already committed, killing the
+    loop and stranding the PBI in ``current/`` with no worktree.
+
+    Fixed behaviour: ``_claim_pbi_worktree`` pre-flights ``origin/<main>``
+    before the move, raises ``_ClaimError``, ``iterate_once`` demotes
+    the PBI inbox -> blocked with the reason recorded in HISTORY.md,
+    and the loop continues to the next iteration.
+    """
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    _populate_inbox(fake_repo, pbi_id="WI-EMPTY")
+
+    empty_clone = tmp_path / "ws" / "clones" / "test" / "repo"
+    _init_empty_target_clone(empty_clone)
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=empty_clone)
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
+
+    result = iterate_once(cfg_for_repo)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-EMPTY"
+    assert (fake_repo / ".ralph" / "blocked" / "WI-EMPTY").is_dir()
+    assert not (fake_repo / ".ralph" / "inbox" / "WI-EMPTY").exists()
+    assert not (fake_repo / ".ralph" / "current" / "WI-EMPTY").exists()
+    history = (fake_repo / ".ralph" / "blocked" / "WI-EMPTY" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "origin/main" in history
+
+
+def test_iterate_once_resume_self_heals_missing_work_worktree(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PBI sitting in ``current/`` with no work worktree must be re-materialised
+    on resume rather than handing a non-existent ``cwd`` to ``spawn_claude_p``.
+
+    Simulates a prior iteration's claim that crashed AFTER the inbox -> current
+    move but BEFORE ``ensure_worktree`` completed. The resume path's
+    ``ensure_worktree`` call must idempotently (re)create the worktree.
+    """
+    from dataclasses import replace as _replace
+    from textwrap import dedent
+
+    # Manually seed a PBI directly in current/ (skipping the claim path)
+    # to model "previous claim crashed mid-way".
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-RESUME"
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        dedent(
+            """\
+            ---
+            id: WI-RESUME
+            type: feature
+            status: current
+            severity: normal
+            attempts: 0
+            created_at: 2026-05-24T09:15:00+00:00
+            updated_at: 2026-05-24T09:15:00+00:00
+            target_repo: https://github.com/test/repo
+            ---
+
+            # WI-RESUME body
+            """
+        ),
+        encoding="utf-8",
+    )
+    (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
+    _git(fake_repo, "commit", "-m", "test: seed WI-RESUME directly in current/")
+    _git(fake_repo, "push", "origin", "main")
+
+    # Count ensure_worktree invocations — must run on resume, not just claim.
+    from ralph_executor import loop as loop_mod
+
+    real_ensure = loop_mod.ensure_worktree
+    calls: list[dict[str, object]] = []
+
+    def _spy(*args: object, **kwargs: object) -> None:
+        calls.append({"args": args, "kwargs": kwargs})
+        return real_ensure(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(loop_mod, "ensure_worktree", _spy)
+    monkeypatch.setattr(
+        "ralph_executor.loop.spawn_claude_p",
+        _stub_spawn("partial"),
+    )
+
+    result = iterate_once(cfg_for_repo)
+
+    # Resume completed normally, did not crash.
+    assert result.outcome == "ran_partial"
+    assert result.pbi_id == "WI-RESUME"
+
+    # ensure_worktree was called on the resume path with the right args.
+    resume_calls = [c for c in calls if c["kwargs"].get("branch") == "ralph/WI-RESUME"]
+    assert resume_calls, f"ensure_worktree not invoked on resume; calls={calls}"
+    kw = resume_calls[0]["kwargs"]
+    assert kw["create_branch_from"] == "origin/main"
+    # The worktree was materialised inside the target clone (the
+    # ``_fake_ensure_target_clone`` autouse fixture aliases the target
+    # clone to ``fake_repo``).
+    work_wt = Path(str(kw["worktree_path"]))
+    assert work_wt == fake_repo / ".ralph-work" / "WI-RESUME"
+    _ = _replace  # silence unused-import lint when the dedent helper changes
+
+
+def test_iterate_once_resume_demotes_to_blocked_when_worktree_cannot_be_created(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``ensure_worktree`` raises ``GitCommandError`` on the resume path
+    (e.g. ``origin/main`` is STILL missing after a previous mid-claim crash),
+    the PBI must be demoted current -> blocked with the reason in HISTORY.md
+    — the loop must not crash."""
+    from dataclasses import replace as _replace
+    from textwrap import dedent
+
+    from ralph_executor.git_ops import GitCommandError
+    from ralph_executor.target_clone import TargetClone
+    from ralph_executor.url_utils import TargetRepoInfo
+
+    pbi_dir = fake_repo / ".ralph" / "current" / "WI-STRANDED"
+    pbi_dir.mkdir(parents=True, exist_ok=True)
+    (pbi_dir / "PBI.md").write_text(
+        dedent(
+            """\
+            ---
+            id: WI-STRANDED
+            type: feature
+            status: current
+            severity: normal
+            attempts: 0
+            created_at: 2026-05-24T09:15:00+00:00
+            updated_at: 2026-05-24T09:15:00+00:00
+            target_repo: https://github.com/test/repo
+            ---
+
+            # WI-STRANDED body
+            """
+        ),
+        encoding="utf-8",
+    )
+    (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
+    _git(fake_repo, "commit", "-m", "test: seed WI-STRANDED in current/")
+    _git(fake_repo, "push", "origin", "main")
+
+    # Point ensure_clone at an empty target clone (no origin/main); also
+    # stub ensure_worktree to raise GitCommandError to model "origin/main
+    # still missing on the retry".
+    empty_clone = tmp_path / "ws" / "clones" / "test" / "repo"
+    _init_empty_target_clone(empty_clone)
+
+    def _fake_ensure_clone(info: TargetRepoInfo, workspace_root: Path) -> TargetClone:
+        return TargetClone(info=info, clone_root=empty_clone)
+
+    def _fake_ensure_worktree(*args: object, **kwargs: object) -> None:
+        raise GitCommandError(
+            ["git", "worktree", "add", "-b", "ralph/WI-STRANDED", "<path>", "origin/main"],
+            128,
+            "fatal: invalid reference: origin/main",
+        )
+
+    monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
+    monkeypatch.setattr("ralph_executor.loop.ensure_worktree", _fake_ensure_worktree)
+
+    result = iterate_once(cfg_for_repo)
+
+    assert result.outcome == "claim_failed"
+    assert result.pbi_id == "WI-STRANDED"
+    assert (fake_repo / ".ralph" / "blocked" / "WI-STRANDED").is_dir()
+    assert not (fake_repo / ".ralph" / "current" / "WI-STRANDED").exists()
+    history = (fake_repo / ".ralph" / "blocked" / "WI-STRANDED" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Claim failed" in history
+    assert "origin/main" in history
+    _ = _replace
