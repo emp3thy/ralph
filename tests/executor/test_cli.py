@@ -648,14 +648,16 @@ def test_init_prompts_for_queue_branch(
         lambda _url, *, timeout=10.0: True,
     )
 
-    # The interactive flow calls input() three times in order:
+    # The interactive flow calls input() four times in order:
     #   1. workspace_root prompt (blank → OS default)
     #   2. queue_repo prompt (valid URL accepted)
     #   3. queue_branch prompt (blank → default "ralph-queue")
+    #   4. instance_id prompt (blank → sanitised-hostname default)
     answers = iter(
         [
             "",
             "https://github.com/test/queue",
+            "",
             "",
         ]
     )
@@ -688,6 +690,7 @@ def test_init_persists_non_default_queue_branch(
             "",  # workspace_root → default
             "https://github.com/test/queue",
             "custom-queue-branch",
+            "",  # instance_id → sanitised-hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
