@@ -112,6 +112,21 @@ DEFAULT_SAME_FILE_WINDOW_HOURS = 24.0
 # mid-flight doesn't cut a healthy loop short.
 DEFAULT_WATCH_MODE = False
 DEFAULT_IDLE_EXIT_THRESHOLD = 2
+# Autobug feature flags. When ``autobug_enabled`` is True, executor /
+# Claude-subprocess crashes are captured as bug PBIs on the queue (see
+# ``ralph_executor.autobug``). The rate-limit caps how many new bug PBIs
+# autobug may emit in a rolling window, so a runaway crash loop cannot
+# spam the queue. The dedup-done-window controls how far back a
+# previously-closed bug is considered for ``reopen_regression`` rather
+# than a fresh emission. Severity defaults split python crashes
+# (``critical``) from subprocess crashes (``high``) so triage stays
+# aligned with the spec.
+DEFAULT_AUTOBUG_ENABLED = True
+DEFAULT_AUTOBUG_RATE_MAX = 5
+DEFAULT_AUTOBUG_RATE_WINDOW_MINUTES = 10
+DEFAULT_AUTOBUG_DEDUP_DONE_WINDOW_DAYS = 30
+DEFAULT_AUTOBUG_SEVERITY_PYTHON_CRASH = "critical"
+DEFAULT_AUTOBUG_SEVERITY_SUBPROCESS_CRASH = "high"
 
 # Per-instance identity. Multi-ralph (Scope 1) lets several ralph
 # executors share a queue repo by namespacing the workspace queue clone
@@ -200,6 +215,15 @@ _TOML_KNOWN_KEYS = frozenset(
         # multiple ralph instances can co-operate on a shared queue repo.
         # See ``resolve_instance_id`` for the full precedence chain.
         "instance_id",
+        # Autobug — see DEFAULT_AUTOBUG_* above. All knobs are optional
+        # with safe defaults so a fresh install gets crash-capture on
+        # without operator action.
+        "autobug_enabled",
+        "autobug_rate_max",
+        "autobug_rate_window_minutes",
+        "autobug_dedup_done_window_days",
+        "autobug_severity_python_crash",
+        "autobug_severity_subprocess_crash",
     }
 )
 
@@ -389,6 +413,24 @@ class ExecutorConfig:
     # tolerates more transient false-idles before exit.
     watch_mode: bool = DEFAULT_WATCH_MODE
     idle_exit_threshold: int = DEFAULT_IDLE_EXIT_THRESHOLD
+    # Autobug knobs. ``autobug_enabled`` is the master switch — when
+    # False, ``detect_python_crash`` / ``detect_subprocess_crash`` short
+    # circuit and never write to the queue. ``autobug_rate_max`` /
+    # ``autobug_rate_window_minutes`` cap how many new bug PBIs autobug
+    # may emit in a rolling window so a tight crash loop cannot spam the
+    # queue (rate_check + rollup in ``ralph_executor.autobug.fuses``).
+    # ``autobug_dedup_done_window_days`` is how far back a previously
+    # closed bug is considered a regression candidate (otherwise a fresh
+    # PBI is filed). The two severity strings are stamped onto each
+    # emitted PBI's frontmatter unchanged — keep them in the PBI
+    # severity vocabulary (``critical`` / ``high`` / ``normal`` /
+    # ``low``).
+    autobug_enabled: bool = DEFAULT_AUTOBUG_ENABLED
+    autobug_rate_max: int = DEFAULT_AUTOBUG_RATE_MAX
+    autobug_rate_window_minutes: int = DEFAULT_AUTOBUG_RATE_WINDOW_MINUTES
+    autobug_dedup_done_window_days: int = DEFAULT_AUTOBUG_DEDUP_DONE_WINDOW_DAYS
+    autobug_severity_python_crash: str = DEFAULT_AUTOBUG_SEVERITY_PYTHON_CRASH
+    autobug_severity_subprocess_crash: str = DEFAULT_AUTOBUG_SEVERITY_SUBPROCESS_CRASH
 
     @property
     def queue_clone_path(self) -> Path:
@@ -866,6 +908,63 @@ def load_config() -> ExecutorConfig:
         hostname=socket.gethostname(),
     )
 
+    autobug_enabled = _resolve_bool(
+        name="autobug_enabled",
+        env_name="RALPH_AUTOBUG_ENABLED",
+        toml_value=toml_overrides.get("autobug_enabled"),
+        default=DEFAULT_AUTOBUG_ENABLED,
+        source_label=source_label,
+    )
+    autobug_rate_max = _resolve_int(
+        name="autobug_rate_max",
+        env_name="RALPH_AUTOBUG_RATE_MAX",
+        toml_value=toml_overrides.get("autobug_rate_max"),
+        default=DEFAULT_AUTOBUG_RATE_MAX,
+        source_label=source_label,
+    )
+    if autobug_rate_max <= 0:
+        raise ConfigError(
+            f"{source_label}: autobug_rate_max must be positive (got {autobug_rate_max})"
+        )
+    autobug_rate_window_minutes = _resolve_int(
+        name="autobug_rate_window_minutes",
+        env_name="RALPH_AUTOBUG_RATE_WINDOW_MINUTES",
+        toml_value=toml_overrides.get("autobug_rate_window_minutes"),
+        default=DEFAULT_AUTOBUG_RATE_WINDOW_MINUTES,
+        source_label=source_label,
+    )
+    if autobug_rate_window_minutes <= 0:
+        raise ConfigError(
+            f"{source_label}: autobug_rate_window_minutes must be positive "
+            f"(got {autobug_rate_window_minutes})"
+        )
+    autobug_dedup_done_window_days = _resolve_int(
+        name="autobug_dedup_done_window_days",
+        env_name="RALPH_AUTOBUG_DEDUP_DONE_WINDOW_DAYS",
+        toml_value=toml_overrides.get("autobug_dedup_done_window_days"),
+        default=DEFAULT_AUTOBUG_DEDUP_DONE_WINDOW_DAYS,
+        source_label=source_label,
+    )
+    if autobug_dedup_done_window_days <= 0:
+        raise ConfigError(
+            f"{source_label}: autobug_dedup_done_window_days must be positive "
+            f"(got {autobug_dedup_done_window_days})"
+        )
+    autobug_severity_python_crash = _resolve_str(
+        name="autobug_severity_python_crash",
+        env_name="RALPH_AUTOBUG_SEVERITY_PYTHON_CRASH",
+        toml_value=toml_overrides.get("autobug_severity_python_crash"),
+        default=DEFAULT_AUTOBUG_SEVERITY_PYTHON_CRASH,
+        source_label=source_label,
+    )
+    autobug_severity_subprocess_crash = _resolve_str(
+        name="autobug_severity_subprocess_crash",
+        env_name="RALPH_AUTOBUG_SEVERITY_SUBPROCESS_CRASH",
+        toml_value=toml_overrides.get("autobug_severity_subprocess_crash"),
+        default=DEFAULT_AUTOBUG_SEVERITY_SUBPROCESS_CRASH,
+        source_label=source_label,
+    )
+
     return ExecutorConfig(
         queue_repo=queue_repo,
         queue_branch=queue_branch,
@@ -895,4 +994,10 @@ def load_config() -> ExecutorConfig:
         same_file_window_hours=same_file_window_hours,
         watch_mode=watch_mode,
         idle_exit_threshold=idle_exit_threshold,
+        autobug_enabled=autobug_enabled,
+        autobug_rate_max=autobug_rate_max,
+        autobug_rate_window_minutes=autobug_rate_window_minutes,
+        autobug_dedup_done_window_days=autobug_dedup_done_window_days,
+        autobug_severity_python_crash=autobug_severity_python_crash,
+        autobug_severity_subprocess_crash=autobug_severity_subprocess_crash,
     )
