@@ -142,9 +142,17 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
     return clone, cfg
 
 
-def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
+def _write_pbi_in_current(
+    repo: Path, pbi_id: str, attempts: int = 0, *, instance_id: str = "test-ralph"
+) -> None:
     """Write a minimal PBI directory into ``.ralph/current/<pbi_id>`` on the
-    queue clone's ``main`` and push to ``origin``."""
+    queue clone's ``main`` and push to ``origin``.
+
+    Also seeds ``CLAIM.json`` so ``current_pbi()`` recognises the PBI as
+    owned by ``instance_id`` (default matches ``_init_repo``'s cfg).
+    """
+    from ralph_executor.queue.claim import Claim, write_claim
+
     pbi_dir = repo / ".ralph" / "current" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
     (pbi_dir / "PBI.md").write_text(
@@ -157,6 +165,14 @@ def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=instance_id,
+            claimed_at="2026-05-24T09:00:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(repo, "add", f".ralph/current/{pbi_id}")
     _git(repo, "commit", "-m", f"test: seed {pbi_id} in current/")
     _git(repo, "push", "origin", "main")
