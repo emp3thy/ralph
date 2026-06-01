@@ -18,6 +18,25 @@ Spec patch applied at the same time: `docs/superpowers/specs/2026-05-31-ralph-au
 - Adding `instance_id` to `Context` dataclass. Reasoning: autobug emits to inbox/, NEVER claims its own emission. CLAIM.json is written by the next iteration's `move_inbox_to_current` (multi-ralph already handles it). Autobug doesn't need to know who it is.
 - Renaming autobug PBIs to include `instance_id` (e.g. `autobug-<sig>-<instance>-<seq>`). The existing `_next_seq` scan + `push_with_rebase` handles same-time-same-sig races correctly across instances.
 
+## v4 confidence-impact audit
+
+Per `standards/ralph-runtime.md` §"Apply confidence scoring": every amendment that touches a task body must be audited for confidence delta. Floor stays at 92%; no v4 amendment degrades any task below floor.
+
+| Task | v3 conf | v4 conf | Delta | Reason |
+|---|---|---|---|---|
+| T1 (Context dataclass) | 99% | 99% | — | No structural change. Deferred `instance_id` add documented in "Out of scope". |
+| T6.5 (closed_at stamping) | 92% | 93% | +1 | Step 0 hedge "verify test file location first" resolves — multi-ralph created `tests/executor/test_movements.py`. Less risk for implementer. |
+| T11 (emit) | 93% | 93% | — | Code-block edits via replace_all are mechanical; conventions unchanged. |
+| T14 (TOML keys) | 96% | 96% | — | New Step 0 adds `instance_id="test-autobug"` instruction; this is a 99%-mechanical addition that removes an implicit-knowledge trap but doesn't change task shape. |
+| T17 (claude_spawn wire) | 93% | 93% | — | Helper rename (`_queue_repo_root_for_spawn` → `cfg.queue_clone_path`) is mechanical; verified at `config.py:403`. No new risk. |
+| T18 (cli wrapper) | 93% | 93% | — | Code-block path correction via replace_all; mechanical. |
+| T19 (loop.py wires) | 92% | 92% | — | v3 Step 0 already required re-greping line numbers ("If Step 0 reveals different ground truth, update this list"). v4 makes the re-grep mandatory (not precautionary). No confidence change because the discipline was already there; v4 just reflects reality (lines DID shift). |
+| T22 (roundtrip) | 93% | 93% | — | New `CLAIM.json` byte-equality assertion adds a test case; doesn't change roundtrip semantics or risk profile. |
+
+All other tasks (T2, T3, T4, T5, T6, T7, T8, T9, T10, T12, T13, T15, T16, T20, T21, T23, T24, T25, T26) are untouched by v4 — their v3 confidence ratings stand verbatim.
+
+**Audit verdict:** 0 tasks below 92% floor. v4 amendments cleared.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When the ralph executor or its Claude subprocess crashes, automatically file a deduplicated bug PBI to the ralph queue capturing the crash, so future iterations work the fix without operator hand-filing.
