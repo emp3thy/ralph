@@ -47,6 +47,7 @@ from ralph_executor.git_ops import PushRebaseConflict
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     UncommittedSource,
+    move_current_to_blocked,
     move_current_to_pending_pr,
     move_inbox_to_blocked,
     move_inbox_to_current,
@@ -533,6 +534,26 @@ def _move_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reason: str) 
     move_inbox_to_blocked(cfg, pbi)
 
 
+def _move_current_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reason: str) -> None:
+    """Append the reason to the PBI's HISTORY.md, then move it current -> blocked.
+
+    Sibling of ``_move_to_blocked_with_reason`` for the resume-path
+    self-heal: a PBI in ``current/`` whose work worktree cannot be
+    (re)materialised — e.g. an earlier iteration crashed mid-claim before
+    the worktree existed and the target repo's ``origin/<main_branch>``
+    is still missing — cannot make progress. Demote it to ``blocked/``
+    with the diagnostic in HISTORY.md so an operator can triage.
+    """
+    queue_repo = _queue_repo_root(cfg)
+    current_dir = queue_repo / ".ralph" / "current" / pbi.id
+    history = current_dir / "HISTORY.md"
+    now = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    entry = f"\n## Claim failed — {now}\n\n{reason}\n"
+    existing = history.read_text(encoding="utf-8") if history.is_file() else ""
+    history.write_text(existing + entry, encoding="utf-8")
+    move_current_to_blocked(cfg, pbi)
+
+
 def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Move PBI into current/ and create the per-PBI feature branch.
 
@@ -597,6 +618,18 @@ def _claim_pbi_worktree(
     except tc_mod.TargetUnreachable as exc:
         raise _ClaimError(f"target unreachable: {exc}") from exc
     _warn_project_toml_in_target_clone(clone.clone_root)
+    # Pre-flight the base ref BEFORE the inbox -> current move. An empty
+    # target repo (no commits, no main branch) would otherwise crash
+    # ``ensure_worktree`` below with a raw ``GitCommandError`` after the
+    # PBI has already been promoted to ``current/`` — taking the loop
+    # down AND stranding the PBI with no worktree. Routing this through
+    # ``_ClaimError`` here keeps the claim atomic and lets ``iterate_once``
+    # demote the PBI inbox -> blocked with the reason in HISTORY.md.
+    if not git_ops.is_branch_remote(clone.clone_root, cfg.main_branch):
+        raise _ClaimError(
+            f"target repo {target_url} has no origin/{cfg.main_branch} "
+            f"(target may be empty or the main branch is misnamed)"
+        )
     event_log = open_log(_queue_repo_root(cfg))
     try:
         moved = move_inbox_to_current(
@@ -881,7 +914,16 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             try:
                 from ralph_executor.target_clone import ensure_clone
 
-                ensure_clone(info, workspace_root=cfg.workspace_root)
+                clone = ensure_clone(info, workspace_root=cfg.workspace_root)
+                # Honour the returned clone_root rather than the
+                # deterministic compute. Production ensure_clone always
+                # returns the deterministic path — the override matters
+                # only for tests that monkeypatch ensure_clone to alias
+                # the target clone elsewhere (e.g. to the fake queue
+                # clone). Without this, the resume self-heal below skips
+                # itself whenever ensure_clone is stubbed to a divergent
+                # root.
+                clone_root = clone.clone_root
             except Exception:
                 log.warning(
                     "iterate_once: ensure_clone failed for resumed PBI %s; "
@@ -892,6 +934,40 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
             if clone_root.is_dir():
                 _warn_project_toml_in_target_clone(clone_root)
                 work_wt = work_worktree_path(clone_root, current.id)
+                # Self-heal a missing work worktree. ``ensure_worktree``
+                # is idempotent — a no-op when the worktree already
+                # exists on the right branch — so the cost on the happy
+                # path is one ``git worktree list`` probe. The case it
+                # rescues: a prior iteration's claim crashed AFTER
+                # ``move_inbox_to_current`` succeeded but BEFORE
+                # ``ensure_worktree`` finished (e.g. ``origin/<main>``
+                # missing at that moment), leaving the PBI stranded in
+                # ``current/`` with no worktree. Without this call the
+                # resume path would hand a non-existent ``cwd`` to
+                # ``spawn_claude_p`` and the PBI could never recover.
+                #
+                # If ensure_worktree itself fails (still no
+                # ``origin/<main>``), demote the PBI current -> blocked
+                # with the reason in HISTORY.md and skip this iteration
+                # — the loop must not crash on a malformed target.
+                try:
+                    ensure_worktree(
+                        clone_root,
+                        worktree_path=work_wt,
+                        branch=_feature_branch_name(current),
+                        create_branch_from=f"origin/{cfg.main_branch}",
+                    )
+                except git_ops.GitCommandError as exc:
+                    log.warning(
+                        "iterate_once: cannot materialize work worktree for "
+                        "resumed PBI %s (%s); moving to blocked/",
+                        current.id,
+                        exc,
+                    )
+                    _move_current_to_blocked_with_reason(
+                        cfg, current, reason=str(exc)
+                    )
+                    return IterationResult(outcome="claim_failed", pbi_id=current.id)
         current = _replace(
             current,
             target_repo=target_url,
