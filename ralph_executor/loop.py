@@ -964,9 +964,7 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                         current.id,
                         exc,
                     )
-                    _move_current_to_blocked_with_reason(
-                        cfg, current, reason=str(exc)
-                    )
+                    _move_current_to_blocked_with_reason(cfg, current, reason=str(exc))
                     return IterationResult(outcome="claim_failed", pbi_id=current.id)
         current = _replace(
             current,
