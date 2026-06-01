@@ -1,6 +1,6 @@
 ---
 name: ralph-status
-description: Read-only view of the Ralph queue. Reads the single queue clone at <workspace_root>/queue/, walks the .ralph/{inbox,current,pending-pr,done,blocked} state folders, parses each PBI's frontmatter against the canonical schema, and renders a fixed-width table grouped by target_repo. Supports filtering by --state and --target-repo, plus --json for downstream automation.
+description: Read-only view of the Ralph queue. Reads the single queue clone at <workspace_root>/queue/, walks the .ralph/{inbox,current,pending-pr,done,blocked} state folders, parses each PBI's frontmatter against the canonical schema, and renders a fixed-width table grouped by target_repo. The OWNER column shows which ralph instance claimed each current/<id>/ PBI (from CLAIM.json::instance_id). Supports filtering by --state and --target-repo, plus --json for downstream automation.
 
 ---
 
@@ -62,10 +62,10 @@ with a clear error.
 ### Table mode (default)
 
 ```
-TARGET                                  STATE       ID        TYPE     SEVERITY  AGE   TITLE
-https://github.com/emp3thy/svc-auth     inbox       WI-1234   feature  normal    2h    Add /healthz endpoint
-https://github.com/emp3thy/svc-auth     current     WI-1235   bug      critical  1h    Pod crashloops on ROSA
-https://github.com/emp3thy/svc-billing  pending-pr  WI-980    feature  high      6h    Migrate invoices to v2
+TARGET                                  STATE       OWNER    ID        TYPE     SEVERITY  AGE   TITLE
+https://github.com/emp3thy/svc-auth     inbox       —        WI-1234   feature  normal    2h    Add /healthz endpoint
+https://github.com/emp3thy/svc-auth     current     ralph-a  WI-1235   bug      critical  1h    Pod crashloops on ROSA
+https://github.com/emp3thy/svc-billing  pending-pr  —        WI-980    feature  high      6h    Migrate invoices to v2
 ```
 
 Rows are grouped by `target_repo` then `state` then `created_at`, so all
@@ -75,6 +75,12 @@ column truncates URLs longer than 50 characters with a trailing `...`.
 The `AGE` column shows the time since `created_at` (`s` seconds, `m`
 minutes, `h` hours, `d` days; `?` if `created_at` is missing or
 unparseable).
+
+The `OWNER` column is the `instance_id` of the ralph that claimed the
+PBI, read from `current/<id>/CLAIM.json`. It renders as `—` (em-dash)
+when the PBI is not in `current/`, when `CLAIM.json` is missing, or when
+`CLAIM.json` is unreadable / malformed — a corrupted claim file never
+crashes the status view.
 
 Malformed PBIs (missing entry file, invalid YAML, missing required
 fields) render as a row with `?` for TARGET / TYPE / SEVERITY / AGE,
@@ -95,6 +101,7 @@ written to stderr after the table so stdout stays purely tabular.
       "created_at": "2026-05-24T09:15:00+00:00",
       "error": null,
       "id": "WI-1234",
+      "owner": null,
       "pbi_dir": ".ralph/inbox/WI-1234",
       "severity": "normal",
       "state": "inbox",
@@ -108,12 +115,14 @@ written to stderr after the table so stdout stays purely tabular.
 ```
 
 The envelope is `{"rows": [...], "errors": []}` — there is no `repos`
-key (the model has a single queue). Malformed PBIs appear in `rows`
-with `error` set to the parse-failure message and `target_repo` /
-`type` / `severity` / `attempts` / `created_at` / `updated_at` /
-`title` all `null`. Top-level failures (queue clone could not be
-materialised, config missing) print to stderr and exit 2 — they do not
-appear in the JSON envelope.
+key (the model has a single queue). The `owner` field carries
+`CLAIM.json::instance_id` for PBIs in `current/`, or `null` for any
+other state (and for current PBIs with missing / malformed CLAIM.json).
+Malformed PBIs appear in `rows` with `error` set to the parse-failure
+message and `target_repo` / `type` / `severity` / `attempts` /
+`created_at` / `updated_at` / `title` all `null`. Top-level failures
+(queue clone could not be materialised, config missing) print to stderr
+and exit 2 — they do not appear in the JSON envelope.
 
 ## How it is invoked
 
