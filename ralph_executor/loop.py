@@ -26,8 +26,10 @@ import overrides in production; the loop itself stays untouched.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import shutil
+import socket
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -44,6 +46,7 @@ from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
+from ralph_executor.lockfile import WorkspaceLockfile
 from ralph_executor.prompt_composer import PromptComposeError
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
@@ -79,17 +82,22 @@ log = logging.getLogger(__name__)
 
 
 def _queue_repo_root(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone. Always ``<workspace_root>/queue``.
+    """Filesystem path of the queue clone for this instance.
 
-    The queue repo is cloned by ``ensure_queue_clone`` into
-    ``<workspace_root>/queue`` and owns ``.ralph/`` (events.db, sentinel,
-    blocked/, …). Every operation that reads or writes under ``.ralph/`` —
-    opening the event log, moving PBIs to ``.ralph/blocked/``, handling
-    STUCK.md, checking/writing the halt sentinel — routes through this
-    helper so the side-effects land in the queue clone that gets pushed
-    to ``origin/main`` of ``queue_repo``.
+    Scope 1 multi-ralph: the queue clone is namespaced per-instance at
+    ``<workspace_root>/queue-<instance_id>/``. Delegates to
+    :attr:`ExecutorConfig.queue_clone_path` so every module that needs
+    the path agrees with the executor's view.
+
+    The queue repo is cloned by ``ensure_queue_clone`` into this path
+    and owns ``.ralph/`` (events.db, sentinel, blocked/, …). Every
+    operation that reads or writes under ``.ralph/`` — opening the
+    event log, moving PBIs to ``.ralph/blocked/``, handling STUCK.md,
+    checking/writing the halt sentinel — routes through this helper so
+    the side-effects land in the queue clone that gets pushed to
+    ``origin/<queue_branch>`` of ``queue_repo``.
     """
-    return cfg.workspace_root / "queue"
+    return cfg.queue_clone_path
 
 
 IterationOutcome = Literal[
@@ -280,7 +288,12 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
         "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
         len(signals),
     )
-    halt_and_acknowledge(repo=_queue_repo_root(cfg), signals=signals, now=now)
+    halt_and_acknowledge(
+        repo=_queue_repo_root(cfg),
+        signals=signals,
+        now=now,
+        tripped_by_instance=cfg.instance_id,
+    )
     return True
 
 
@@ -388,7 +401,12 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
         cfg.queue_repo,
         cfg.queue_branch,
     )
-    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo, cfg.queue_branch)
+    ensure_queue_clone(
+        cfg.workspace_root,
+        cfg.queue_repo,
+        cfg.queue_branch,
+        instance_id=cfg.instance_id,
+    )
 
 
 def _feature_branch_name(pbi: PBI) -> str:
@@ -663,6 +681,8 @@ def _claim_pbi_worktree(
             pbi,
             event_log=event_log,
             now=datetime.now(tz=UTC),
+            instance_id=cfg.instance_id,
+            hostname=socket.gethostname(),
         )
     finally:
         event_log.close()
@@ -1162,39 +1182,66 @@ def run_loop(
     Raises ``HaltedError`` if the halt sentinel blocks the loop on entry
     (Plan 9 Layer 3). Callers that want a gentle drain should catch
     ``HaltedError`` and surface it to the operator.
+
+    Scope 1 multi-ralph: acquires an OS-level exclusive lock on
+    ``<workspace>/queue-<instance_id>/.ralph.lock`` before the first
+    iteration and releases it on clean exit. The OS releases the lock on
+    crash exit too, so no stale-lock recovery is needed.
+    ``LockfileError`` propagates unwrapped — a same-workspace contender
+    must surface to the operator rather than silently no-op the loop.
     """
     # Drain-on-idle log goes through the cli logger so operators grep one
     # consistent ``ralph_executor.cli: queue drained …`` line regardless of
     # whether the iteration loop runs from cli.main or a programmatic caller.
     cli_log = logging.getLogger("ralph_executor.cli")
-    count = 0
-    consecutive_idle = 0
-    while True:
-        try:
-            result = iterate_once(cfg)
-        except KeyboardInterrupt:
-            log.info("interrupted")
-            return
-        except HaltedError:
-            log.warning("halt sentinel is active -- exiting run_loop")
-            raise
-        yield result
-        if result.outcome == "halted":
-            log.warning("halt signalled -- exiting run_loop")
-            return
-        if result.outcome == "idle":
-            consecutive_idle += 1
-        else:
-            consecutive_idle = 0
-        count += 1
-        if max_iterations is not None and count >= max_iterations:
-            return
-        if not cfg.watch_mode and consecutive_idle >= cfg.idle_exit_threshold:
-            cli_log.info(
-                "queue drained -- exiting after %d consecutive idle iterations",
-                consecutive_idle,
-            )
-            return
-        # Sleep only between iterations that found nothing to do.
-        if result.outcome == "idle":
-            time.sleep(cfg.iteration_sleep_seconds)
+
+    # Materialise the queue clone BEFORE acquiring the lockfile — the
+    # lockfile lives at ``<queue-clone>/.ralph.lock``, so a cold-start
+    # where the queue dir does not yet exist would otherwise leave the
+    # lockfile inside an empty directory that subsequent ``git clone``
+    # (inside ``ensure_queue_clone``) refuses to overwrite. After this
+    # call, iterate_once's own ``_pull_queue`` becomes a cheap fetch+pull.
+    _pull_queue(cfg)
+
+    lock_path = cfg.queue_clone_path / ".ralph.lock"
+    lock = WorkspaceLockfile(
+        lock_path,
+        instance_id=cfg.instance_id,
+        hostname=socket.gethostname(),
+    )
+    lock.acquire()
+    atexit.register(lock.release)
+    try:
+        count = 0
+        consecutive_idle = 0
+        while True:
+            try:
+                result = iterate_once(cfg)
+            except KeyboardInterrupt:
+                log.info("interrupted")
+                return
+            except HaltedError:
+                log.warning("halt sentinel is active -- exiting run_loop")
+                raise
+            yield result
+            if result.outcome == "halted":
+                log.warning("halt signalled -- exiting run_loop")
+                return
+            if result.outcome == "idle":
+                consecutive_idle += 1
+            else:
+                consecutive_idle = 0
+            count += 1
+            if max_iterations is not None and count >= max_iterations:
+                return
+            if not cfg.watch_mode and consecutive_idle >= cfg.idle_exit_threshold:
+                cli_log.info(
+                    "queue drained -- exiting after %d consecutive idle iterations",
+                    consecutive_idle,
+                )
+                return
+            # Sleep only between iterations that found nothing to do.
+            if result.outcome == "idle":
+                time.sleep(cfg.iteration_sleep_seconds)
+    finally:
+        lock.release()

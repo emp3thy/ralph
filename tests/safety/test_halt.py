@@ -197,3 +197,61 @@ def test_halt_and_acknowledge_sentinel_timestamp_matches_meta_bug(
     assert f"halted_at: {frozen.isoformat()}" in content
     # META-BUG created_at must also match (pre-existing behaviour).
     assert meta.created_at == frozen
+
+
+# ----------------------------------------------------------------------
+# Multi-ralph Task 11: META-BUG frontmatter carries tripped_by_instance
+# ----------------------------------------------------------------------
+
+
+def test_write_meta_bug_emits_tripped_by_instance(repo_dir: Path) -> None:
+    snapshot = StateSnapshot(
+        repo_path=repo_dir,
+        inbox=(),
+        current=(),
+        pending_pr=(),
+        done=(),
+        blocked=(),
+        taken_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    meta = write_meta_bug(
+        repo=repo_dir,
+        snapshot=snapshot,
+        signals=[_signal()],
+        tripped_by_instance="ralph-a",
+    )
+    text = meta.path.read_text(encoding="utf-8")
+    assert "tripped_by_instance: ralph-a" in text
+    # frontmatter is YAML between the first two "---" markers; the new
+    # key must land before the closing "---".
+    frontmatter = text.split("---\n", 2)[1]
+    assert "tripped_by_instance: ralph-a" in frontmatter
+
+
+def test_write_meta_bug_omits_tripped_by_instance_when_unset(repo_dir: Path) -> None:
+    snapshot = StateSnapshot(
+        repo_path=repo_dir,
+        inbox=(),
+        current=(),
+        pending_pr=(),
+        done=(),
+        blocked=(),
+        taken_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    meta = write_meta_bug(repo=repo_dir, snapshot=snapshot, signals=[_signal()])
+    text = meta.path.read_text(encoding="utf-8")
+    assert "tripped_by_instance" not in text
+
+
+def test_halt_and_acknowledge_forwards_tripped_by_instance(
+    repo_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RALPH_HALT_WEBHOOK", raising=False)
+    meta = halt_and_acknowledge(
+        repo=repo_dir,
+        signals=[_signal()],
+        now=datetime(2026, 6, 1, tzinfo=UTC),
+        tripped_by_instance="ralph-b",
+    )
+    text = meta.path.read_text(encoding="utf-8")
+    assert "tripped_by_instance: ralph-b" in text

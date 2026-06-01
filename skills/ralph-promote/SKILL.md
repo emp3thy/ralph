@@ -38,6 +38,7 @@ field. It is purely a state-folder move.
 | `--to <state>` | yes | Destination state folder. Must differ from `--from`. |
 | `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
+| `--instance-id <name>` | no | Operator instance_id used by the CLAIM.json ownership guard when moving a PBI out of `current/`. Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--no-push` | no | Commit the move locally but do not push. |
 | `--dry-run` | no | Compute and log without writing, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
 
@@ -75,6 +76,31 @@ uv run python skills/ralph-promote/scripts/promote.py \
     --from inbox \
     --to current
 ```
+
+## CLAIM.json ownership guard (multi-ralph)
+
+Under multi-ralph (Scope 1) every PBI in `.ralph/current/` carries a
+`CLAIM.json` recording which ralph instance owns the claim. When
+`ralph-promote` moves a PBI **out** of `current/`, it compares the claim's
+`instance_id` against the operator's resolved identity:
+
+- **Own claim** → promote proceeds as documented above.
+- **Foreign claim** → exits with code `3` and the message
+  `ralph-promote: cannot promote PBI claimed by '<other>'; use ralph-recover`.
+  Route through `ralph-recover` to take over before promoting.
+- **Missing or malformed `CLAIM.json`** → exits with code `3` and a
+  message describing the inconsistency. Every claimed PBI must carry a
+  valid claim under Scope 1; this state indicates a queue bug or
+  half-rolled-back claim.
+
+The guard is scoped to moves out of `current/` only — every other source
+folder (`inbox/`, `blocked/`, `pending-pr/`, `done/`, `archive/`) is
+CLAIM-less by design, so moves from those folders skip the guard. Moves
+**into** `current/` are not blocked by `ralph-promote` (the executor's
+claim path is what writes CLAIM.json on its own iterations).
+
+Exit-code summary: `0` success, `2` config / queue error, `3` claim guard
+refusal (route to `ralph-recover`).
 
 ## What this skill does NOT do
 

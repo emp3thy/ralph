@@ -21,6 +21,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from ralph_executor.queue.claim import (  # noqa: E402
+    CLAIM_FILENAME,
+    ClaimError,
+    read_claim,
+)
 from scripts.queue_writer import (  # noqa: E402
     QUEUE_STATE_FOLDERS,
     QueueWriterError,
@@ -30,6 +35,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -41,6 +47,17 @@ ENTRY_FILE_BY_TYPE = {
     "bug": "BUG.md",
     "pr-feedback": "FEEDBACK.md",
 }
+
+CURRENT_FOLDER = "current"
+
+# Exit code reserved for the multi-ralph CLAIM-ownership guard. Distinct
+# from QueueWriterError's exit 2 so wrappers can branch on "this is a
+# foreign-claim refusal, route to ralph-recover" without parsing stderr.
+EXIT_CLAIM_GUARD = 3
+
+
+class _ClaimGuardError(RuntimeError):
+    """Raised by the CLAIM.json guard to short-circuit main() with exit 3."""
 
 
 @dataclass
@@ -99,6 +116,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        metavar="NAME",
+        help=(
+            "Operator instance_id used to compare against CLAIM.json when "
+            "moving a PBI out of current/. Resolution order: --instance-id "
+            "flag, RALPH_INSTANCE_ID env, instance_id in ~/.ralph/config.toml, "
+            "sanitised hostname."
+        ),
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the move locally but do not push.",
@@ -113,6 +141,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+
+
+def _enforce_claim_ownership(pbi_dir: Path, operator_instance_id: str) -> None:
+    """Refuse to promote out of ``current/`` when CLAIM.json is missing or foreign.
+
+    Mirrors ralph-cancel's Task 13 guard. ``ralph-promote`` only enforces
+    ownership when the source state is ``current/`` because every other
+    queue folder is CLAIM-less by design. A move out of current/ steals
+    the claim from whichever instance owns it, so a non-own claim is
+    rejected with ``EXIT_CLAIM_GUARD`` and the operator is steered to
+    ``ralph-recover``.
+    """
+    claim_path = pbi_dir / CLAIM_FILENAME
+    if not claim_path.is_file():
+        raise _ClaimGuardError("ralph-promote: PBI in current/ but no CLAIM.json")
+    try:
+        claim = read_claim(claim_path)
+    except ClaimError as exc:
+        raise _ClaimGuardError(f"ralph-promote: malformed CLAIM.json: {exc}") from exc
+    if claim.instance_id != operator_instance_id:
+        raise _ClaimGuardError(
+            f"ralph-promote: cannot promote PBI claimed by {claim.instance_id!r}; use ralph-recover"
+        )
 
 
 def _resolve_entry_file(pbi_dir: Path) -> Path:
@@ -176,7 +227,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        # Resolve instance_id BEFORE the clone so we land on the same
+        # namespaced path the executor uses (queue-<instance_id>/). The
+        # halt-sentinel file is gitignored, so it is only visible to skills
+        # that clone the executor's path, not the legacy queue/ path.
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
+        clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
 
         from_dir = clone / ".ralph" / args.from_state / args.pbi_id
         to_dir = clone / ".ralph" / args.to_state / args.pbi_id
@@ -214,6 +276,12 @@ def main(argv: list[str] | None = None) -> int:
                 f".ralph/{args.to_state}/{args.pbi_id}/ already exists in the "
                 f"queue clone working tree; refusing to overwrite"
             )
+
+        # Multi-ralph CLAIM-ownership guard: moves out of current/ may only
+        # be done by the instance that owns the claim. Other source folders
+        # carry no CLAIM.json by design, so the guard is current-only.
+        if args.from_state == CURRENT_FOLDER:
+            _enforce_claim_ownership(from_dir, operator_instance_id)
 
         # Resolve entry file BEFORE the move so we know which one to
         # rewrite post-rename.
@@ -266,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0
 
+    except _ClaimGuardError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CLAIM_GUARD
     except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

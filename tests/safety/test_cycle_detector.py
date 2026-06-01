@@ -556,6 +556,7 @@ class TestEvaluateAll:
                 halt_webhook="",
                 pr_check_poll_max_attempts=1,
                 pr_check_poll_interval_seconds=0.1,
+                instance_id="test-ralph",
                 use_worktrees=True,
                 bot_author_email="",
                 stale_days=3,

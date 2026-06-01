@@ -9,12 +9,25 @@ from pathlib import Path
 import pytest
 
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.queue.claim import Claim, write_claim
 from ralph_executor.queue.filesystem import (
     FilesystemQueueSource,
     QueueError,
     parse_pbi_directory,
 )
 from tests.executor.conftest import write_sample_pbi
+
+
+def _seed_claim(pbi_dir: Path, *, instance_id: str, hostname: str = "box-a") -> None:
+    """Write a minimal CLAIM.json sibling to ``pbi_dir``'s entry file."""
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=instance_id,
+            claimed_at="2026-06-01T00:00:00+00:00",
+            hostname=hostname,
+        ),
+    )
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -74,8 +87,10 @@ def test_current_pbi_returns_none_when_empty(cfg_for_repo: ExecutorConfig) -> No
     assert source.current_pbi() is None
 
 
-def test_current_pbi_returns_the_one_entry(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
-    write_sample_pbi(fake_repo, pbi_id="WI-42", where="current")
+def test_current_pbi_returns_own_claim(cfg_for_repo: ExecutorConfig, fake_repo: Path) -> None:
+    """A current/<id>/ with own-instance CLAIM.json is returned."""
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-42", where="current")
+    _seed_claim(pbi_dir, instance_id=cfg_for_repo.instance_id)
     _git(fake_repo, "add", ".ralph/current/WI-42")
     _git(fake_repo, "commit", "-m", "current: WI-42")
     source = FilesystemQueueSource(cfg_for_repo)
@@ -85,15 +100,73 @@ def test_current_pbi_returns_the_one_entry(cfg_for_repo: ExecutorConfig, fake_re
     assert pbi.status == "current"
 
 
-def test_current_pbi_raises_when_more_than_one(
+def test_current_pbi_returns_own_when_own_plus_foreign(
     cfg_for_repo: ExecutorConfig, fake_repo: Path
 ) -> None:
-    write_sample_pbi(fake_repo, pbi_id="WI-1", where="current")
-    write_sample_pbi(fake_repo, pbi_id="WI-2", where="current")
+    """One own + one foreign claim: own is returned, foreign silently skipped."""
+    own_dir = write_sample_pbi(fake_repo, pbi_id="WI-own", where="current")
+    _seed_claim(own_dir, instance_id=cfg_for_repo.instance_id)
+    foreign_dir = write_sample_pbi(fake_repo, pbi_id="WI-foreign", where="current")
+    _seed_claim(foreign_dir, instance_id="other-ralph")
     _git(fake_repo, "add", ".ralph/current")
-    _git(fake_repo, "commit", "-m", "two in current")
+    _git(fake_repo, "commit", "-m", "own + foreign")
     source = FilesystemQueueSource(cfg_for_repo)
-    with pytest.raises(QueueError, match="more than one"):
+    pbi = source.current_pbi()
+    assert pbi is not None
+    assert pbi.id == "WI-own"
+
+
+def test_current_pbi_returns_none_when_only_foreign(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """current/ holds only foreign claims → returns None."""
+    foreign_a = write_sample_pbi(fake_repo, pbi_id="WI-a", where="current")
+    _seed_claim(foreign_a, instance_id="other-ralph-a")
+    foreign_b = write_sample_pbi(fake_repo, pbi_id="WI-b", where="current")
+    _seed_claim(foreign_b, instance_id="other-ralph-b")
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "two foreign")
+    source = FilesystemQueueSource(cfg_for_repo)
+    assert source.current_pbi() is None
+
+
+def test_current_pbi_raises_on_multiple_own_claims(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """Two own claims breaks the one-PBI-per-instance invariant."""
+    own_a = write_sample_pbi(fake_repo, pbi_id="WI-1", where="current")
+    _seed_claim(own_a, instance_id=cfg_for_repo.instance_id)
+    own_b = write_sample_pbi(fake_repo, pbi_id="WI-2", where="current")
+    _seed_claim(own_b, instance_id=cfg_for_repo.instance_id)
+    _git(fake_repo, "add", ".ralph/current")
+    _git(fake_repo, "commit", "-m", "two own claims")
+    source = FilesystemQueueSource(cfg_for_repo)
+    with pytest.raises(QueueError, match="multiple own claims"):
+        source.current_pbi()
+
+
+def test_current_pbi_raises_on_missing_claim_json(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """A current/<id>/ without CLAIM.json is a malformed claim — fail loud."""
+    write_sample_pbi(fake_repo, pbi_id="WI-bad", where="current")
+    _git(fake_repo, "add", ".ralph/current/WI-bad")
+    _git(fake_repo, "commit", "-m", "no claim")
+    source = FilesystemQueueSource(cfg_for_repo)
+    with pytest.raises(QueueError, match="malformed claim"):
+        source.current_pbi()
+
+
+def test_current_pbi_raises_on_invalid_claim_json(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """A CLAIM.json that is malformed (bad JSON or missing keys) is malformed claim."""
+    pbi_dir = write_sample_pbi(fake_repo, pbi_id="WI-bad", where="current")
+    (pbi_dir / "CLAIM.json").write_text("not json at all", encoding="utf-8")
+    _git(fake_repo, "add", ".ralph/current/WI-bad")
+    _git(fake_repo, "commit", "-m", "broken claim")
+    source = FilesystemQueueSource(cfg_for_repo)
+    with pytest.raises(QueueError, match="malformed claim"):
         source.current_pbi()
 
 

@@ -16,19 +16,23 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
+from ralph_executor.config import ConfigError, sanitise_hostname, validate_instance_id
 from ralph_executor.subprocess_utils import run_text
 from ralph_executor.url_utils import parse_target_repo
 from ralph_executor.user_config import (
     read_claude_skills_dir,
+    read_instance_id,
     read_queue_branch,
     read_queue_repo,
     read_skills_root,
     read_workspace_root,
     user_config_path,
+    write_instance_id,
     write_queue_branch,
     write_queue_repo,
     write_workspace_root,
@@ -122,6 +126,50 @@ def _prompt_queue_branch(default: str) -> str | None:
         print("")
         return None
     return raw or default
+
+
+def _prompt_instance_id(default: str) -> str | None:
+    """Prompt for the multi-ralph ``instance_id`` with a default; None on EOF.
+
+    Blank input -> accept the default. Invalid value -> reprompt with the
+    validator's error message (mirrors ``_prompt_queue_repo``). EOFError
+    (closed stdin) -> return None so the caller can warn and write the
+    default itself rather than blocking on a non-tty / piped session.
+    """
+    while True:
+        print(f"Instance id [{default}]: ", end="", flush=True)
+        try:
+            raw = input().strip()
+        except EOFError:
+            print("")
+            return None
+        value = raw or default
+        try:
+            validate_instance_id(value)
+        except ConfigError as exc:
+            print(f"invalid instance_id: {exc}. Try again.")
+            continue
+        return value
+
+
+def _default_instance_id() -> str:
+    """Resolve the per-machine ``instance_id`` default for the init prompt.
+
+    Sanitised ``socket.gethostname()`` is the canonical default per spec.
+    A pathological hostname (empty, all-disallowed chars) sanitises to
+    something the validator rejects -- fall back to ``"ralph"`` so the
+    prompt always has a typeable, valid default rather than crashing
+    ``cmd_init`` before the operator can override it.
+    """
+    candidate = sanitise_hostname(socket.gethostname())
+    if candidate:
+        try:
+            validate_instance_id(candidate)
+        except ConfigError:
+            pass
+        else:
+            return candidate
+    return "ralph"
 
 
 def _smoke_clone_queue_repo(url: str, *, timeout: float = 10.0) -> bool:
@@ -321,6 +369,34 @@ def cmd_init(*, assume_yes: bool) -> int:
             return 2
         print(f"queue_branch = {chosen_branch}")
         print(f"wrote {branch_cfg}")
+
+    # instance_id: per-instance identity for multi-ralph (Scope 1). Default
+    # is the sanitised hostname; --yes writes the default; EOF on the
+    # prompt falls back to the default; invalid input reprompts. Mirrors
+    # the queue_branch idempotency pattern -- a re-run with instance_id
+    # already in user_config is a no-op print.
+    existing_id = read_instance_id()
+    if existing_id is not None:
+        print(f"instance_id already set to {existing_id} in {user_config_path()}")
+    else:
+        instance_id_default = _default_instance_id()
+        chosen_id: str = instance_id_default
+        if not assume_yes:
+            prompted_id = _prompt_instance_id(instance_id_default)
+            if prompted_id is None:
+                print(f"WARNING: instance_id prompt closed; defaulting to {instance_id_default!r}.")
+            else:
+                chosen_id = prompted_id
+        try:
+            id_cfg = write_instance_id(chosen_id)
+        except OSError as exc:
+            print(
+                f"error: cannot write instance_id to user config: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"instance_id = {chosen_id}")
+        print(f"wrote {id_cfg}")
 
     # Best-effort tool checks. Warn, never abort: an operator might be
     # setting up on a host where claude is installed under a non-default

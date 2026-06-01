@@ -8,8 +8,10 @@ import pytest
 
 from ralph_executor.setup_cmds import cmd_init
 from ralph_executor.user_config import (
+    read_instance_id,
     read_queue_repo,
     read_workspace_root,
+    write_instance_id,
     write_queue_branch,
     write_queue_repo,
     write_workspace_root,
@@ -170,6 +172,7 @@ def test_init_prompts_for_queue_repo_and_writes_user_config(
             "",  # 1. workspace_root prompt → accept default
             "https://github.com/example/ralph-queue",
             "",  # queue_branch — accept default
+            "",  # instance_id — accept sanitised-hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -197,6 +200,7 @@ def test_init_reprompts_on_invalid_queue_repo(
             "ftp://nope.example.com/q",  # bad scheme → reprompt
             "https://github.com/example/queue",  # accepted
             "",  # queue_branch — accept default
+            "",  # instance_id — accept sanitised-hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -221,6 +225,7 @@ def test_init_smoke_clone_failure_warns_but_writes(
             "",  # workspace_root → default
             "https://github.com/example/queue",
             "",  # queue_branch — accept default
+            "",  # instance_id — accept sanitised-hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
@@ -256,11 +261,12 @@ def test_init_skips_queue_repo_prompt_if_already_set(
 ) -> None:
     """A second `init` with queue_repo already in user_config must NOT
     reprompt — the function is idempotent for that knob."""
-    # Pre-seed all three knobs so no prompt is reachable; `boom` enforces
+    # Pre-seed every knob so no prompt is reachable; `boom` enforces
     # the no-prompt invariant for every remaining knob.
     write_workspace_root(fake_home / "ws")
     write_queue_repo("https://github.com/already/set")
     write_queue_branch("custom-branch")
+    write_instance_id("preset-ralph")
 
     import builtins
 
@@ -386,3 +392,149 @@ def test_init_dedupes_when_skills_root_equals_claude_skills_dir(
     assert not stale.exists()
     out = capsys.readouterr().out
     assert out.count("removed stale ralph-add") == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_init — instance_id prompt (MULTI-RALPH-SCOPE-1 Task 4)
+# ---------------------------------------------------------------------------
+
+
+def test_init_assume_yes_writes_instance_id_default(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--yes path: no prompt, writes the sanitised-hostname default."""
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "Box.Local")
+    exit_code = cmd_init(assume_yes=True)
+    assert exit_code == 0
+    # "Box.Local" sanitises (lowercase + dot→dash) to "box-local".
+    assert read_instance_id() == "box-local"
+
+
+def test_init_assume_yes_instance_id_falls_back_to_ralph_when_hostname_empty(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If socket.gethostname() returns "" (pathological), the default
+    falls back to the literal "ralph" so cmd_init doesn't crash before
+    the operator can override the value."""
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "")
+    exit_code = cmd_init(assume_yes=True)
+    assert exit_code == 0
+    assert read_instance_id() == "ralph"
+
+
+def test_init_prompts_for_instance_id_and_writes_user_config(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch, _smoke_ok: None
+) -> None:
+    """init prompts for instance_id; operator-supplied value is validated
+    and written. Default (sanitised hostname) is offered but overridden."""
+    import builtins
+
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "box-a")
+    answers = iter(
+        [
+            "",  # workspace_root → default
+            "https://github.com/example/queue",
+            "",  # queue_branch → default
+            "ralph-b",  # instance_id — override the box-a default
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    exit_code = cmd_init(assume_yes=False)
+    assert exit_code == 0
+    assert read_instance_id() == "ralph-b"
+
+
+def test_init_instance_id_blank_input_accepts_sanitised_hostname_default(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch, _smoke_ok: None
+) -> None:
+    """Blank input at the instance_id prompt → default written."""
+    import builtins
+
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "Worker-01")
+    answers = iter(
+        [
+            "",  # workspace_root → default
+            "https://github.com/example/queue",
+            "",  # queue_branch → default
+            "",  # instance_id → accept "worker-01" default
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    exit_code = cmd_init(assume_yes=False)
+    assert exit_code == 0
+    assert read_instance_id() == "worker-01"
+
+
+def test_init_instance_id_invalid_value_is_reprompted(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch, _smoke_ok: None
+) -> None:
+    """Invalid instance_id (uppercase / disallowed chars) → reprompt;
+    the final valid value is persisted, no exception leaks out."""
+    import builtins
+
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "box-a")
+    answers = iter(
+        [
+            "",  # workspace_root → default
+            "https://github.com/example/queue",
+            "",  # queue_branch → default
+            "BAD CHARS",  # rejected — uppercase + space
+            "-leading-dash",  # rejected — first char must be alnum
+            "ralph-good",  # accepted on third try
+        ]
+    )
+    monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))
+
+    exit_code = cmd_init(assume_yes=False)
+    assert exit_code == 0
+    assert read_instance_id() == "ralph-good"
+
+
+def test_init_skips_instance_id_prompt_if_already_set(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A second `init` with instance_id already in user_config must NOT
+    reprompt — the function is idempotent for that knob (mirrors the
+    queue_repo / queue_branch idempotency)."""
+    # Pre-seed every knob so no prompt is reachable.
+    write_workspace_root(fake_home / "ws")
+    write_queue_repo("https://github.com/already/set")
+    write_queue_branch("custom-branch")
+    write_instance_id("ralph-preset")
+
+    import builtins
+
+    def boom(*_a: object, **_k: object) -> str:
+        raise AssertionError("init must not prompt when knobs already set")
+
+    monkeypatch.setattr(builtins, "input", boom)
+
+    exit_code = cmd_init(assume_yes=False)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "instance_id already set" in out
+    assert read_instance_id() == "ralph-preset"
+
+
+def test_init_handles_closed_stdin_on_instance_id_prompt(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """EOFError during the instance_id prompt → warning + sanitised
+    hostname default is still persisted (mirrors queue_branch's EOF
+    behaviour: there IS a sensible per-machine fallback for this knob)."""
+    monkeypatch.setattr("ralph_executor.setup_cmds.socket.gethostname", lambda: "box-eof")
+    # Autouse _default_closed_stdin makes input() raise EOFError on the
+    # first call already, so every prompt EOFs.
+    exit_code = cmd_init(assume_yes=False)
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "instance_id" in out
+    assert "WARNING" in out
+    # Default still persisted, not silently dropped.
+    assert read_instance_id() == "box-eof"

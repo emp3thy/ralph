@@ -525,6 +525,8 @@ def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: Mo
                 "0",
                 "--idle-seconds",
                 "1",
+                "--instance-id",
+                "test-ralph",
             ]
         )
 
@@ -548,7 +550,7 @@ def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: Mo
     assert payload["url"].endswith(str(payload["port"]))
     assert payload["started_at"].endswith("+00:00")
     assert payload["workspace_root"] == str(workspace.resolve())
-    assert Path(payload["queue_clone"]).resolve() == (workspace / "queue").resolve()
+    assert Path(payload["queue_clone"]).resolve() == (workspace / "queue-test-ralph").resolve()
 
     th.join(timeout=10)
     assert not th.is_alive(), "report.main did not return after idle timeout"
@@ -592,6 +594,7 @@ def test_report_and_status_enumerate_identical_pbi_ids(
         workspace_root,
         resolve_queue_repo(queue_repo),
         resolve_queue_branch(None),
+        instance_id="ralph-a",
     )
 
     # ralph-report path

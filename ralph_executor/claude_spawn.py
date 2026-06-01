@@ -66,7 +66,7 @@ def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
     so the branch is unreachable; this replica mirrors the loop helper
     exactly.
     """
-    return cfg.workspace_root / "queue"
+    return cfg.queue_clone_path
 
 
 @dataclass(frozen=True)

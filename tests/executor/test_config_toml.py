@@ -57,6 +57,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "RALPH_QUEUE_BRANCH",
         "RALPH_SAME_FILE_MIN_PRS",
         "RALPH_SAME_FILE_WINDOW_HOURS",
+        "RALPH_INSTANCE_ID",
     ):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
@@ -612,4 +613,32 @@ def test_same_file_window_hours_rejected_when_negative_in_env(
 ) -> None:
     monkeypatch.setenv("RALPH_SAME_FILE_WINDOW_HOURS", "-1")
     with pytest.raises(ConfigError, match="same_file_window_hours must be positive"):
+        load_config()
+
+
+# --- instance_id (MULTI-RALPH-SCOPE-1 Task 3) ----------------------------
+
+
+def test_instance_id_picked_up_from_toml(clean_env: Path) -> None:
+    """`instance_id = "..."` in user TOML flows into ExecutorConfig.instance_id
+    (no env / no CLI). Validator passes; resolver returns the TOML value."""
+    _write_toml(clean_env, 'instance_id = "ralph-from-toml"\n')
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-from-toml"
+
+
+def test_env_instance_id_wins_over_toml(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RALPH_INSTANCE_ID overrides the TOML key per the resolver precedence
+    chain (CLI > env > TOML > hostname)."""
+    _write_toml(clean_env, 'instance_id = "ralph-from-toml"\n')
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-from-env")
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-from-env"
+
+
+def test_instance_id_invalid_value_in_toml_rejected(clean_env: Path) -> None:
+    """A TOML value that fails ``validate_instance_id`` raises ConfigError
+    out of load_config (resolver re-validates before returning)."""
+    _write_toml(clean_env, 'instance_id = "Bad.Value"\n')
+    with pytest.raises(ConfigError, match="instance_id"):
         load_config()

@@ -74,10 +74,11 @@ spin it down.
 - The executor logs to stderr at `INFO` by default. Capture stderr
   into your log aggregator.
 - The cycle-detector's halt sentinel lives at
-  `$workspace_root/queue/.ralph/state/halted`. On halt, the executor
-  raises `HaltedError` and exits non-zero. Surfacing that as an alert
-  is the operator's responsibility — the executor itself does not
-  call back out.
+  `$workspace_root/queue-<instance_id>/.ralph/state/halted` (one per
+  multi-ralph instance — see `docs/runbooks/ralph-setup.md` §12). On
+  halt, the executor raises `HaltedError` and exits non-zero.
+  Surfacing that as an alert is the operator's responsibility — the
+  executor itself does not call back out.
 
 ## Updating the image
 
@@ -93,7 +94,9 @@ finishes its iteration, exits idle, scheduler spins up the new image).
 - **"git clone of queue repo … failed"** — usually auth. Confirm
   `gh auth status` inside the running container.
 - **"halt sentinel is active"** — the cycle detector tripped.
-  Inspect `$workspace_root/queue/.ralph/blocked/META-cycle-*.md`,
-  acknowledge the sentinel by editing
-  `$workspace_root/queue/.ralph/state/halted` (set `acknowledged_by`
-  and `acknowledged_at`), restart the pod.
+  Inspect
+  `$workspace_root/queue-<instance_id>/.ralph/blocked/META-cycle-*.md`
+  (the frontmatter carries `tripped_by_instance` so multi-ralph
+  fleets can see which instance halted), acknowledge the sentinel by
+  editing `$workspace_root/queue-<instance_id>/.ralph/state/halted`
+  (set `acknowledged_by` and `acknowledged_at`), restart the pod.

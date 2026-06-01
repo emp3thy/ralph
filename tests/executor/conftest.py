@@ -1,10 +1,12 @@
 """Shared fixtures for ``ralph_executor`` tests.
 
 After the queue-repo-split (PBI EXECUTOR-QUEUE-REPO-SPLIT), the queue is
-a separate clone at ``<workspace_root>/queue/`` cloned from
+a separate clone at ``<workspace_root>/queue-<instance_id>/`` cloned from
 ``cfg.queue_repo`` rather than a branch on the source repo. The
 ``fake_repo`` fixture builds that queue clone with an empty ``.ralph/``
-skeleton on ``main`` and returns its path.
+skeleton on ``main`` and returns its path. The fixture uses
+``instance_id="test-ralph"`` so the namespaced path is
+``<workspace>/queue-test-ralph/``.
 """
 
 from __future__ import annotations
@@ -41,18 +43,20 @@ def _git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def fake_repo(tmp_path: Path) -> Iterator[Path]:
-    """Materialise a queue clone at ``<tmp_path>/ws/queue`` with ``.ralph/``.
+    """Materialise a queue clone at ``<tmp_path>/ws/queue-test-ralph`` with ``.ralph/``.
 
     Builds a bare remote at ``<tmp_path>/queue.git`` seeded with the
-    ``.ralph/`` skeleton on ``main`` and a sibling clone at
-    ``<tmp_path>/ws/queue``. Returns the clone path. The bare remote
-    path is reachable as ``<tmp_path>/queue.git`` for tests that need
-    to query / push to ``origin``.
+    ``.ralph/`` skeleton on ``main`` and a sibling clone at the
+    namespaced multi-ralph path ``<tmp_path>/ws/queue-test-ralph``
+    (matches ``cfg_for_repo.instance_id="test-ralph"``). Returns the
+    clone path. The bare remote path is reachable as
+    ``<tmp_path>/queue.git`` for tests that need to query / push to
+    ``origin``.
     """
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    clone = workspace / "queue"
+    clone = workspace / "queue-test-ralph"
 
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(bare)],
@@ -261,6 +265,7 @@ def cfg_for_repo(
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        instance_id="test-ralph",
         use_worktrees=True,
         bot_author_email="",
         stale_days=3,
@@ -296,6 +301,7 @@ def _build_minimal_cfg(tmp_path: Path, *, git_host: str = "github") -> ExecutorC
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        instance_id="test-ralph",
         use_worktrees=True,
         bot_author_email="",
         stale_days=3,

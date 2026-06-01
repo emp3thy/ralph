@@ -16,6 +16,7 @@ from typing import Any, cast, get_args
 import yaml
 
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.queue.claim import CLAIM_FILENAME, ClaimError, read_claim
 from ralph_executor.types import PBI, PBIStatus, PBIType, Severity
 
 ENTRY_FILE_BY_TYPE: Mapping[str, str] = {
@@ -173,7 +174,7 @@ class FilesystemQueueSource:
 
     @property
     def _root(self) -> Path:
-        return self._config.workspace_root / "queue" / ".ralph"
+        return self._config.queue_clone_path / ".ralph"
 
     def _list_pbis(self, state: str) -> list[PBI]:
         state_dir = self._root / state
@@ -190,19 +191,42 @@ class FilesystemQueueSource:
         return pbis
 
     def current_pbi(self) -> PBI | None:
-        """Return the single PBI in ``current/``, or None.
+        """Return THIS instance's claimed PBI in ``current/``, or None.
 
-        Raises ``QueueError`` if more than one PBI is present —
-        ``current/`` is the single-focus folder; anything else violates
-        the executor's invariants.
+        Scans every ``current/<id>/`` directory and reads its
+        ``CLAIM.json``. Returns the PBI whose claim ``instance_id``
+        matches ``cfg.instance_id``. PBIs claimed by other instances are
+        silently skipped — multiple ``current/<id>/`` directories are
+        legal under multi-ralph (one per live instance fleet-wide).
+
+        Raises ``QueueError`` if:
+
+        * any ``current/<id>/`` is missing a ``CLAIM.json`` or the file
+          is malformed (post-Scope-1 invariant: every claimed PBI carries
+          a CLAIM.json); or
+        * this instance owns more than one claim (one PBI per instance
+          in flight at any time).
         """
-        pbis = self._list_pbis("current")
-        if not pbis:
+        own: list[PBI] = []
+        for pbi in self._list_pbis("current"):
+            claim_path = pbi.path / CLAIM_FILENAME
+            if not claim_path.exists():
+                raise QueueError(f"malformed claim: {pbi.path} is missing CLAIM.json")
+            try:
+                claim = read_claim(claim_path)
+            except ClaimError as exc:
+                raise QueueError(f"malformed claim: {exc}") from exc
+            if claim.instance_id == self._config.instance_id:
+                own.append(pbi)
+        if not own:
             return None
-        if len(pbis) > 1:
-            ids = sorted(p.id for p in pbis)
-            raise QueueError(f"current/ contains more than one PBI: {ids}")
-        return pbis[0]
+        if len(own) > 1:
+            ids = sorted(p.id for p in own)
+            raise QueueError(
+                f"multiple own claims in current/ for instance_id="
+                f"{self._config.instance_id!r}: {ids}"
+            )
+        return own[0]
 
     def inbox_pbis(self) -> list[PBI]:
         """Return all inbox PBIs sorted by priority lane + created_at."""

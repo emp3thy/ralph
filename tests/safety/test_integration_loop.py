@@ -64,18 +64,19 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
 
     Layout::
 
-        <tmp>/queue.git           bare remote (queue_repo URL)
-        <tmp>/ws/queue            queue clone the executor reads/writes
+        <tmp>/queue.git                 bare remote (queue_repo URL)
+        <tmp>/ws/queue-test-ralph       queue clone the executor reads/writes
 
     Returns (queue_clone_path, cfg). ``cfg.workspace_root`` is ``<tmp>/ws``
-    so ``ensure_queue_clone`` no-ops on the already-materialised clone, and
-    ``cfg.queue_repo`` is ``file://<tmp>/queue.git`` so any rebase-pull
-    can resolve a real remote.
+    and ``cfg.instance_id="test-ralph"``, so ``cfg.queue_clone_path``
+    resolves to ``<tmp>/ws/queue-test-ralph/`` and ``ensure_queue_clone``
+    no-ops on the already-materialised clone. ``cfg.queue_repo`` is
+    ``file://<tmp>/queue.git`` so any rebase-pull can resolve a real remote.
     """
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    clone = workspace / "queue"
+    clone = workspace / "queue-test-ralph"
 
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(bare)],
@@ -134,15 +135,24 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        instance_id="test-ralph",
         use_worktrees=True,
         workspace_root=workspace,
     )
     return clone, cfg
 
 
-def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
+def _write_pbi_in_current(
+    repo: Path, pbi_id: str, attempts: int = 0, *, instance_id: str = "test-ralph"
+) -> None:
     """Write a minimal PBI directory into ``.ralph/current/<pbi_id>`` on the
-    queue clone's ``main`` and push to ``origin``."""
+    queue clone's ``main`` and push to ``origin``.
+
+    Also seeds ``CLAIM.json`` so ``current_pbi()`` recognises the PBI as
+    owned by ``instance_id`` (default matches ``_init_repo``'s cfg).
+    """
+    from ralph_executor.queue.claim import Claim, write_claim
+
     pbi_dir = repo / ".ralph" / "current" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=True)
     (pbi_dir / "PBI.md").write_text(
@@ -155,6 +165,14 @@ def _write_pbi_in_current(repo: Path, pbi_id: str, attempts: int = 0) -> None:
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
     (pbi_dir / "PLAN.md").write_text("# plan\n", encoding="utf-8")
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=instance_id,
+            claimed_at="2026-05-24T09:00:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(repo, "add", f".ralph/current/{pbi_id}")
     _git(repo, "commit", "-m", f"test: seed {pbi_id} in current/")
     _git(repo, "push", "origin", "main")

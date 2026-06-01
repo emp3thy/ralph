@@ -32,6 +32,7 @@ inbox/pending-pr PBI back out) instead.
 | `--pbi-id <id>` | yes | The PBI identifier (e.g. `WI-1234` or `BUG-deploy-rosa-irsa-2026-05-23`). Matches the directory name under `.ralph/current/`. |
 | `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
+| `--instance-id <name>` | no | Operator instance_id used by the CLAIM.json ownership guard. Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--no-push` | no | Commit the sentinel locally but do not push. Useful for inspecting the commit before it lands. |
 | `--dry-run` | no | Compute and log without writing the sentinel, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
 
@@ -63,6 +64,25 @@ Progress messages go to stderr.
 ```bash
 uv run python skills/ralph-cancel/scripts/cancel.py --pbi-id WI-1234
 ```
+
+## CLAIM.json ownership guard (multi-ralph)
+
+Under multi-ralph (Scope 1) every PBI in `.ralph/current/` carries a
+`CLAIM.json` recording which ralph instance owns the claim. `ralph-cancel`
+compares the claim's `instance_id` against the operator's resolved
+identity:
+
+- **Own claim** → cancel proceeds as documented above.
+- **Foreign claim** → exits with code `3` and the message
+  `ralph-cancel: cannot cancel PBI claimed by '<other>'; use ralph-recover`.
+  Route through `ralph-recover` to take over before cancelling.
+- **Missing or malformed `CLAIM.json`** → exits with code `3` and a
+  message describing the inconsistency. Every claimed PBI must carry a
+  valid claim under Scope 1; this state indicates a queue bug or
+  half-rolled-back claim.
+
+Exit-code summary: `0` success, `2` config / queue error, `3` claim
+guard refusal (route to `ralph-recover`).
 
 ## What this skill does NOT do
 

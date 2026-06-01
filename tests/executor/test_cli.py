@@ -433,6 +433,138 @@ def test_cli_queue_branch_rejects_refs_prefix(
         _apply_overrides(cfg, args)
 
 
+def test_cli_instance_id_override_lands_on_cfg(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """--instance-id on the CLI overrides cfg.instance_id via _apply_overrides."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-toml")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        watch=False,
+        instance_id="from-cli",
+    )
+    new_cfg = _apply_overrides(cfg, args)
+    assert new_cfg.instance_id == "from-cli"
+
+
+def test_cli_instance_id_rejects_empty_string(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """``--instance-id ''`` raises ConfigError — must not silently fall through
+    to env / TOML / hostname.
+
+    The override guard uses ``is not None`` rather than truthiness, so the
+    empty string reaches ``validate_instance_id`` and the regex surfaces a
+    clean error.
+    """
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-toml")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        watch=False,
+        instance_id="",
+    )
+    with pytest.raises(ConfigError, match="instance_id"):
+        _apply_overrides(cfg, args)
+
+
+def test_cli_instance_id_rejects_invalid_chars(
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """``--instance-id 'BAD CHARS'`` raises ConfigError via the regex validator."""
+    import argparse
+    import dataclasses as _dc
+
+    from ralph_executor.cli import _apply_overrides
+    from ralph_executor.config import ConfigError
+
+    cfg = _dc.replace(cfg_for_repo, instance_id="from-toml")
+    args = argparse.Namespace(
+        repo=None,
+        workspace=None,
+        log_level=None,
+        queue_repo=None,
+        queue_branch=None,
+        watch=False,
+        instance_id="BAD CHARS",
+    )
+    with pytest.raises(ConfigError, match="instance_id"):
+        _apply_overrides(cfg, args)
+
+
+def test_main_instance_id_flag_overrides_cfg(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Top-level ``--instance-id`` reaches iterate_once via ``_apply_overrides``."""
+    seen: list[ExecutorConfig] = []
+
+    def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
+        seen.append(cfg)
+        return IterationResult(outcome="idle", pbi_id=None)
+
+    monkeypatch.setattr(cli, "iterate_once", _fake_iterate)
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+
+    exit_code = cli.main(["--once", "--instance-id", "ralph-b"])
+    assert exit_code == 0
+    assert len(seen) == 1
+    assert seen[0].instance_id == "ralph-b"
+
+
+def test_main_instance_id_empty_string_exits_2(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``cli.main(["--instance-id", ""])`` exits 2 with a clear ConfigError.
+
+    Regression guard for the truthiness-vs-None rule at the CLI boundary:
+    an empty string must surface an error rather than silently letting
+    the env / TOML / hostname fall-through take over.
+    """
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(
+        cli, "iterate_once", lambda cfg: IterationResult(outcome="idle", pbi_id=None)
+    )
+    exit_code = cli.main(["--once", "--instance-id", ""])
+    assert exit_code == 2
+    assert "instance_id" in capsys.readouterr().err
+
+
+def test_main_instance_id_invalid_chars_exits_2(
+    cfg_for_repo: ExecutorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``cli.main(["--instance-id", "BAD CHARS"])`` exits 2 via the regex validator."""
+    monkeypatch.setattr(cli, "load_config", lambda: cfg_for_repo)
+    monkeypatch.setattr(
+        cli, "iterate_once", lambda cfg: IterationResult(outcome="idle", pbi_id=None)
+    )
+    exit_code = cli.main(["--once", "--instance-id", "BAD CHARS"])
+    assert exit_code == 2
+    assert "instance_id" in capsys.readouterr().err
+
+
 def test_main_rejects_watch_with_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -516,14 +648,16 @@ def test_init_prompts_for_queue_branch(
         lambda _url, *, timeout=10.0: True,
     )
 
-    # The interactive flow calls input() three times in order:
+    # The interactive flow calls input() four times in order:
     #   1. workspace_root prompt (blank → OS default)
     #   2. queue_repo prompt (valid URL accepted)
     #   3. queue_branch prompt (blank → default "ralph-queue")
+    #   4. instance_id prompt (blank → sanitised-hostname default)
     answers = iter(
         [
             "",
             "https://github.com/test/queue",
+            "",
             "",
         ]
     )
@@ -556,6 +690,7 @@ def test_init_persists_non_default_queue_branch(
             "",  # workspace_root → default
             "https://github.com/test/queue",
             "custom-queue-branch",
+            "",  # instance_id → sanitised-hostname default
         ]
     )
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: next(answers))

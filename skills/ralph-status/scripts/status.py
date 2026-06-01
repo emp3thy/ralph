@@ -29,6 +29,7 @@ from scripts.pbi_reader import (  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -75,12 +76,24 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="BRANCH",
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the executor's namespaced "
+            "queue clone (queue-<instance-id>/). Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 _COLUMN_ORDER: tuple[str, ...] = (
     "TARGET",
     "STATE",
+    "OWNER",
     "ID",
     "TYPE",
     "SEVERITY",
@@ -89,6 +102,30 @@ _COLUMN_ORDER: tuple[str, ...] = (
 )
 
 _TARGET_DISPLAY_MAX = 50
+_OWNER_EMPTY_CELL = "—"
+
+
+def _resolve_owner(row: PBIRow | PBIRowError) -> str | None:
+    """Return ``CLAIM.json::instance_id`` for a ``current/<id>/`` PBI, else None.
+
+    Returns ``None`` when the PBI is not in ``current/``, when CLAIM.json is
+    missing, when it does not parse as a JSON object, or when ``instance_id``
+    is absent / non-string. A malformed claim must NOT crash the status view —
+    it surfaces as an empty owner cell.
+    """
+    if row.state != "current":
+        return None
+    claim_path = row.pbi_dir / "CLAIM.json"
+    if not claim_path.is_file():
+        return None
+    try:
+        raw = json.loads(claim_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("instance_id")
+    return value if isinstance(value, str) else None
 
 
 def _age_string(created_at: datetime | None) -> str:
@@ -118,10 +155,12 @@ def _truncate_target(target: str) -> str:
 
 
 def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
+    owner = _resolve_owner(row) or _OWNER_EMPTY_CELL
     if isinstance(row, PBIRow):
         return [
             _truncate_target(row.target_repo) if row.target_repo else "?",
             row.state,
+            owner,
             row.pbi_id,
             row.pbi_type,
             row.severity,
@@ -131,6 +170,7 @@ def _row_to_cells(row: PBIRow | PBIRowError) -> list[str]:
     return [
         "?",
         row.state,
+        owner,
         row.pbi_dir.name,
         "?",
         "?",
@@ -178,6 +218,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
+    owner = _resolve_owner(row)
     if isinstance(row, PBIRow):
         return {
             "target_repo": row.target_repo or None,
@@ -190,6 +231,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
             "updated_at": _iso(row.updated_at),
             "title": row.title,
             "pbi_dir": row.relative_pbi_dir(),
+            "owner": owner,
             "error": None,
         }
     return {
@@ -203,6 +245,7 @@ def _row_to_json(row: PBIRow | PBIRowError) -> dict[str, object]:
         "updated_at": None,
         "title": None,
         "pbi_dir": row.relative_pbi_dir(),
+        "owner": owner,
         "error": row.message,
     }
 
@@ -233,7 +276,13 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
-        queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        operator_instance_id = resolve_instance_id(args.instance_id)
+        queue_clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
     except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

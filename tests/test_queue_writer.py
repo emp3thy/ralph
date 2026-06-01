@@ -77,22 +77,30 @@ def test_acquire_queue_clone_returns_path(tmp_path: Path, monkeypatch: pytest.Mo
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str | None = None,
         timeout: float = 120.0,
     ) -> Path:
         seen["workspace"] = workspace_root
         seen["queue_repo"] = queue_repo
         seen["queue_branch"] = queue_branch
+        seen["instance_id"] = instance_id
         seen["timeout"] = timeout
-        return workspace_root / "queue"
+        return workspace_root / f"queue-{instance_id}"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
 
-    path = acquire_queue_clone(tmp_path, "https://github.com/example/q", "main")
-    assert path == tmp_path / "queue"
+    path = acquire_queue_clone(
+        tmp_path,
+        "https://github.com/example/q",
+        "main",
+        instance_id="ralph-a",
+    )
+    assert path == tmp_path / "queue-ralph-a"
     assert seen == {
         "workspace": tmp_path,
         "queue_repo": "https://github.com/example/q",
         "queue_branch": "main",
+        "instance_id": "ralph-a",
         "timeout": 120.0,
     }
 
@@ -108,13 +116,20 @@ def test_acquire_queue_clone_forwards_timeout(
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str | None = None,
         timeout: float = 120.0,
     ) -> Path:
         captured["timeout"] = timeout
-        return workspace_root / "queue"
+        return workspace_root / f"queue-{instance_id}"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
-    acquire_queue_clone(tmp_path, "https://github.com/example/q", "main", timeout=30.0)
+    acquire_queue_clone(
+        tmp_path,
+        "https://github.com/example/q",
+        "main",
+        instance_id="ralph-a",
+        timeout=30.0,
+    )
     assert captured["timeout"] == 30.0
 
 
@@ -131,6 +146,7 @@ def test_acquire_queue_clone_wraps_queue_clone_error(
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str | None = None,
         timeout: float = 120.0,
     ) -> Path:
         raise QueueCloneError("git fetch failed (exit 128): could not auth")
@@ -138,9 +154,44 @@ def test_acquire_queue_clone_wraps_queue_clone_error(
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
 
     with pytest.raises(QueueWriterError) as excinfo:
-        acquire_queue_clone(tmp_path, "https://github.com/example/q", "main")
+        acquire_queue_clone(
+            tmp_path,
+            "https://github.com/example/q",
+            "main",
+            instance_id="ralph-a",
+        )
     assert "git fetch failed" in str(excinfo.value)
     assert isinstance(excinfo.value.__cause__, QueueCloneError)
+
+
+def test_acquire_queue_clone_forwards_instance_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """instance_id MUST be forwarded so skills land on the executor's
+    namespaced path (queue-<instance_id>/) and see the gitignored
+    halt sentinel. Regression test for BugBot finding 2026-06-01 on
+    PR #69 recover.py:187."""
+    captured: dict[str, object] = {}
+
+    def fake_ensure(
+        workspace_root: Path,
+        queue_repo: str,
+        queue_branch: str,
+        *,
+        instance_id: str | None = None,
+        timeout: float = 120.0,
+    ) -> Path:
+        captured["instance_id"] = instance_id
+        return workspace_root / f"queue-{instance_id}"
+
+    monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
+    acquire_queue_clone(
+        tmp_path,
+        "https://github.com/example/q",
+        "main",
+        instance_id="ralph-b",
+    )
+    assert captured["instance_id"] == "ralph-b"
 
 
 def test_resolve_workspace_root_wraps_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -409,12 +460,17 @@ def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
 
     captured = {}
 
-    def fake_ensure(workspace_root, queue_repo, queue_branch, *, timeout=120.0):
+    def fake_ensure(workspace_root, queue_repo, queue_branch, *, instance_id=None, timeout=120.0):
         captured["queue_branch"] = queue_branch
-        return workspace_root / "queue"
+        return workspace_root / f"queue-{instance_id}"
 
     monkeypatch.setattr("scripts.queue_writer.ensure_queue_clone", fake_ensure)
-    acquire_queue_clone(tmp_path, "https://github.com/test/queue", "ralph-queue")
+    acquire_queue_clone(
+        tmp_path,
+        "https://github.com/test/queue",
+        "ralph-queue",
+        instance_id="ralph-a",
+    )
     assert captured["queue_branch"] == "ralph-queue"
 
 

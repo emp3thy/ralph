@@ -23,6 +23,11 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Operator identity used when seeding multi-ralph CLAIM.json files and
+# invoking the cancel / promote ownership guards. Mirrors the convention
+# in tests/skills/test_ralph_cancel.py and tests/skills/test_ralph_promote.py.
+OWN_INSTANCE_ID = "test-ralph"
+
 
 def _load(script_relpath: str, name: str) -> ModuleType:
     path = REPO_ROOT / script_relpath
@@ -137,6 +142,19 @@ def _seed_pbi(
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    if state_folder == "current":
+        # Multi-ralph Scope 1 invariant: every current/<id>/ has a CLAIM.json.
+        # Seeded as own-claim so cancel / promote ownership guards proceed.
+        from ralph_executor.queue.claim import Claim, write_claim
+
+        write_claim(
+            pbi_dir / "CLAIM.json",
+            Claim(
+                instance_id=OWN_INSTANCE_ID,
+                claimed_at="2026-05-22T09:30:00+00:00",
+                hostname="seed-host",
+            ),
+        )
     _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
     _git(work, "push", "origin", "ralph-queue")
@@ -253,6 +271,8 @@ def test_cancel_and_promote_are_independent(
                 str(workspace),
                 "--queue-repo",
                 queue_repo,
+                "--instance-id",
+                OWN_INSTANCE_ID,
             ]
         )
         == 0

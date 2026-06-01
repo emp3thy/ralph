@@ -199,3 +199,80 @@ def test_write_queue_branch_persists(tmp_path, monkeypatch):
     assert user_config.read_queue_branch() == "ralph-queue"
     # queue_repo survives the merge
     assert user_config.read_queue_repo() == "https://github.com/test/queue"
+
+
+# --- instance_id round-trip (MULTI-RALPH-SCOPE-1 Task 3) ------------------
+
+
+def test_read_instance_id_returns_none_when_absent(fake_home: Path) -> None:
+    """No config.toml -> read_instance_id returns None (let the resolver
+    fall through to env / hostname)."""
+    from ralph_executor import user_config
+
+    assert user_config.read_instance_id() is None
+
+
+def test_read_instance_id_returns_none_when_key_absent(fake_home: Path) -> None:
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('queue_repo = "https://example.com/q"\n', encoding="utf-8")
+    from ralph_executor import user_config
+
+    assert user_config.read_instance_id() is None
+
+
+def test_read_instance_id_returns_value(fake_home: Path) -> None:
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('instance_id = "ralph-a"\n', encoding="utf-8")
+    from ralph_executor import user_config
+
+    assert user_config.read_instance_id() == "ralph-a"
+
+
+def test_read_instance_id_rejects_non_string(fake_home: Path) -> None:
+    """Bools / ints in the TOML slot surface as ConfigError, matching the
+    pattern of the other read_* helpers (read_queue_branch / read_queue_repo)."""
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("instance_id = 42\n", encoding="utf-8")
+    from ralph_executor import user_config
+
+    with pytest.raises(ConfigError, match="instance_id must be a non-empty string"):
+        user_config.read_instance_id()
+
+
+def test_read_instance_id_rejects_empty_string(fake_home: Path) -> None:
+    """An empty / whitespace-only value is treated as malformed at the
+    read layer (matches read_queue_branch). The resolver also has its own
+    validator but defence-in-depth is cheap."""
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('instance_id = "   "\n', encoding="utf-8")
+    from ralph_executor import user_config
+
+    with pytest.raises(ConfigError, match="instance_id must be a non-empty string"):
+        user_config.read_instance_id()
+
+
+def test_write_instance_id_persists(fake_home: Path) -> None:
+    from ralph_executor import user_config
+
+    user_config.write_instance_id("ralph-a")
+    assert user_config.read_instance_id() == "ralph-a"
+
+
+def test_write_instance_id_merges_with_existing_keys(fake_home: Path) -> None:
+    """write_instance_id must NOT clobber co-existing user-level knobs."""
+    cfg = fake_home / ".ralph" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        'queue_repo = "https://github.com/test/queue"\nqueue_branch = "ralph-queue"\n',
+        encoding="utf-8",
+    )
+    from ralph_executor import user_config
+
+    user_config.write_instance_id("ralph-b")
+    assert user_config.read_instance_id() == "ralph-b"
+    assert user_config.read_queue_repo() == "https://github.com/test/queue"
+    assert user_config.read_queue_branch() == "ralph-queue"

@@ -75,16 +75,29 @@ def acquire_queue_clone(
     queue_repo: str,
     queue_branch: str,
     *,
+    instance_id: str,
     timeout: float = 120.0,
 ) -> Path:
     """Idempotent queue clone for operator skills.
 
     Mirrors ``ralph_executor.queue_clone.ensure_queue_clone``. The branch
     is forwarded unchanged; the operator's ``~/.ralph/config.toml`` knob is
-    resolved by the caller via ``resolve_queue_branch``.
+    resolved by the caller via ``resolve_queue_branch``. Skills resolve
+    ``instance_id`` via :func:`resolve_instance_id` and pass it through so
+    every clone lands at the namespaced path
+    ``<workspace_root>/queue-<instance_id>/``. This MUST match the
+    executor's clone path so the halt-sentinel guard (and any other
+    .gitignored state file) is visible to skills running on the same
+    host as the executor.
     """
     try:
-        return ensure_queue_clone(workspace_root, queue_repo, queue_branch, timeout=timeout)
+        return ensure_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=instance_id,
+            timeout=timeout,
+        )
     except QueueCloneError as exc:
         raise QueueWriterError(str(exc)) from exc
 
@@ -189,6 +202,39 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
             f"queue_branch in ~/.ralph/config.toml must be a plain branch name (got {from_toml!r})"
         )
     return from_toml
+
+
+def resolve_instance_id(cli_value: str | None = None) -> str:
+    """Resolve operator-side ``instance_id`` for skills that read CLAIM.json.
+
+    Mirrors ``ralph_executor.config.resolve_instance_id``'s precedence chain
+    so a skill invocation sees the same identity the executor would on this
+    host: ``--instance-id`` CLI flag → ``RALPH_INSTANCE_ID`` env var →
+    ``~/.ralph/config.toml`` key → sanitised hostname.
+
+    Validation / sanitisation lives in ``ralph_executor.config`` — this is
+    purely the operator-side wiring. ``ConfigError`` from a malformed user
+    TOML or invalid candidate is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type.
+    """
+    import os
+    import socket
+
+    from ralph_executor.config import ConfigError
+    from ralph_executor.config import resolve_instance_id as _resolve
+    from ralph_executor.user_config import read_instance_id
+
+    env_value = os.environ.get("RALPH_INSTANCE_ID")
+    try:
+        toml_value = read_instance_id()
+        return _resolve(
+            cli_value=cli_value,
+            env_value=env_value,
+            toml_value=toml_value,
+            hostname=socket.gethostname(),
+        )
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
 
 
 def is_path_in_head(repo: Path, rel_path: str) -> bool:

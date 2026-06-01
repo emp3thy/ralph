@@ -18,6 +18,9 @@ import pytest
 from ralph_executor.config import (
     ConfigError,
     load_config,
+    resolve_instance_id,
+    sanitise_hostname,
+    validate_instance_id,
 )
 
 QUEUE_REPO_URL = "https://github.com/example/queue"
@@ -372,3 +375,256 @@ def test_load_config_rejects_missing_workspace_root_parent(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     with pytest.raises(ConfigError, match="workspace_root parent"):
         load_config()
+
+
+# ---------------------------------------------------------------------------
+# Multi-ralph (Scope 1) — instance_id validator + resolver
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "good",
+    ["a", "ralph-a", "box1", "ralph_a", "0", "a" * 63],
+)
+def test_validate_instance_id_accepts(good: str) -> None:
+    """Filesystem-safe lowercase 1-63 chars, leading alnum, ``[a-z0-9_-]`` follow-on."""
+    validate_instance_id(good)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "A", "Ralph", "1ralph-A", "-ralph", "_ralph", "ralph!", "a" * 64, "ralph.a", "ralph a"],
+)
+def test_validate_instance_id_rejects(bad: str) -> None:
+    """Empty, uppercase, leading non-alnum, oversize, or disallowed chars → ConfigError."""
+    with pytest.raises(ConfigError, match="instance_id"):
+        validate_instance_id(bad)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Box-1", "box-1"),
+        ("HOST.local", "host-local"),
+        ("Mixed_Case-123", "mixed_case-123"),
+        ("a", "a"),
+        ("UPPER spaces!", "upper-spaces-"),
+    ],
+)
+def test_sanitise_hostname_replaces_disallowed(raw: str, expected: str) -> None:
+    """Lowercase + replace non-``[a-z0-9_-]`` chars with ``-``."""
+    assert sanitise_hostname(raw) == expected
+
+
+def test_resolve_instance_id_cli_wins() -> None:
+    """CLI flag wins over env / TOML / hostname."""
+    assert (
+        resolve_instance_id(
+            cli_value="cli-id",
+            env_value="env-id",
+            toml_value="toml-id",
+            hostname="host-id",
+        )
+        == "cli-id"
+    )
+
+
+def test_resolve_instance_id_env_beats_toml_and_hostname() -> None:
+    assert (
+        resolve_instance_id(
+            cli_value=None,
+            env_value="env-id",
+            toml_value="toml-id",
+            hostname="host-id",
+        )
+        == "env-id"
+    )
+
+
+def test_resolve_instance_id_toml_beats_hostname() -> None:
+    assert (
+        resolve_instance_id(
+            cli_value=None,
+            env_value=None,
+            toml_value="toml-id",
+            hostname="host-id",
+        )
+        == "toml-id"
+    )
+
+
+def test_resolve_instance_id_falls_back_to_sanitised_hostname() -> None:
+    assert (
+        resolve_instance_id(
+            cli_value=None,
+            env_value=None,
+            toml_value=None,
+            hostname="Box.LOCAL",
+        )
+        == "box-local"
+    )
+
+
+def test_resolve_instance_id_empty_cli_value_is_not_skipped() -> None:
+    """Per the truthiness-vs-None rule: ``--instance-id ""`` must reach
+    the validator, not silently fall through to env / TOML / hostname."""
+    with pytest.raises(ConfigError, match="instance_id"):
+        resolve_instance_id(
+            cli_value="",
+            env_value="env-id",
+            toml_value="toml-id",
+            hostname="host-id",
+        )
+
+
+def test_resolve_instance_id_raises_when_hostname_empty() -> None:
+    """No CLI / env / TOML and an empty hostname → ConfigError (the
+    operator needs to set ``instance_id`` explicitly)."""
+    with pytest.raises(ConfigError, match="could not derive instance_id"):
+        resolve_instance_id(
+            cli_value=None,
+            env_value=None,
+            toml_value=None,
+            hostname="",
+        )
+
+
+def test_executor_config_requires_instance_id_field() -> None:
+    """``instance_id`` is a non-Optional dataclass field on ExecutorConfig."""
+    from dataclasses import fields
+
+    from ralph_executor.config import ExecutorConfig
+
+    names = {f.name for f in fields(ExecutorConfig)}
+    assert "instance_id" in names
+    # The field must not have a default — multi-ralph relies on the
+    # resolver supplying a validated value at every construction site.
+    inst_field = next(f for f in fields(ExecutorConfig) if f.name == "instance_id")
+    from dataclasses import MISSING
+
+    assert inst_field.default is MISSING
+    assert inst_field.default_factory is MISSING
+
+
+def test_load_config_instance_id_defaults_to_sanitised_hostname(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    """No CLI / env / TOML — load_config falls back to the sanitised hostname."""
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    monkeypatch.setattr("ralph_executor.config.socket.gethostname", lambda: "Box.LOCAL")
+    cfg = load_config()
+    assert cfg.instance_id == "box-local"
+
+
+def test_load_config_instance_id_from_env(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    """``RALPH_INSTANCE_ID`` beats TOML and hostname."""
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-from-env")
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-from-env"
+
+
+def test_load_config_instance_id_from_toml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``instance_id`` in user TOML is honoured."""
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+        instance_id="ralph-from-toml",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-from-toml"
+
+
+def test_load_config_instance_id_env_beats_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+        instance_id="ralph-toml",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "ralph-env")
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-env"
+
+
+def test_load_config_instance_id_invalid_env_rejected(
+    monkeypatch: pytest.MonkeyPatch, env_minimal: Path
+) -> None:
+    """An env value that fails the validator surfaces as ConfigError."""
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "BAD CHARS")
+    with pytest.raises(ConfigError, match="instance_id"):
+        load_config()
+
+
+def test_load_config_instance_id_invalid_toml_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+        instance_id="Bad.Value",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    with pytest.raises(ConfigError, match="instance_id"):
+        load_config()
+
+
+def test_load_config_instance_id_non_string_toml_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A non-string TOML value (int, bool) is rejected with a typed message."""
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    cfg_dir = tmp_path / ".ralph"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.toml").write_text(
+        f"queue_repo = '{QUEUE_REPO_URL}'\n"
+        f"workspace_root = '{ws_parent / 'ws'}'\n"
+        "instance_id = 42\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.delenv("RALPH_INSTANCE_ID", raising=False)
+    with pytest.raises(ConfigError, match="instance_id must be a string"):
+        load_config()
+
+
+def test_load_config_instance_id_empty_env_falls_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An empty env value is treated as 'not set' and falls through to
+    the next layer (TOML / hostname). This mirrors how the other env
+    knobs in ``load_config`` treat empty strings."""
+    ws_parent = tmp_path / "ws-parent"
+    ws_parent.mkdir()
+    _seed_user_config_toml(
+        tmp_path,
+        monkeypatch,
+        queue_repo=QUEUE_REPO_URL,
+        workspace_root=str(ws_parent / "ws"),
+        instance_id="ralph-from-toml",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "")
+    cfg = load_config()
+    assert cfg.instance_id == "ralph-from-toml"

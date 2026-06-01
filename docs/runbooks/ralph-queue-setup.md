@@ -74,9 +74,11 @@ queue_repo = "https://github.com/<owner>/<repo>"
 queue_branch = "ralph-queue"   # optional — this is the default
 ```
 
-The executor clones `queue_repo` into `<workspace_root>/queue/` (always
-checked out on `queue_branch`); every loop iteration pulls before claim
-and pushes after each queue mutation.
+The executor clones `queue_repo` into
+`<workspace_root>/queue-<instance_id>/` (always checked out on
+`queue_branch`; the namespacing is the multi-ralph workspace layout —
+see `ralph-setup.md` §12). Every loop iteration pulls before claim and
+pushes after each queue mutation.
 
 ## Override precedence
 

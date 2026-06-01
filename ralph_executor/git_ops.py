@@ -263,6 +263,18 @@ def mv(repo: Path, src: Path, dst: Path) -> None:
     )
 
 
+def reset_hard(repo: Path, target: str) -> None:
+    """Run ``git reset --hard <target>``.
+
+    Drops local commits and resets the working tree + index to ``target``.
+    Used by the claim path to roll back a local claim commit when
+    ``push_with_rebase`` raises ``PushRebaseConflict`` — without the
+    reset, the local clone would diverge from origin and the next
+    iteration's ff-only pull would fail.
+    """
+    _run_git(repo, "reset", "--hard", target)
+
+
 def ls_files(repo: Path, path: Path) -> list[str]:
     """Return paths tracked by git under ``path`` (one entry per line).
 

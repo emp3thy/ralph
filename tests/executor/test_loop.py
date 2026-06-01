@@ -494,7 +494,7 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each iteration calls ``ensure_queue_clone`` to refresh the local clone."""
-    calls: list[tuple[Path, str, str]] = []
+    calls: list[tuple[Path, str, str, str]] = []
     from ralph_executor.queue_clone import ensure_queue_clone as real_ensure
 
     def _spy(
@@ -502,10 +502,17 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str,
         timeout: float = 120.0,
     ) -> Path:
-        calls.append((workspace_root, queue_repo, queue_branch))
-        return real_ensure(workspace_root, queue_repo, queue_branch, timeout=timeout)
+        calls.append((workspace_root, queue_repo, queue_branch, instance_id))
+        return real_ensure(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=instance_id,
+            timeout=timeout,
+        )
 
     monkeypatch.setattr("ralph_executor.loop.ensure_queue_clone", _spy)
     monkeypatch.setattr(
@@ -514,7 +521,12 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
     )
     iterate_once(cfg_for_repo)
     assert calls == [
-        (cfg_for_repo.workspace_root, cfg_for_repo.queue_repo, cfg_for_repo.queue_branch)
+        (
+            cfg_for_repo.workspace_root,
+            cfg_for_repo.queue_repo,
+            cfg_for_repo.queue_branch,
+            cfg_for_repo.instance_id,
+        )
     ]
 
 
@@ -1318,23 +1330,26 @@ def test_pull_queue_calls_ensure_queue_clone(
         workspace_root=tmp_path,
         queue_repo="https://github.com/example/q",
     )
-    calls: list[tuple[Path, str, str]] = []
+    calls: list[tuple[Path, str, str, str]] = []
 
     def fake_ensure(
         workspace_root: Path,
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str,
         timeout: float = 120.0,
     ) -> Path:
-        calls.append((workspace_root, queue_repo, queue_branch))
-        return workspace_root / "queue"
+        calls.append((workspace_root, queue_repo, queue_branch, instance_id))
+        return workspace_root / f"queue-{instance_id}"
 
     monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
 
     loop._pull_queue(cfg)
 
-    assert calls == [(tmp_path, "https://github.com/example/q", cfg.queue_branch)]
+    assert calls == [
+        (tmp_path, "https://github.com/example/q", cfg.queue_branch, cfg.instance_id),
+    ]
 
 
 def test_pull_queue_passes_configured_branch(
@@ -1358,16 +1373,19 @@ def test_pull_queue_passes_configured_branch(
         queue_repo: str,
         queue_branch: str,
         *,
+        instance_id: str,
         timeout: float = 120.0,
     ) -> Path:
         captured["queue_branch"] = queue_branch
-        return workspace_root / "queue"
+        captured["instance_id"] = instance_id
+        return workspace_root / f"queue-{instance_id}"
 
     monkeypatch.setattr(loop, "ensure_queue_clone", fake_ensure)
 
     loop._pull_queue(cfg)
 
     assert captured["queue_branch"] == "custom-branch"
+    assert captured["instance_id"] == cfg.instance_id
 
 
 def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
@@ -1598,6 +1616,19 @@ def test_iterate_once_resume_self_heals_missing_work_worktree(
     )
     (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    # Multi-ralph invariant: every current/<id>/ carries a CLAIM.json.
+    # The claim commit lands BEFORE any worktree work; a crash between
+    # claim-commit and worktree-creation still leaves CLAIM.json behind.
+    from ralph_executor.queue.claim import Claim, write_claim
+
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=cfg_for_repo.instance_id,
+            claimed_at="2026-05-24T09:15:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", "test: seed WI-RESUME directly in current/")
     _git(fake_repo, "push", "origin", "main")
@@ -1677,6 +1708,18 @@ def test_iterate_once_resume_demotes_to_blocked_when_worktree_cannot_be_created(
     )
     (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    # Multi-ralph invariant: current/<id>/ carries CLAIM.json (claim
+    # commit lands before any worktree work).
+    from ralph_executor.queue.claim import Claim, write_claim
+
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=cfg_for_repo.instance_id,
+            claimed_at="2026-05-24T09:15:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", "test: seed WI-STRANDED in current/")
     _git(fake_repo, "push", "origin", "main")
