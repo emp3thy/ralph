@@ -8,6 +8,9 @@ guarantees the autobug emit never crashes the original-crash handler.
 from __future__ import annotations
 
 import logging
+import platform
+import sys
+import traceback
 from collections.abc import Callable
 
 from ralph_executor.autobug.types import Context
@@ -69,3 +72,113 @@ def build_frontmatter(
         "",
     ]
     return "\n".join(lines)
+
+
+def _format_traceback(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _env_snapshot(ctx: Context) -> str:
+    env = ctx.env or {}
+    relevant_keys = sorted(k for k in env if k.startswith("RALPH_") or k in ("GH_OWNER",))
+    rows = [
+        f"- {k}: <redacted>" if "TOKEN" in k or "KEY" in k else f"- {k}: {env[k]}"
+        for k in relevant_keys
+    ]
+    return (
+        f"- OS: {platform.system()}\n"
+        f"- Python: {sys.version.split()[0]}\n"
+        f"- Ralph SHA: {ctx.ralph_sha}\n"
+        + ("\n".join(rows) if rows else "- (no RALPH_/GH_OWNER env keys)")
+    )
+
+
+def _pbi_ref(ctx: Context) -> str:
+    if ctx.triggering_pbi_id:
+        return f"Triggering PBI: {ctx.triggering_pbi_id}"
+    return "Triggering PBI: <none — startup / pre-claim crash>"
+
+
+def _short_title(exc: BaseException) -> str:
+    msg = str(exc).splitlines()[0] if str(exc) else "<no message>"
+    return f"{type(exc).__qualname__}: {msg[:80]}"
+
+
+def build_bug_md(exc: BaseException, ctx: Context) -> str:
+    """Compose BUG.md body. Every section is _safe-wrapped; never raises."""
+    parts: list[str] = []
+    parts.append(f"# autobug — {_safe(lambda: _short_title(exc), 'unknown crash')}")
+    parts.append(
+        _section(
+            "Stacktrace",
+            _safe(
+                lambda: f"```\n{_format_traceback(exc)}\n```",
+                "<traceback unavailable>",
+            ),
+        )
+    )
+    parts.append(
+        _section("Environment", _safe(lambda: _env_snapshot(ctx), "<env unavailable>"))
+    )
+    parts.append(
+        _section("Triggering PBI", _safe(lambda: _pbi_ref(ctx), "<no PBI context>"))
+    )
+    assert parts, "build_bug_md produced no sections — refusing to emit empty BUG.md"
+    return "\n\n".join(parts)
+
+
+_REPRODUCE_HEADER = (
+    "> AUTOBUG NOTE: This bug was auto-captured at crash time. The content\n"
+    "> below is what we observed, NOT a confirmed reproduction recipe. Your\n"
+    "> iteration's job is to convert these observations into runnable\n"
+    "> reproduction commands and append them to this file. This is a\n"
+    "> starting point, not a recipe. If after investigation the crash is\n"
+    "> genuinely non-deterministic (race condition, OOM under load, network\n"
+    "> blip), write STUCK.md per the bug workflow's contradictory-evidence\n"
+    "> trigger — do not stack speculative fixes."
+)
+
+
+def build_reproduce_md(
+    pbi_id: str,
+    *,
+    trigger_kind: str,
+    exc: BaseException | None,
+    stderr: str | None,
+    exit_code: int | None,
+    ctx: Context,
+) -> str:
+    parts: list[str] = []
+    parts.append(f"# REPRODUCE — {pbi_id}")
+    parts.append(_REPRODUCE_HEADER)
+    parts.append(f"## Observed\n\nTrigger: {trigger_kind}")
+    if exit_code is not None:
+        parts.append(f"Exit code: {exit_code}")
+    if exc is not None:
+        parts.append(
+            _section(
+                "Stacktrace",
+                _safe(
+                    lambda: f"```\n{_format_traceback(exc)}\n```",
+                    "<traceback unavailable>",
+                ),
+            )
+        )
+    if stderr:
+        parts.append(
+            _section(
+                "stderr (last 40 lines)",
+                "```\n" + "\n".join(stderr.splitlines()[-40:]) + "\n```",
+            )
+        )
+    parts.append(
+        _section("Environment snapshot", _safe(lambda: _env_snapshot(ctx), "<env unavailable>"))
+    )
+    parts.append(
+        "## Suggested reproduction approach\n\n"
+        "- Inspect the deepest user frame in the stacktrace above\n"
+        "- Reproduce the env conditions captured above\n"
+        "- See triggering PBI in HISTORY.md if available"
+    )
+    assert parts, "build_reproduce_md produced no sections — refusing empty REPRODUCE.md"
+    return "\n\n".join(parts)

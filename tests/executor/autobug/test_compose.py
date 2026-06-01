@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from ralph_executor.autobug.compose import _safe, _section, build_frontmatter
+from ralph_executor.autobug.compose import (
+    _safe,
+    _section,
+    build_bug_md,
+    build_frontmatter,
+    build_reproduce_md,
+)
 from ralph_executor.autobug.types import Context
 
 
@@ -79,3 +85,67 @@ def test_build_frontmatter_regression_of_optional(tmp_path: Path) -> None:
         regression_of="autobug-a3f2c9-001",
     )
     assert "regression_of: autobug-a3f2c9-001" in fm
+
+
+def test_build_bug_md_contains_all_sections(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    try:
+        raise RuntimeError("test boom")
+    except RuntimeError as exc:
+        body = build_bug_md(exc, ctx)
+    assert "## Stacktrace" in body
+    assert "## Environment" in body
+    assert "## Triggering PBI" in body
+    assert "RuntimeError" in body
+    assert "test boom" in body
+
+
+def test_build_bug_md_survives_broken_env(tmp_path: Path) -> None:
+    """Composer must not raise when env-snapshot section fails."""
+    ctx = Context(
+        queue_root=tmp_path,
+        state_dir=tmp_path / "state",
+        env={},
+        now=datetime(2026, 5, 31, tzinfo=UTC),
+        ralph_sha="sha",
+        bot_author_email="b@e.com",
+        triggering_pbi_id=None,
+        queue_branch="ralph-queue",
+    )
+    try:
+        raise RuntimeError("ok")
+    except RuntimeError as exc:
+        body = build_bug_md(exc, ctx)
+    assert "## Stacktrace" in body
+
+
+def test_build_reproduce_md_marks_starting_point(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError as exc:
+        body = build_reproduce_md(
+            "autobug-abc-001",
+            trigger_kind="python_crash",
+            exc=exc,
+            stderr=None,
+            exit_code=None,
+            ctx=ctx,
+        )
+    assert "AUTOBUG NOTE" in body
+    assert "starting point" in body.lower()
+    assert "python_crash" in body
+
+
+def test_build_reproduce_md_subprocess_includes_exit_code(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    body = build_reproduce_md(
+        "autobug-abc-002",
+        trigger_kind="subprocess_crash",
+        exc=None,
+        stderr="Killed",
+        exit_code=137,
+        ctx=ctx,
+    )
+    assert "Exit code: 137" in body
+    assert "Killed" in body
