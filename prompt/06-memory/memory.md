@@ -30,3 +30,11 @@ Type-specific triggers are documented in the workflow section for the relevant P
 ### Observation field defaults
 
 Always set `outcome` explicitly. Fill `component` (the subsystem / module / package name) and `theme` (e.g. `bug`, `decision`, `gotcha`, `dependency`) when applicable. Do not embed the project name in `content` — the env-var scoping handles that.
+
+### Autobug PBIs
+
+If the PBI's `BUG.md` frontmatter contains `signature: <hex>`, this is an
+autobug — captured automatically by ralph when an earlier iteration
+crashed. Your `RALPH_AUTOBUG_DEPTH=1` env var prevents further autobug
+emissions while you fix it. Treat it like any other bug PBI; the
+signature field is for dedup, not for you to act on.
