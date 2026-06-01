@@ -1,7 +1,7 @@
 # ralph autobug — design
 
 **Date:** 2026-05-31
-**Status:** Approved 2026-05-31 — implementation plan committed at `782d14a` (v3).
+**Status:** Implemented (v1) — commits `8d5ba80..b629d26` on branch `ralph/RALPH-AUTOBUG-V1-IMPLEMENTATION`.
 **Author:** Claude / gethin (brainstorming session)
 
 ## Summary
