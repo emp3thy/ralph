@@ -18,12 +18,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from ralph_executor.queue.claim import (  # noqa: E402
+    CLAIM_FILENAME,
+    ClaimError,
+    read_claim,
+)
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
     commit_paths,
     is_path_in_head,
     push,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -31,6 +37,15 @@ from scripts.queue_writer import (  # noqa: E402
 
 CURRENT_FOLDER = "current"
 CANCEL_FILE_NAME = "CANCEL"
+
+# Exit code reserved for the multi-ralph CLAIM-ownership guard. Distinct
+# from QueueWriterError's exit 2 so wrappers can branch on "this is a
+# foreign-claim refusal, route to ralph-recover" without parsing stderr.
+EXIT_CLAIM_GUARD = 3
+
+
+class _ClaimGuardError(RuntimeError):
+    """Raised by the CLAIM.json guard to short-circuit main() with exit 3."""
 
 
 @dataclass
@@ -73,6 +88,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        metavar="NAME",
+        help=(
+            "Operator instance_id used to compare against CLAIM.json. "
+            "Resolution order: --instance-id flag, RALPH_INSTANCE_ID env, "
+            "instance_id in ~/.ralph/config.toml, sanitised hostname."
+        ),
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the sentinel locally but do not push.",
@@ -83,6 +108,31 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Compute and log without writing, committing, or pushing.",
     )
     return parser.parse_args(argv)
+
+
+def _enforce_claim_ownership(pbi_dir: Path, operator_instance_id: str) -> None:
+    """Refuse to cancel when CLAIM.json is missing or owned by another instance.
+
+    Operator skills run on the same host(s) as the ralph executor; the
+    operator's identity is resolved via the same precedence chain the
+    executor uses (CLI → env → TOML → sanitised hostname). A cancel
+    against a claim owned by a different instance is rejected with
+    ``EXIT_CLAIM_GUARD`` so the operator routes through ``ralph-recover``
+    rather than racing the other ralph's loop. Per Scope 1 multi-ralph
+    invariants, every ``current/<id>/`` MUST carry a CLAIM.json — its
+    absence is an inconsistent queue and equally refused.
+    """
+    claim_path = pbi_dir / CLAIM_FILENAME
+    if not claim_path.is_file():
+        raise _ClaimGuardError("ralph-cancel: PBI in current/ but no CLAIM.json")
+    try:
+        claim = read_claim(claim_path)
+    except ClaimError as exc:
+        raise _ClaimGuardError(f"ralph-cancel: malformed CLAIM.json: {exc}") from exc
+    if claim.instance_id != operator_instance_id:
+        raise _ClaimGuardError(
+            f"ralph-cancel: cannot cancel PBI claimed by {claim.instance_id!r}; use ralph-recover"
+        )
 
 
 def _resolve_current_pbi(clone: Path, pbi_id: str) -> Path:
@@ -133,9 +183,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
         clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
 
         pbi_dir = _resolve_current_pbi(clone, args.pbi_id)
+        _enforce_claim_ownership(pbi_dir, operator_instance_id)
         sentinel = pbi_dir / CANCEL_FILE_NAME
         rel_sentinel = sentinel.relative_to(clone).as_posix()
 
@@ -189,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0
 
+    except _ClaimGuardError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CLAIM_GUARD
     except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

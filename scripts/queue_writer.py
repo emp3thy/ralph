@@ -197,6 +197,39 @@ def resolve_queue_branch(cli_value: str | None = None) -> str:
     return from_toml
 
 
+def resolve_instance_id(cli_value: str | None = None) -> str:
+    """Resolve operator-side ``instance_id`` for skills that read CLAIM.json.
+
+    Mirrors ``ralph_executor.config.resolve_instance_id``'s precedence chain
+    so a skill invocation sees the same identity the executor would on this
+    host: ``--instance-id`` CLI flag → ``RALPH_INSTANCE_ID`` env var →
+    ``~/.ralph/config.toml`` key → sanitised hostname.
+
+    Validation / sanitisation lives in ``ralph_executor.config`` — this is
+    purely the operator-side wiring. ``ConfigError`` from a malformed user
+    TOML or invalid candidate is re-raised as ``QueueWriterError`` so
+    skills only need to catch one exception type.
+    """
+    import os
+    import socket
+
+    from ralph_executor.config import ConfigError
+    from ralph_executor.config import resolve_instance_id as _resolve
+    from ralph_executor.user_config import read_instance_id
+
+    env_value = os.environ.get("RALPH_INSTANCE_ID")
+    try:
+        toml_value = read_instance_id()
+        return _resolve(
+            cli_value=cli_value,
+            env_value=env_value,
+            toml_value=toml_value,
+            hostname=socket.gethostname(),
+        )
+    except ConfigError as exc:
+        raise QueueWriterError(str(exc)) from exc
+
+
 def is_path_in_head(repo: Path, rel_path: str) -> bool:
     """Return True if ``rel_path`` exists in the current ``HEAD`` tree.
 
