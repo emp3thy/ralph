@@ -463,6 +463,33 @@ def _print_current_reconcile_report(
     print(f"\n{total} current/ entries inspected: {n_del} deleted, {n_keep} kept, {n_err} errors.")
 
 
+def validate_startup(cfg: ExecutorConfig) -> None:
+    """One-time startup validation. Warns on soft misconfigurations.
+
+    Specifically: missing bot_author_email when EITHER autobug is enabled
+    OR sweep can run (its PR-skill scripts dir exists). The loop still
+    starts; the operator gets one banner-shaped warning instead of one
+    per iteration.
+    """
+    if cfg.bot_author_email:
+        return
+    autobug_active = getattr(cfg, "autobug_enabled", True)
+    sweep_active = _pr_skill_scripts_path(cfg).is_dir()
+    if not (autobug_active or sweep_active):
+        return
+    affected: list[str] = []
+    if autobug_active:
+        affected.append("autobug")
+    if sweep_active:
+        affected.append("sweep")
+    log.warning(
+        "ralph startup: bot_author_email is not set; %s will skip / abort on "
+        "every iteration. Set TOML key 'bot_author_email' or env "
+        "RALPH_ADO_AUTHOR_EMAIL.",
+        " AND ".join(affected),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
@@ -511,6 +538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     _configure_logging(cfg.log_level)
+    validate_startup(cfg)
 
     log.info(
         "ralph-executor starting (workspace_root=%s queue_repo=%s queue_branch=%s main=%s)",
