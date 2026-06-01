@@ -286,7 +286,12 @@ def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) ->
         "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
         len(signals),
     )
-    halt_and_acknowledge(repo=_queue_repo_root(cfg), signals=signals, now=now)
+    halt_and_acknowledge(
+        repo=_queue_repo_root(cfg),
+        signals=signals,
+        now=now,
+        tripped_by_instance=cfg.instance_id,
+    )
     return True
 
 

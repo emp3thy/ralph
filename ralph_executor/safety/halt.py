@@ -131,6 +131,7 @@ def write_meta_bug(
     snapshot: StateSnapshot,
     signals: list[CycleSignal],
     now: datetime | None = None,
+    tripped_by_instance: str = "",
 ) -> MetaBug:
     """Render the META-BUG markdown file and return its dataclass."""
     created_at = now or datetime.now(tz=UTC)
@@ -148,18 +149,24 @@ def write_meta_bug(
         "status: blocked",
         f"created_at: {created_at.isoformat()}",
         f"summary: {summary}",
-        "---",
-        "",
-        f"# {meta_id}",
-        "",
-        "Cycle detector tripped. Halt is in effect; the executor's main",
-        "loop refuses to start until the sentinel at",
-        f"`{_SENTINEL_RELATIVE}` is acknowledged (fill in",
-        "`acknowledged_by` and `acknowledged_at`).",
-        "",
-        "## Signals",
-        "",
     ]
+    if tripped_by_instance:
+        lines.append(f"tripped_by_instance: {tripped_by_instance}")
+    lines.extend(
+        [
+            "---",
+            "",
+            f"# {meta_id}",
+            "",
+            "Cycle detector tripped. Halt is in effect; the executor's main",
+            "loop refuses to start until the sentinel at",
+            f"`{_SENTINEL_RELATIVE}` is acknowledged (fill in",
+            "`acknowledged_by` and `acknowledged_at`).",
+            "",
+            "## Signals",
+            "",
+        ]
+    )
     for signal in signals:
         lines.extend(
             [
@@ -318,6 +325,7 @@ def halt_and_acknowledge(
     signals: list[CycleSignal],
     now: datetime | None = None,
     webhook_env: str = "RALPH_HALT_WEBHOOK",
+    tripped_by_instance: str = "",
 ) -> MetaBug:
     """Snapshot state, write META-BUG + sentinel, fire webhook.
 
@@ -332,6 +340,7 @@ def halt_and_acknowledge(
         snapshot=snapshot,
         signals=list(signals),
         now=now,
+        tripped_by_instance=tripped_by_instance,
     )
     write_halt_sentinel(repo=repo, meta_bug_id=meta.id, now=now)
     webhook_url = os.environ.get(webhook_env, "").strip() or None
