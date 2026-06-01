@@ -39,25 +39,31 @@ distinct pieces.
 |---|---|---|
 | `emp3thy/ralph` | Executor source. Built into the `ralph-executor` Python package and the container image. | `ralph_executor/` (loop, config, sweep, host_select), `skills/` (operator skills + staged `pr-<host>`), `scripts/setup_ralph_queue_github.py`, `Dockerfile`, `pyproject.toml`. |
 | `emp3thy/ralph-queue` | Queue state. Holds the PBI lifecycle on the `ralph-queue` branch. `main` is protected and used only for the README. | `.ralph/inbox/`, `.ralph/current/`, `.ralph/pending-pr/`, `.ralph/blocked/`, `.ralph/archive/`, `.ralph/done/`, plus an optional `.ralph/config.toml` for per-queue knobs. |
-| `~/ralph-workspaces/<env>/` | Per-machine workspace. Created by the executor at runtime; never checked into git. | `queue/` — clone of `ralph-queue` (always on `cfg.queue_branch`). `clones/<owner>-<name>/` — one clone per `target_repo` ralph has seen; each holds per-PBI worktrees under `.ralph-work/<PBI-id>/`. |
+| `~/ralph-workspaces/<env>/` | Per-machine workspace. Created by the executor at runtime; never checked into git. | `queue-<instance_id>/` — clone of `ralph-queue` (always on `cfg.queue_branch`; one directory per instance under multi-ralph — see `ralph-setup.md` §12). `clones/<owner>-<name>/` — one clone per `target_repo` ralph has seen; each holds per-PBI worktrees under `.ralph-work/<PBI-id>/`. |
 
 ## What runs where
 
 | Component | Where it runs | What it touches |
 |---|---|---|
-| `ralph-executor` (loop) | Workstation, container, or pod. Single process per workspace. | Reads/writes `<workspace>/queue/.ralph/`. Clones each PBI's `target_repo` into `<workspace>/clones/...`. Spawns `claude -p` inside a per-PBI worktree. Pushes back to the queue repo and opens PRs on each target repo. |
-| Operator skills (`ralph-new`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-status`) | Operator's shell, any time. | Direct read/write on `<workspace>/queue/.ralph/`. **Never** touch any target repo. Commit + push to the queue repo (except `ralph-status`, which is read-only). |
+| `ralph-executor` (loop) | Workstation, container, or pod. Single process per workspace, enforced by an OS-level lockfile at `<workspace>/queue-<instance_id>/.ralph.lock`. | Reads/writes `<workspace>/queue-<instance_id>/.ralph/`. Clones each PBI's `target_repo` into `<workspace>/clones/...`. Spawns `claude -p` inside a per-PBI worktree. Pushes back to the queue repo and opens PRs on each target repo. |
+| Operator skills (`ralph-new`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-status`, `ralph-recover`) | Operator's shell, any time. | Direct read/write on `<workspace>/queue-<instance_id>/.ralph/`. **Never** touch any target repo. Commit + push to the queue repo (except `ralph-status`, which is read-only). `ralph-cancel` and `ralph-promote` refuse to mutate PBIs whose `CLAIM.json` names a different instance — see `ralph-setup.md` §12. |
 | `scripts/setup_ralph_queue_github.py` | Operator's shell, once per queue. | One-shot provisioning. Creates the GitHub repo (if absent), seeds `.ralph/` on `ralph-queue`, applies branch protection on `main` and `ralph-queue`. See `docs/runbooks/ralph-queue-setup.md`. |
 
 ## Data flow per iteration
 
 1. Executor calls `ensure_queue_clone` — clones `cfg.queue_repo` to
-   `<workspace_root>/queue/` if absent, then `git fetch` + `git reset`
-   to `origin/<cfg.queue_branch>`.
-2. Inspects `<workspace>/queue/.ralph/inbox/` for the next PBI; reads
-   its `target_repo` frontmatter field.
-3. Moves the PBI directory from `inbox/` to `current/`, commits, pushes
-   to `origin/<queue_branch>`.
+   `<workspace_root>/queue-<instance_id>/` if absent (one-shot
+   renames a legacy `queue/` directory into the namespaced path),
+   then `git fetch` + `git reset` to `origin/<cfg.queue_branch>`.
+   Acquires the workspace lockfile at
+   `<workspace>/queue-<instance_id>/.ralph.lock`.
+2. Inspects `<workspace>/queue-<instance_id>/.ralph/inbox/` for the
+   next PBI; reads its `target_repo` frontmatter field.
+3. Moves the PBI directory from `inbox/` to `current/`, writes
+   `current/<id>/CLAIM.json` (instance_id, hostname, claimed_at), and
+   commits the rename + the new CLAIM.json + the status-frontmatter
+   flip in one commit pinned to `chore(queue): claim <id> for
+   <instance_id>`; pushes to `origin/<queue_branch>`.
 4. Clones `target_repo` to `<workspace>/clones/<owner>-<name>/` if
    absent (one clone per target, reused across PBIs).
 5. Creates a per-PBI worktree at

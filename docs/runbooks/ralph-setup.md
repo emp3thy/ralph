@@ -81,10 +81,12 @@ table, dry-run mode, Azure DevOps Phase 2) lives in
 uv run ralph-executor init
 ```
 
-Interactively prompts for `workspace_root`, `queue_repo`, and
-`queue_branch` (default `ralph-queue`). Writes them to
-`~/.ralph/config.toml`. The queue URL is smoke-tested with
-`git ls-remote`; failure prints a warning but still writes the config.
+Interactively prompts for `workspace_root`, `queue_repo`,
+`queue_branch` (default `ralph-queue`), and `instance_id` (default:
+sanitised hostname). Writes them to `~/.ralph/config.toml`. The queue
+URL is smoke-tested with `git ls-remote`; failure prints a warning but
+still writes the config. `init` is idempotent — a re-run keeps existing
+TOML keys and only prompts for the missing ones.
 
 Non-interactive form:
 
@@ -94,8 +96,9 @@ uv run ralph-executor init --yes
 
 `--yes` accepts the OS default for `workspace_root`
 (`~/ralph-workspaces`), skips the `queue_repo` prompt with a warning,
-and writes the default `queue_branch` (`"ralph-queue"`). `queue_repo`
-must be added manually to `~/.ralph/config.toml` afterwards.
+writes the default `queue_branch` (`"ralph-queue"`), and writes the
+default `instance_id` (sanitised hostname). `queue_repo` must be added
+manually to `~/.ralph/config.toml` afterwards.
 
 ## 4a. Configure git host
 
@@ -137,11 +140,12 @@ Per-machine knobs. Source: `ralph_executor/user_config.py`. Written by
 
 | Key | Type | Required | Default | Env override | Description |
 |---|---|---|---|---|---|
-| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue/`. |
+| `workspace_root` | string (path) | no | `$HOME/ralph-workspaces` | `$RALPH_WORKSPACE` | Where the queue clone and target-repo clones live. Each target gets `<workspace_root>/clones/<owner>/<name>/`; the queue clone is `<workspace_root>/queue-<instance_id>/` (one per instance — see section 12). |
 | `skills_root` | string (path) | no | source-checkout default | `$RALPH_SKILLS_ROOT` | Source `skills/` tree used by `host_select.prepare_host_environment` to find `pr-<host>/`. |
 | `claude_skills_dir` | string (path) | no | `~/.claude/skills` | `$RALPH_CLAUDE_SKILLS_DIR` | Destination directory where staged `pr/` ends up for the spawned Claude subprocess. |
-| `queue_repo` | string (URL) | yes (or `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue/`. |
+| `queue_repo` | string (URL) | yes (or `--queue-repo`) | — | none | HTTPS URL of the queue repo. The executor clones it into `<workspace_root>/queue-<instance_id>/`. |
 | `queue_branch` | string | no | `ralph-queue` | `$RALPH_QUEUE_BRANCH` (executor only — skills do not read this env) | Branch on `queue_repo` that holds `.ralph/` state. |
+| `instance_id` | string | no | sanitised hostname | `$RALPH_INSTANCE_ID` | Per-instance identity for multi-ralph (Scope 1). Drives the namespaced queue clone path (`<workspace_root>/queue-<instance_id>/`) and the `CLAIM.json` ownership marker on each claimed PBI. Must match `^[a-z0-9][a-z0-9_-]{0,62}$` (filesystem-safe lowercase, 1–63 chars, starts with alnum). Resolution: `--instance-id` CLI flag > `$RALPH_INSTANCE_ID` env > TOML key > sanitised hostname. See section 12. |
 
 ## 6. Config reference: operational knobs in `~/.ralph/config.toml`
 
@@ -202,6 +206,7 @@ runs the iteration loop.
 | `--log-level LEVEL` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Overrides `$RALPH_LOG_LEVEL` for this run. |
 | `--queue-repo URL` | Override `queue_repo` (per-run; URL validated). |
 | `--queue-branch BRANCH` | Override `queue_branch` (per-run). Plain branch name only; empty, `HEAD`, or `refs/heads/...` raise `ConfigError`. |
+| `--instance-id NAME` | Override `instance_id` (per-run). Top-level flag only — not declared on subparsers; all subcommands inherit. Validated against `^[a-z0-9][a-z0-9_-]{0,62}$`; empty string reaches the validator and raises `ConfigError` (it does NOT silently fall through to env / TOML / hostname). See section 12. |
 
 `$RALPH_RUN_ONCE` (truthy: `1`, `true`, `yes`, `on`) is equivalent to
 `--once` when `--iterations` is not supplied.
@@ -299,7 +304,10 @@ The full design lives at
 
 `skills/ralph-cancel/scripts/cancel.py`. Drops an empty `CANCEL`
 sentinel into `.ralph/current/<pbi-id>/` so the executor moves the
-PBI out on the next iteration.
+PBI out on the next iteration. Refuses with exit `3` when the PBI's
+`CLAIM.json` names a different `instance_id` than the operator (the
+operator is then directed at `ralph-recover`) and when `CLAIM.json` is
+missing or malformed.
 
 | Flag | Required | Description |
 |---|---|---|
@@ -307,13 +315,19 @@ PBI out on the next iteration.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id NAME` | no | Operator identity for the CLAIM.json ownership guard. Resolution: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--no-push` | no | Commit but do not push. |
-| `--dry-run` | no | Compute without mutating. |
+| `--dry-run` | no | Compute without mutating; the ownership guard is skipped (no clone happens). |
 
 ### `ralph-promote`
 
 `skills/ralph-promote/scripts/promote.py`. Moves a PBI between state
-folders; updates the `status` frontmatter; commits + pushes.
+folders; updates the `status` frontmatter; commits + pushes. When the
+source state is `current/`, refuses with exit `3` if the PBI's
+`CLAIM.json` names a different `instance_id` than the operator, or if
+`CLAIM.json` is missing or malformed. Moves out of any other state
+folder bypass the guard (those folders have no `CLAIM.json` by
+design).
 
 | Flag | Required | Description |
 |---|---|---|
@@ -323,6 +337,7 @@ folders; updates the `status` frontmatter; commits + pushes.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--instance-id NAME` | no | Operator identity for the CLAIM.json ownership guard. Only consulted when `--from current` is the source state. Resolution mirrors `ralph-cancel`. |
 | `--no-push` | no | Commit but do not push. |
 | `--dry-run` | no | Compute without mutating. |
 
@@ -346,7 +361,11 @@ folders; updates the `status` frontmatter; commits + pushes.
 ### `ralph-status`
 
 `skills/ralph-status/scripts/status.py`. Read-only view of the queue,
-grouped by `target_repo`.
+grouped by `target_repo`. Renders an `OWNER` column derived from each
+PBI's `CLAIM.json::instance_id`; cells show `—` (em-dash) for any row
+that is not in `current/`, has no `CLAIM.json`, or whose `CLAIM.json`
+is malformed. The JSON envelope carries the same value as `owner`
+(snake-case; `null` for the empty cases).
 
 | Flag | Required | Description |
 |---|---|---|
@@ -356,6 +375,28 @@ grouped by `target_repo`.
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
 | `--queue-branch BRANCH` | no | Override `queue_branch`. |
+
+### `ralph-recover`
+
+`skills/ralph-recover/scripts/recover.py`. Manually recovers an orphan
+claim by moving a PBI out of `current/<id>/` back to `inbox/<id>/` (re-
+dispatch — attempt counter reset) or to `blocked/<id>/` (human triage
+— attempt counter preserved). Deletes the orphan `CLAIM.json`, appends
+a `HISTORY.md` audit entry naming the previous owner, and pushes one
+commit pinned to `chore(queue): recover <id> from <previous-instance>`.
+Refuses with exit `4` when the halt sentinel is active. No
+`--instance-id` flag — the prior owner read from `CLAIM.json` is what
+drives the commit subject, the operator's identity is not needed. No
+`--force` flag either; invocation IS the deliberate action.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--pbi-id ID` | yes | PBI directory name under `.ralph/current/`. |
+| `--to {inbox,blocked}` | yes | Destination state folder. `inbox` resets the attempt counter; `blocked` preserves it. |
+| `--workspace PATH` | no | Override `workspace_root`. |
+| `--queue-repo URL` | no | Override `queue_repo`. |
+| `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--no-push` | no | Commit but do not push. |
 
 ## 9. CLI reference: `setup_ralph_queue_github.py`
 
@@ -429,3 +470,110 @@ Executor-specific symptoms:
 | Executor exits with `host environment ready: host=...` then a `HostSelectionError`. | `git_host` set but auth env vars missing (e.g. `$GH_TOKEN`). | Export the required env vars; or set `git_host = "github"` and rerun `gh auth login`. |
 | `FileNotFoundError: claude` from inside the loop. | Claude CLI not on PATH for the executor process. | Install Claude Code, run `claude --version` in the same shell, or set `claude_binary` to an absolute path. |
 | Loop exits immediately with `queue drained -- exiting after N consecutive idle iterations` and the queue has work. | The queue clone is stale (operator-side push race) or the executor is reading a different `queue_branch` than the operator skills are writing to. | Compare `cfg.queue_branch` (`ralph-executor doctor`) with the skill's resolved branch (`grep RALPH_QUEUE_BRANCH ~/.ralph/config.toml`). |
+| `ConfigError: instance_id '<value>' must match ^[a-z0-9][a-z0-9_-]{0,62}$` | TOML key, env var, CLI flag, or sanitised hostname does not match the regex (uppercase, dots, spaces, leading hyphen, > 63 chars). | Pick a value satisfying the regex (e.g. `ralph-a`). If the default-from-hostname is what is failing, set `instance_id` explicitly in `~/.ralph/config.toml`. |
+| `QueueCloneError: both legacy queue/ and queue-<instance_id>/ exist` | An aborted upgrade left both the legacy single-host clone and the namespaced one in `workspace_root/`. | Remove whichever is stale (typically the legacy `queue/`) and restart the executor. The legacy directory is only ever renamed once on the first startup of the multi-ralph build. |
+| `LockfileError: another ralph already running on this workspace: {...}` | Another ralph process is already holding `<workspace>/queue-<instance_id>/.ralph.lock`. The error payload names the holding instance, hostname, and pid. | Stop the other ralph, or give this instance its own `workspace_root` AND its own `instance_id`. The OS releases the lock on process exit, so no manual cleanup is needed once the holder is dead. |
+| `QueueError: malformed claim: ...` from `current_pbi()`. | A `current/<id>/` directory either has no `CLAIM.json` or its `CLAIM.json` will not parse. | Inspect the PBI directory directly. If the claim is legitimately orphaned (owner crashed), use `ralph-recover --pbi-id <id> --to inbox`. |
+| `ralph-cancel: cannot cancel PBI claimed by '<other>'; use ralph-recover` / `ralph-promote: cannot promote PBI claimed by '<other>'; use ralph-recover` (exit 3). | The PBI's `CLAIM.json` names a different instance than the operator. | Confirm the owning instance is actually gone, then run `ralph-recover --pbi-id <id> --to inbox|blocked`. `ralph-cancel` and `ralph-promote` are intentionally non-destructive across instances. |
+| `ralph-recover: halt sentinel active` (exit 4). | The executor's halt sentinel at `.ralph/state/halted` is present and unacknowledged. | Acknowledge (or delete) the halt sentinel before recovering claims. The halt is there because a safety net tripped; mutating the queue during the halt can mask the unresolved root cause. |
+
+## 12. Running multiple ralphs
+
+Multi-ralph (Scope 1) lets multiple ralph instances drain the same
+upstream queue concurrently across separate hosts. Each instance
+carries a unique `instance_id`, clones the queue into its own
+namespaced workspace, and writes a `CLAIM.json` ownership marker
+alongside every PBI it claims. The other instances see foreign claims
+and skip them.
+
+Source: `ralph_executor/config.py` (resolution + validator),
+`ralph_executor/queue_clone.py` (namespaced path + legacy rename),
+`ralph_executor/queue/claim.py` (`CLAIM.json` IO),
+`ralph_executor/lockfile.py` (workspace lockfile).
+
+### `instance_id` resolution chain
+
+Highest precedence wins:
+
+1. `--instance-id NAME` CLI flag (top-level parser only; all
+   subcommands inherit).
+2. `RALPH_INSTANCE_ID` environment variable.
+3. `instance_id` key in `~/.ralph/config.toml`.
+4. Sanitised hostname (`socket.gethostname()` lowercased, with every
+   character outside `[a-z0-9_-]` replaced by `-`).
+
+The resolved value is validated against
+`^[a-z0-9][a-z0-9_-]{0,62}$` — filesystem-safe lowercase, 1–63
+characters, must start with an alphanumeric. Empty strings reach the
+validator (they do NOT silently fall through), so `--instance-id ""`
+is an error, not a "use the next source" signal.
+
+### Workspace layout
+
+Each instance's queue clone lives at
+`<workspace_root>/queue-<instance_id>/`. Two instances on the same host
+must use different `workspace_root` values (or different `instance_id`s
+on the same workspace, but the lockfile refuses concurrent acquires on
+the same path regardless). Lockfile path is
+`<workspace>/queue-<instance_id>/.ralph.lock` (POSIX `fcntl.flock`,
+Windows `msvcrt.locking`).
+
+### `CLAIM.json` schema
+
+Each `current/<id>/CLAIM.json` is a JSON object with three required
+string fields:
+
+```json
+{
+  "claimed_at": "2026-06-01T12:34:56.789012+00:00",
+  "hostname": "host-a",
+  "instance_id": "ralph-a"
+}
+```
+
+The claim is written into the same commit as the inbox→current
+rename and the `status:` frontmatter flip, pinned to subject
+`chore(queue): claim <pbi-id> for <instance_id>`. Rebase-race losers
+drop their local claim commit cleanly and re-enter the next
+iteration.
+
+### Operator-skill behaviour under multi-ralph
+
+- `ralph-status` shows the `OWNER` column.
+- `ralph-cancel` and `ralph-promote` refuse on foreign `CLAIM.json`
+  with exit `3` and direct the operator at `ralph-recover`.
+- `ralph-recover` is the only sanctioned way to take over an orphan
+  claim. It deletes `CLAIM.json`, appends a `HISTORY.md` audit line,
+  and pushes one commit pinned to
+  `chore(queue): recover <id> from <previous-instance>`. It refuses to
+  run when the halt sentinel is active (exit `4`).
+- The META-BUG file emitted on safety-halt carries a
+  `tripped_by_instance: <instance_id>` frontmatter line so operators
+  can trace which instance tripped the cycle detector.
+
+### Upgrade procedure
+
+The first iteration of the new executor binary atomically renames the
+legacy `<workspace_root>/queue/` clone to
+`<workspace_root>/queue-<instance_id>/`. If both paths already exist
+the executor raises `QueueCloneError` and refuses to start —
+intentional refusal, not a silent merge. Recommended steps:
+
+1. Drain `current/` on the running ralph (let it finish in-flight
+   PBIs or `ralph-cancel` them). Existing `current/` PBIs have no
+   `CLAIM.json` and will trip the malformed-claim guard on the next
+   iteration of the new binary.
+2. Stop the executor cleanly.
+3. Upgrade (`uv sync` or pull the new container image).
+4. Set `instance_id` in `~/.ralph/config.toml` if you want anything
+   other than the sanitised hostname.
+5. Start the new executor. The legacy `queue/` is renamed to
+   `queue-<instance_id>/` on the first iteration.
+
+### Cross-host halt is not in Scope 1
+
+The halt sentinel (`.ralph/state/halted`) is gitignored on the queue
+clone; it is per-workspace, not per-fleet. An instance halting on
+host A does not propagate to host B. Fleet-wide coordination is
+Scope 2 (deferred). For now, an operator who wants the whole fleet
+paused must stop each instance manually.
