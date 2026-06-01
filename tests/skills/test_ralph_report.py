@@ -500,9 +500,7 @@ def test_report_main_exits_2_when_queue_repo_missing(
     assert rc == 2
 
 
-def test_report_main_writes_server_info_and_stops(
-    tmp_path: Path, report_mod: ModuleType
-) -> None:
+def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: ModuleType) -> None:
     """End-to-end: resolve via flags → spin up server → server-info lands
     under ``<workspace>/report/`` → idle timer fires → server-stopped
     sentinel is dropped.
