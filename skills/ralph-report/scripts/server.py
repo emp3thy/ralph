@@ -74,20 +74,22 @@ class ServerHandle:
 
 def start_server(
     *,
-    repo_path: Path,
+    queue_clone: Path,
     port: int = 0,
     idle_seconds: int = 1800,
     bind_host: str = "127.0.0.1",
 ) -> ServerHandle:
     """Start the report HTTP server in a daemon thread and return a handle.
 
-    ``port=0`` lets the OS pick a free port; the chosen value is on
-    ``handle.port``. The idle timer fires ``server.shutdown()`` after
-    ``idle_seconds`` of no requests; each ``/`` or ``/health`` request
-    resets the timer.
+    ``queue_clone`` is the operator queue clone returned by
+    ``scripts.queue_writer.acquire_queue_clone`` — the same tree
+    ``ralph-status`` reads. ``port=0`` lets the OS pick a free port; the
+    chosen value is on ``handle.port``. The idle timer fires
+    ``server.shutdown()`` after ``idle_seconds`` of no requests; each
+    ``/`` or ``/health`` request resets the timer.
     """
-    repo_path = repo_path.resolve()
-    httpd = ThreadingHTTPServer((bind_host, port), _make_handler_cls(repo_path))
+    queue_clone = queue_clone.resolve()
+    httpd = ThreadingHTTPServer((bind_host, port), _make_handler_cls(queue_clone))
     actual_port = httpd.server_address[1]
 
     timer_state: dict[str, threading.Timer | None] = {"timer": None}
@@ -130,7 +132,7 @@ def start_server(
     return ServerHandle(port=actual_port, thread=thread, server=httpd, _cancel_idle=cancel_timer)
 
 
-def _make_handler_cls(repo_path: Path) -> type[BaseHTTPRequestHandler]:
+def _make_handler_cls(queue_clone: Path) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             # Silence the default per-request access log on stderr.
@@ -156,10 +158,10 @@ def _make_handler_cls(repo_path: Path) -> type[BaseHTTPRequestHandler]:
                 self._respond(404, "text/plain; charset=utf-8", b"not found")
 
         def _render_full(self) -> str:
-            snap = _snapshot.load_snapshot(repo_path=repo_path)
-            events = _git_walker.walk_log(repo_path=repo_path)
+            snap = _snapshot.load_snapshot(queue_clone=queue_clone)
+            events = _git_walker.walk_log(queue_clone=queue_clone)
             return _render.render_page(  # type: ignore[no-any-return]
-                repo_path=repo_path,
+                queue_clone=queue_clone,
                 snapshot=snap,
                 events=events,
                 now=datetime.now(tz=UTC),

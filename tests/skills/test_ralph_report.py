@@ -5,6 +5,13 @@ directory name is kebab-case (not a valid Python identifier), each
 script module is loaded via :func:`importlib.util.spec_from_file_location`
 with a synthetic top-level name — the same pattern that
 ``tests/skills/test_ralph_status.py`` uses for ``ralph-status``.
+
+Post BUG-RALPH-REPORT-UNIFY-DATA-SOURCE: snapshot / git_walker / server
+all take ``queue_clone`` (the operator queue clone at
+``<workspace_root>/queue/``) directly. ``report.main`` resolves the
+operator clone via ``--workspace`` / ``--queue-repo`` /
+``--queue-branch`` and writes ``server-info`` to
+``<workspace_root>/report/``.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -79,19 +87,24 @@ target_repo: {target_repo}
     (pbi_dir / "HISTORY.md").write_text("<!-- history -->\n", encoding="utf-8")
 
 
-def test_snapshot_load_reads_all_state_folders(tmp_path: Path, snapshot: ModuleType) -> None:
-    repo = tmp_path / "repo"
-    queue_wt = repo / ".ralph-work" / "queue"
-    (queue_wt / ".ralph").mkdir(parents=True)
+def _build_queue_clone(root: Path) -> Path:
+    """Create an empty queue-clone directory tree (no real git history)."""
+    queue_clone = root / "queue"
+    (queue_clone / ".ralph").mkdir(parents=True)
     for state in ("current", "inbox", "pending-pr", "blocked", "done"):
-        (queue_wt / ".ralph" / state).mkdir()
+        (queue_clone / ".ralph" / state).mkdir()
+    return queue_clone
 
-    _write_pbi(queue_wt / ".ralph" / "current", "PBI-CURRENT")
-    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-INBOX-1", severity="high")
-    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-INBOX-2", severity="normal")
-    _write_pbi(queue_wt / ".ralph" / "blocked", "BUG-BLOCKED", pbi_type="bug")
 
-    snap = snapshot.load_snapshot(repo_path=repo)
+def test_snapshot_load_reads_all_state_folders(tmp_path: Path, snapshot: ModuleType) -> None:
+    queue_clone = _build_queue_clone(tmp_path)
+
+    _write_pbi(queue_clone / ".ralph" / "current", "PBI-CURRENT")
+    _write_pbi(queue_clone / ".ralph" / "inbox", "PBI-INBOX-1", severity="high")
+    _write_pbi(queue_clone / ".ralph" / "inbox", "PBI-INBOX-2", severity="normal")
+    _write_pbi(queue_clone / ".ralph" / "blocked", "BUG-BLOCKED", pbi_type="bug")
+
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
 
     assert [r.pbi_id for r in snap.current] == ["PBI-CURRENT"]
     assert sorted(r.pbi_id for r in snap.inbox) == ["PBI-INBOX-1", "PBI-INBOX-2"]
@@ -101,15 +114,29 @@ def test_snapshot_load_reads_all_state_folders(tmp_path: Path, snapshot: ModuleT
 
 
 def test_snapshot_collects_meta_cycle_sentinels(tmp_path: Path, snapshot: ModuleType) -> None:
-    repo = tmp_path / "repo"
-    blocked = repo / ".ralph-work" / "queue" / ".ralph" / "blocked"
+    queue_clone = tmp_path / "queue"
+    blocked = queue_clone / ".ralph" / "blocked"
     blocked.mkdir(parents=True)
     (blocked / "META-cycle-20260527T221018Z.md").write_text("body\n", encoding="utf-8")
     (blocked / "README.md").write_text("ignored\n", encoding="utf-8")
 
-    snap = snapshot.load_snapshot(repo_path=repo)
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
 
     assert [s.filename for s in snap.meta_cycle_sentinels] == ["META-cycle-20260527T221018Z.md"]
+
+
+def test_snapshot_returns_empty_when_ralph_dir_missing(
+    tmp_path: Path, snapshot: ModuleType
+) -> None:
+    queue_clone = tmp_path / "queue"
+    queue_clone.mkdir()
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
+    assert snap.current == []
+    assert snap.inbox == []
+    assert snap.pending_pr == []
+    assert snap.blocked == []
+    assert snap.done == []
+    assert snap.meta_cycle_sentinels == []
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -122,75 +149,6 @@ def _git(repo: Path, *args: str) -> str:
         errors="replace",
     )
     return proc.stdout
-
-
-def _init_bare_with_queue(tmp_path: Path) -> Path:
-    """Seed a bare repo with a populated ``ralph-queue`` branch.
-
-    Returns the path to a fresh clone that has NO queue worktree, so
-    ``load_snapshot`` is forced through the git-show fallback.
-    """
-    bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(bare)], check=True)
-
-    seed = tmp_path / "seed"
-    subprocess.run(["git", "clone", str(bare), str(seed)], check=True)
-    _git(seed, "checkout", "-b", "ralph-queue")
-    inbox = seed / ".ralph" / "inbox" / "PBI-FALLBACK"
-    inbox.mkdir(parents=True)
-    (inbox / "PBI.md").write_text(
-        """---
-id: PBI-FALLBACK
-type: feature
-status: inbox
-severity: normal
-attempts: 0
-created_at: 2026-05-28T00:00:00+00:00
-updated_at: 2026-05-28T00:00:00+00:00
-target_repo: https://github.com/example/test
----
-
-# Fallback PBI
-""",
-        encoding="utf-8",
-    )
-    (inbox / "HISTORY.md").write_text("<!-- history -->\n", encoding="utf-8")
-    blocked = seed / ".ralph" / "blocked"
-    blocked.mkdir(parents=True)
-    (blocked / "META-cycle-20260528T000000Z.md").write_text("sentinel\n", encoding="utf-8")
-    _git(seed, "add", ".")
-    _git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed")
-    _git(seed, "push", "origin", "ralph-queue")
-
-    consumer = tmp_path / "consumer"
-    subprocess.run(["git", "clone", str(bare), str(consumer)], check=True)
-    _git(consumer, "fetch", "origin", "ralph-queue")
-    return consumer
-
-
-def test_snapshot_falls_back_to_git_show_when_no_queue_worktree(
-    tmp_path: Path, snapshot: ModuleType
-) -> None:
-    consumer = _init_bare_with_queue(tmp_path)
-    snap = snapshot.load_snapshot(repo_path=consumer)
-    assert [r.pbi_id for r in snap.inbox] == ["PBI-FALLBACK"]
-    assert [s.filename for s in snap.meta_cycle_sentinels] == ["META-cycle-20260528T000000Z.md"]
-    assert snap.current == []
-    assert snap.done == []
-
-
-def test_snapshot_returns_empty_when_neither_worktree_nor_queue_ref(
-    tmp_path: Path, snapshot: ModuleType
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    snap = snapshot.load_snapshot(repo_path=repo)
-    assert snap.current == []
-    assert snap.inbox == []
-    assert snap.pending_pr == []
-    assert snap.blocked == []
-    assert snap.done == []
-    assert snap.meta_cycle_sentinels == []
 
 
 @pytest.mark.parametrize(
@@ -238,14 +196,10 @@ def test_parse_commit_subject_known_patterns(
         "chore(queue): persist iteration writes for EXECUTOR-EXIT-WHEN-IDLE-DEFAULT",
         "docs(spec): drop ralph-status 'risk'; surface skill in README",
         "fix(cycle-detector): raise WHACK_A_MOLE_MIN_OPENS from 3 to 12",
-        # Real verbatim subject from origin/ralph-queue that the loose
-        # ``add (?P<id>[A-Za-z0-9_-]+)`` regex would false-match on
-        # ``target_repo``. The tighter ``[A-Z][A-Z0-9-]*`` rejects it.
         (
             "chore(queue): add target_repo + set status=inbox "
             "on BUG-CLAIM-RACE BUG.md (followup to ba7f862)"
         ),
-        # Real verbatim subject — archive operations are not in the kept grammar.
         "chore(queue): archive STAGE-B-PLAN-13 + META-cycle artifacts",
     ],
 )
@@ -314,7 +268,7 @@ def test_walk_log_picks_up_scripted_commits(tmp_path: Path, git_walker: ModuleTy
     subprocess.run(["git", "clone", str(bare), str(consumer)], check=True)
     _git(consumer, "fetch", "origin", "ralph-queue")
 
-    events = git_walker.walk_log(repo_path=consumer, since="365.days.ago")
+    events = git_walker.walk_log(queue_clone=consumer, since="365.days.ago")
     kinds = [e.kind for e in events]
     assert "added" in kinds
     assert "claimed" in kinds
@@ -325,32 +279,27 @@ def test_walk_log_picks_up_scripted_commits(tmp_path: Path, git_walker: ModuleTy
     # events, none of them attributable to the persist commit.
     assert len(events) == 3
     assert set(kinds) == {"added", "claimed", "cycle_trip"}
-    # The added/claimed PBI ids carry through
     added_ids = [e.pbi_id for e in events if e.kind == "added"]
     assert added_ids == ["EXECUTOR-EXIT-WHEN-IDLE-DEFAULT"]
 
 
 def test_walk_log_returns_empty_when_ref_absent(tmp_path: Path, git_walker: ModuleType) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", str(repo)], check=True)
-    assert git_walker.walk_log(repo_path=repo) == []
+    queue_clone = tmp_path / "queue"
+    queue_clone.mkdir()
+    subprocess.run(["git", "init", str(queue_clone)], check=True)
+    assert git_walker.walk_log(queue_clone=queue_clone) == []
 
 
 def test_render_page_contains_each_section_heading(
     tmp_path: Path, snapshot: ModuleType, render: ModuleType
 ) -> None:
-    repo = tmp_path / "repo"
-    queue_wt = repo / ".ralph-work" / "queue"
-    (queue_wt / ".ralph").mkdir(parents=True)
-    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
-        (queue_wt / ".ralph" / state).mkdir()
-    _write_pbi(queue_wt / ".ralph" / "current", "PBI-CUR")
-    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-IN")
+    queue_clone = _build_queue_clone(tmp_path)
+    _write_pbi(queue_clone / ".ralph" / "current", "PBI-CUR")
+    _write_pbi(queue_clone / ".ralph" / "inbox", "PBI-IN")
 
-    snap = snapshot.load_snapshot(repo_path=repo)
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
     html = render.render_page(
-        repo_path=repo,
+        queue_clone=queue_clone,
         snapshot=snap,
         events=[],
         now=datetime(2026, 5, 28, 10, 42, 13, tzinfo=UTC),
@@ -362,9 +311,6 @@ def test_render_page_contains_each_section_heading(
     assert "PBI-CUR" in html
     assert "PBI-IN" in html
     assert "F5" in html
-    # Bootstrap is loaded via <link rel=stylesheet href=...>, not <script src=...>.
-    # The plan's verbatim assertion used ``src=`` which would never match the
-    # ``<link href=...>`` element — drop the attribute and assert the CDN URL.
     assert "cdn.jsdelivr.net/npm/bootstrap@5" in html
 
 
@@ -374,11 +320,7 @@ def test_render_page_renders_timeline_event_labels(
     git_walker: ModuleType,
     render: ModuleType,
 ) -> None:
-    repo = tmp_path / "repo"
-    queue_wt = repo / ".ralph-work" / "queue"
-    (queue_wt / ".ralph").mkdir(parents=True)
-    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
-        (queue_wt / ".ralph" / state).mkdir()
+    queue_clone = _build_queue_clone(tmp_path)
 
     now = datetime(2026, 5, 28, 12, 0, 0, tzinfo=UTC)
     when = datetime(2026, 5, 28, 11, 30, 0, tzinfo=UTC)
@@ -396,18 +338,15 @@ def test_render_page_renders_timeline_event_labels(
             kind="pr_opened", pbi_id="PBI-OPENED-B", commit_sha="9876543", when=when
         ),
     ]
-    snap = snapshot.load_snapshot(repo_path=repo)
-    html = render.render_page(repo_path=repo, snapshot=snap, events=events, now=now)
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
+    html = render.render_page(queue_clone=queue_clone, snapshot=snap, events=events, now=now)
 
-    # Done panel surfaces the shipped event (filtered from the full set).
     assert "PBI-SHIPPED-A" in html
-    assert "30m ago" in html  # _format_age — 30 min between when and now
-    # Timeline shows ALL three with their human labels.
+    assert "30m ago" in html
     assert "cycle-trip" in html
     assert "META-cycle-20260528T110000Z" in html
     assert "PR opened" in html
     assert "PBI-OPENED-B" in html
-    # The cycle_trip kind keeps its dramatic CSS class.
     assert "text-danger fw-bold" in html
 
 
@@ -418,15 +357,14 @@ def test_render_page_falls_back_when_pbi_row_is_error(
     renderer must still emit a row (with the directory name + error
     message) rather than raise.
     """
-    repo = tmp_path / "repo"
-    cur = repo / ".ralph-work" / "queue" / ".ralph" / "current" / "PBI-BROKEN"
+    queue_clone = tmp_path / "queue"
+    cur = queue_clone / ".ralph" / "current" / "PBI-BROKEN"
     cur.mkdir(parents=True)
-    # No PBI.md / BUG.md / FEEDBACK.md → enumerate_state returns PBIRowError.
     (cur / "HISTORY.md").write_text("<!-- broken -->\n", encoding="utf-8")
 
-    snap = snapshot.load_snapshot(repo_path=repo)
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
     html = render.render_page(
-        repo_path=repo,
+        queue_clone=queue_clone,
         snapshot=snap,
         events=[],
         now=datetime(2026, 5, 28, 10, 42, 13, tzinfo=UTC),
@@ -438,8 +376,6 @@ def test_render_page_falls_back_when_pbi_row_is_error(
 
 @pytest.fixture(scope="module")
 def server_mod() -> ModuleType:
-    # ``server.py`` itself loads its siblings (snapshot, git_walker, render)
-    # via importlib at import time, so this single ``_load`` call is enough.
     return _load("ralph_report_server", "server.py")
 
 
@@ -447,14 +383,10 @@ def test_server_serves_html_and_health(tmp_path: Path, server_mod: ModuleType) -
     import urllib.error
     import urllib.request
 
-    repo = tmp_path / "repo"
-    queue_wt = repo / ".ralph-work" / "queue"
-    (queue_wt / ".ralph").mkdir(parents=True)
-    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
-        (queue_wt / ".ralph" / state).mkdir()
-    _write_pbi(queue_wt / ".ralph" / "current", "PBI-CUR")
+    queue_clone = _build_queue_clone(tmp_path)
+    _write_pbi(queue_clone / ".ralph" / "current", "PBI-CUR")
 
-    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=60)
+    handle = server_mod.start_server(queue_clone=queue_clone, port=0, idle_seconds=60)
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/") as resp:
             body = resp.read().decode("utf-8")
@@ -476,59 +408,130 @@ def test_server_serves_html_and_health(tmp_path: Path, server_mod: ModuleType) -
 
 
 def test_server_idle_timer_shuts_down(tmp_path: Path, server_mod: ModuleType) -> None:
-    repo = tmp_path / "repo"
-    (repo / ".ralph-work" / "queue" / ".ralph").mkdir(parents=True)
+    queue_clone = tmp_path / "queue"
+    (queue_clone / ".ralph").mkdir(parents=True)
 
-    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=1)
+    handle = server_mod.start_server(queue_clone=queue_clone, port=0, idle_seconds=1)
     try:
-        # No request → idle timer fires after ~1s and shuts the server down.
         handle.thread.join(timeout=5)
         assert not handle.thread.is_alive()
     finally:
         handle.shutdown()
 
 
+# ----------------------------------------------------------------------
+# report.main CLI tests use a bare queue remote + an empty workspace,
+# mirroring tests/skills/test_ralph_status.py so the resolver chain is
+# exercised end-to-end with no network.
+# ----------------------------------------------------------------------
+
+
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "ralph-report@example.com")
+    _git(repo, "config", "user.name", "ralph-report")
+
+
+def _bare_queue(tmp_path: Path) -> tuple[Path, str]:
+    """Build a bare queue remote seeded with an empty ralph-queue branch."""
+    bare = tmp_path / "queue.git"
+    seed = tmp_path / "queue-seed"
+    workspace = tmp_path / "ws"
+    subprocess.run(["git", "init", "--bare", "-b", "ralph-queue", str(bare)], check=True)
+    subprocess.run(["git", "init", "-b", "ralph-queue", str(seed)], check=True)
+    _configure_identity(seed)
+    _git(seed, "commit", "--allow-empty", "-m", "chore: initial ralph-queue")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "-u", "origin", "ralph-queue")
+    return workspace, str(bare)
+
+
+def _seed_pbi_into_queue(
+    bare_url: str,
+    tmp_path: Path,
+    state: str,
+    pbi_id: str,
+    *,
+    entry_file: str = "PBI.md",
+) -> None:
+    work = tmp_path / f"seed-{pbi_id}-{state}"
+    subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    pbi_dir = work / ".ralph" / state / pbi_id
+    pbi_dir.mkdir(parents=True)
+    (pbi_dir / entry_file).write_text(
+        textwrap.dedent(f"""\
+            ---
+            id: {pbi_id}
+            type: {"bug" if entry_file == "BUG.md" else "feature"}
+            status: {state}
+            severity: normal
+            attempts: 0
+            created_at: 2026-05-28T00:00:00+00:00
+            updated_at: 2026-05-28T00:00:00+00:00
+            target_repo: https://github.com/example/test
+            ---
+
+            # seed PBI {pbi_id}
+            """),
+        encoding="utf-8",
+    )
+    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    _git(work, "add", f".ralph/{state}/{pbi_id}")
+    _git(work, "commit", "-m", f"chore(queue): add {pbi_id}")
+    _git(work, "push", "origin", "ralph-queue")
+
+
 @pytest.fixture(scope="module")
 def report_mod() -> ModuleType:
-    # report.py imports server.py via the same importlib loader; the
-    # sibling-cache key (``ralph_report_server``) is shared with the
-    # ``server_mod`` fixture, so loading order between the two does not
-    # matter.
     return _load("ralph_report_report", "report.py")
 
 
-def test_report_main_rejects_missing_repo_dir(tmp_path: Path, report_mod: ModuleType) -> None:
-    rc = report_mod.main(["--repo", str(tmp_path / "does-not-exist")])
-    assert rc == 2
-
-
-def test_report_main_rejects_non_git_dir(tmp_path: Path, report_mod: ModuleType) -> None:
-    not_git = tmp_path / "not-git"
-    not_git.mkdir()
-    rc = report_mod.main(["--repo", str(not_git)])
+def test_report_main_exits_2_when_queue_repo_missing(
+    tmp_path: Path, report_mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``--queue-repo`` flag AND no TOML entry → exit 2 with the
+    ``queue_repo not configured`` error from ``resolve_queue_repo``.
+    """
+    # Point HOME at an empty temp dir so the resolver can't pick up the
+    # caller's real ~/.ralph/config.toml.
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "fake-home"))
+    rc = report_mod.main(["--workspace", str(tmp_path / "ws")])
     assert rc == 2
 
 
 def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: ModuleType) -> None:
+    """End-to-end: resolve via flags → spin up server → server-info lands
+    under ``<workspace>/report/`` → idle timer fires → server-stopped
+    sentinel is dropped.
+    """
     import json
     import os
     import threading
     import time
 
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", str(repo)], check=True)
+    workspace, queue_repo = _bare_queue(tmp_path)
 
     rc_holder: dict[str, int] = {}
 
     def runner() -> None:
         rc_holder["rc"] = report_mod.main(
-            ["--repo", str(repo), "--port", "0", "--idle-seconds", "1"]
+            [
+                "--workspace",
+                str(workspace),
+                "--queue-repo",
+                queue_repo,
+                "--port",
+                "0",
+                "--idle-seconds",
+                "1",
+            ]
         )
 
     th = threading.Thread(target=runner, daemon=True, name="ralph-report-runner")
     th.start()
 
-    info_dir = repo.resolve() / ".ralph-work" / "report"
+    info_dir = workspace.resolve() / "report"
     info_path = info_dir / "server-info"
 
     deadline = time.monotonic() + 5.0
@@ -544,6 +547,8 @@ def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: Mo
     assert payload["url"].startswith("http://127.0.0.1:")
     assert payload["url"].endswith(str(payload["port"]))
     assert payload["started_at"].endswith("+00:00")
+    assert payload["workspace_root"] == str(workspace.resolve())
+    assert Path(payload["queue_clone"]).resolve() == (workspace / "queue").resolve()
 
     th.join(timeout=10)
     assert not th.is_alive(), "report.main did not return after idle timeout"
@@ -551,33 +556,67 @@ def test_report_main_writes_server_info_and_stops(tmp_path: Path, report_mod: Mo
     assert (info_dir / "server-stopped").is_file()
 
 
-def test_end_to_end_renders_all_panels(tmp_path: Path, server_mod: ModuleType) -> None:
-    """Drive the full stack: real git init → queue worktree → server → fetch / → assert panels."""
-    import urllib.request
+def test_report_and_status_enumerate_identical_pbi_ids(
+    tmp_path: Path,
+    snapshot: ModuleType,
+) -> None:
+    """ralph-report's snapshot must enumerate the same per-state PBI ids
+    as ``ralph-status`` given the same operator queue clone.
 
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", str(repo)], check=True)
-    (repo / "README.md").write_text("seed", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed")
+    Regression test for BUG-RALPH-REPORT-UNIFY-DATA-SOURCE — the bug
+    that motivated the unification was the two readers diverging because
+    they were pointed at different trees. This test guarantees they
+    can't drift again so long as they both consume ``enumerate_state``
+    against the same path.
+    """
+    from scripts.pbi_reader import enumerate_state
 
-    queue_wt = repo / ".ralph-work" / "queue"
-    (queue_wt / ".ralph").mkdir(parents=True)
-    for state in ("current", "inbox", "pending-pr", "blocked", "done"):
-        (queue_wt / ".ralph" / state).mkdir()
-    _write_pbi(queue_wt / ".ralph" / "current", "PBI-WORKING-ON")
-    _write_pbi(queue_wt / ".ralph" / "inbox", "PBI-QUEUED")
+    workspace, queue_repo = _bare_queue(tmp_path)
+    _seed_pbi_into_queue(queue_repo, tmp_path, "inbox", "PBI-INBOX-A")
+    _seed_pbi_into_queue(queue_repo, tmp_path, "inbox", "PBI-INBOX-B")
+    _seed_pbi_into_queue(queue_repo, tmp_path, "current", "PBI-CURRENT")
+    _seed_pbi_into_queue(queue_repo, tmp_path, "pending-pr", "PBI-PENDING")
+    _seed_pbi_into_queue(queue_repo, tmp_path, "blocked", "BUG-BLOCKED", entry_file="BUG.md")
 
-    handle = server_mod.start_server(repo_path=repo, port=0, idle_seconds=5)
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{handle.port}/") as resp:
-            body = resp.read().decode("utf-8")
-        assert resp.status == 200
-    finally:
-        handle.shutdown()
-        handle.thread.join(timeout=5)
+    # Acquire the queue clone the way ralph-status does — this is the
+    # SAME path ralph-report must read after the unification.
+    from scripts.queue_writer import (
+        acquire_queue_clone,
+        resolve_queue_branch,
+        resolve_queue_repo,
+        resolve_workspace_root,
+    )
 
-    for marker in ("Current", "Blocked", "Inbox", "Pending PR", "Done", "Activity timeline"):
-        assert marker in body, f"missing section heading: {marker}"
-    assert "PBI-WORKING-ON" in body
-    assert "PBI-QUEUED" in body
+    workspace_root = resolve_workspace_root(workspace)
+    queue_clone = acquire_queue_clone(
+        workspace_root,
+        resolve_queue_repo(queue_repo),
+        resolve_queue_branch(None),
+    )
+
+    # ralph-report path
+    snap = snapshot.load_snapshot(queue_clone=queue_clone)
+    report_view = {
+        "current": sorted(r.pbi_id for r in snap.current),
+        "inbox": sorted(r.pbi_id for r in snap.inbox),
+        "pending-pr": sorted(r.pbi_id for r in snap.pending_pr),
+        "blocked": sorted(r.pbi_id for r in snap.blocked),
+        "done": sorted(r.pbi_id for r in snap.done),
+    }
+
+    # ralph-status path (direct enumerate_state, the same call status.py
+    # makes per state inside ``_collect_rows``).
+    status_view = {
+        state: sorted(r.pbi_id for r in enumerate_state(queue_clone, state))
+        for state in ("current", "inbox", "pending-pr", "blocked", "done")
+    }
+
+    assert report_view == status_view
+    # And it actually matches the seeded data — not two empty dicts.
+    assert report_view == {
+        "current": ["PBI-CURRENT"],
+        "inbox": ["PBI-INBOX-A", "PBI-INBOX-B"],
+        "pending-pr": ["PBI-PENDING"],
+        "blocked": ["BUG-BLOCKED"],
+        "done": [],
+    }
