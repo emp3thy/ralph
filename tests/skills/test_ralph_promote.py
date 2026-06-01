@@ -27,6 +27,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "skills" / "ralph-promote" / "scripts" / "promote.py"
 
+# Operator identity used by tests that need the multi-ralph CLAIM-ownership
+# guard to recognise the seeded claim as own. Mirrors the convention in
+# tests/skills/test_ralph_cancel.py.
+OWN_INSTANCE_ID = "test-ralph"
+
 
 @pytest.fixture(scope="module")
 def promote_module() -> ModuleType:
@@ -86,8 +91,16 @@ def _seed_pbi(
     *,
     entry_file: str = "PBI.md",
     pbi_type: str = "feature",
+    claim_instance_id: str | None = OWN_INSTANCE_ID,
 ) -> None:
-    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back."""
+    """Clone the bare remote, add a PBI under ``.ralph/<state>/<id>``, push back.
+
+    When ``state_folder == "current"`` and ``claim_instance_id`` is non-None
+    (default), also seeds a ``CLAIM.json`` so the Task 14 ownership guard in
+    ralph-promote finds a valid claim on moves out of current/. Tests that
+    need the missing-CLAIM or foreign-CLAIM scenarios override
+    ``claim_instance_id``.
+    """
     work = tmp_path / f"seed-{pbi_id}-{state_folder}"
     subprocess.run(["git", "clone", bare_url, str(work)], check=True, capture_output=True)
     _configure_identity(work)
@@ -108,6 +121,17 @@ def _seed_pbi(
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    if state_folder == "current" and claim_instance_id is not None:
+        from ralph_executor.queue.claim import Claim, write_claim
+
+        write_claim(
+            pbi_dir / "CLAIM.json",
+            Claim(
+                instance_id=claim_instance_id,
+                claimed_at="2026-05-24T10:00:00+00:00",
+                hostname="seed-host",
+            ),
+        )
     _git(work, "add", f".ralph/{state_folder}/{pbi_id}")
     _git(work, "commit", "-m", f"chore(test): seed {pbi_id} in {state_folder}")
     _git(work, "push", "origin", "ralph-queue")
@@ -131,6 +155,7 @@ def _argv(
     from_state: str,
     to_state: str,
     extra: list[str] | None = None,
+    instance_id: str | None = OWN_INSTANCE_ID,
 ) -> list[str]:
     argv = [
         "--pbi-id",
@@ -144,6 +169,8 @@ def _argv(
         "--queue-repo",
         queue_repo,
     ]
+    if instance_id is not None:
+        argv.extend(["--instance-id", instance_id])
     if extra:
         argv.extend(extra)
     return argv
@@ -572,3 +599,231 @@ def test_promote_pushes_ralph_queue_by_default(
     )
     assert exit_code == 0, capsys.readouterr().err
     assert [branch for _repo, branch in pushed] == ["ralph-queue"]
+
+
+# ----------------------------------------------------------------------
+# Task 14 — CLAIM.json ownership guard on moves out of current/
+# ----------------------------------------------------------------------
+
+
+def test_promote_refuses_foreign_claim_out_of_current(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per Task 14: moving a PBI out of current/ when its CLAIM.json is
+    owned by another instance is refused with exit 3 and the operator is
+    steered to ralph-recover. The remote MUST be untouched — no commit
+    landed."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-FOREIGN",
+        claim_instance_id="other-ralph",
+    )
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    tip_before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-FOREIGN",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="current",
+            to_state="blocked",
+        )
+    )
+    assert exit_code == promote_module.EXIT_CLAIM_GUARD == 3
+    stderr = capsys.readouterr().err
+    assert "ralph-promote: cannot promote PBI claimed by 'other-ralph'" in stderr
+    assert "use ralph-recover" in stderr
+
+    tip_after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    assert tip_before == tip_after, "foreign-claim refusal must not push anything"
+
+
+def test_promote_refuses_missing_claim_out_of_current(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per Task 14: every ``current/<id>/`` MUST carry a CLAIM.json under
+    Scope 1. A missing CLAIM.json on a move out of current/ is an
+    inconsistent queue and ralph-promote refuses with exit 3."""
+    workspace, queue_repo = queue_env
+    # claim_instance_id=None suppresses CLAIM.json seeding.
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-NOCLAIM",
+        claim_instance_id=None,
+    )
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-NOCLAIM",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="current",
+            to_state="blocked",
+        )
+    )
+    assert exit_code == promote_module.EXIT_CLAIM_GUARD == 3
+    stderr = capsys.readouterr().err
+    assert "ralph-promote: PBI in current/ but no CLAIM.json" in stderr
+
+
+def test_promote_refuses_malformed_claim_out_of_current(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A CLAIM.json that fails to parse is rejected with the same exit-3
+    guard. Resilience requirement: ralph-promote must NOT crash with an
+    unhandled ClaimError on a busted queue."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "current", "WI-BAD")
+    overwrite = tmp_path / "seed-bad-claim"
+    subprocess.run(
+        ["git", "clone", queue_repo, str(overwrite)],
+        check=True,
+        capture_output=True,
+    )
+    _configure_identity(overwrite)
+    (overwrite / ".ralph" / "current" / "WI-BAD" / "CLAIM.json").write_text(
+        "not json at all", encoding="utf-8"
+    )
+    _git(overwrite, "add", ".ralph/current/WI-BAD/CLAIM.json")
+    _git(overwrite, "commit", "-m", "chore(test): break CLAIM.json")
+    _git(overwrite, "push", "origin", "ralph-queue")
+
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-BAD",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="current",
+            to_state="blocked",
+        )
+    )
+    assert exit_code == promote_module.EXIT_CLAIM_GUARD == 3
+    stderr = capsys.readouterr().err
+    assert "malformed CLAIM.json" in stderr
+
+
+def test_promote_proceeds_out_of_current_when_claim_owned_by_operator(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Positive control for Task 14: when CLAIM.json's instance_id matches
+    the operator's resolved identity, the promote out of current/ proceeds
+    through the existing happy-path. A new commit lands on origin."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-OWN",
+        claim_instance_id=OWN_INSTANCE_ID,
+    )
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-OWN",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="current",
+            to_state="blocked",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pushed"] is True
+    assert payload["commit_sha"]
+
+    verify = _verify_clone(tmp_path, queue_repo)
+    moved = verify / ".ralph" / "blocked" / "WI-OWN" / "PBI.md"
+    assert moved.is_file()
+
+
+def test_promote_into_current_does_not_require_claim(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Task 14's guard is scoped to source==current/. Moves INTO current/
+    from a CLAIM-less source folder (inbox/, blocked/, etc.) MUST NOT be
+    blocked by the guard — they would never have a CLAIM.json to consult."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(queue_repo, tmp_path, "inbox", "WI-INTO-CURRENT")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-INTO-CURRENT",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="inbox",
+            to_state="current",
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
+
+
+def test_promote_resolves_instance_id_from_env_when_flag_omitted(
+    tmp_path: Path,
+    queue_env: tuple[Path, str],
+    promote_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operator identity resolution honours the documented precedence
+    chain. With no --instance-id flag, RALPH_INSTANCE_ID env wins over the
+    hostname fallback so the seeded claim matches."""
+    workspace, queue_repo = queue_env
+    _seed_pbi(
+        queue_repo,
+        tmp_path,
+        "current",
+        "WI-ENV",
+        claim_instance_id="env-ralph",
+    )
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
+    _configure_identity(workspace / "queue")
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "env-ralph")
+    # Isolate the user-config layer so a real ~/.ralph/config.toml does
+    # not inject an instance_id that pre-empts the env var.
+    fake_home = tmp_path / "home-env"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    exit_code = promote_module.main(
+        _argv(
+            pbi_id="WI-ENV",
+            workspace=workspace,
+            queue_repo=queue_repo,
+            from_state="current",
+            to_state="blocked",
+            instance_id=None,
+        )
+    )
+    assert exit_code == 0, capsys.readouterr().err
