@@ -46,6 +46,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import requests
 
@@ -54,6 +55,16 @@ from scripts.gh_client import GhClient, GhError
 QUEUE_BRANCH = "ralph-queue"
 MAIN_BRANCH = "main"
 QUEUE_STATE_FOLDERS = ("inbox", "current", "pending-pr", "blocked", "archive", "done")
+
+
+def _source_prompt_root() -> Path:
+    """Return the local source ``prompt/`` topic-folder tree to seed.
+
+    Resolved relative to this script's location (``scripts/`` lives at the
+    ralph repo root). The setup helper is shipped from the same checkout
+    as the prompt tree, so the source is always co-located.
+    """
+    return Path(__file__).resolve().parents[1] / "prompt"
 
 
 @dataclass
@@ -316,6 +327,50 @@ def _seed_ralph_config_stub(
     )
 
 
+def _iter_prompt_source(prompt_root: Path) -> list[tuple[str, bytes]]:
+    """Walk ``prompt_root`` and yield ``(posix_relative_path, content_bytes)``.
+
+    GitHub's Contents API requires forward-slash separators in the path
+    regardless of host OS, so we normalise via ``as_posix()`` before
+    handing the relative path to the PUT helper. Sorted output gives a
+    deterministic commit-message order across platforms.
+    """
+    if not prompt_root.is_dir():
+        raise FileNotFoundError(f"prompt source tree not found at {prompt_root}")
+    entries: list[tuple[str, bytes]] = []
+    for path in sorted(prompt_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(prompt_root).as_posix()
+        entries.append((rel, path.read_bytes()))
+    return entries
+
+
+def _seed_prompt_tree(
+    client: GhClient, owner: str, repo: str, queue_branch: str, *, dry_run: bool
+) -> None:
+    """Mirror the local ``prompt/`` topic-folder tree onto the queue branch.
+
+    The executor's ``compose_prompt`` reads the standing prompt from
+    ``<queue>/prompt/`` at spawn time. Without seeding here, a brand-new
+    queue repo crashes the executor on its first PBI claim. PUTs are
+    idempotent per-file via ``_put_content``'s existence check, so re-runs
+    on an already-provisioned repo are no-ops.
+    """
+    source = _source_prompt_root()
+    for relpath, content_bytes in _iter_prompt_source(source):
+        _put_content(
+            client,
+            owner,
+            repo,
+            f"prompt/{relpath}",
+            branch=queue_branch,
+            content_bytes=content_bytes,
+            message=f"chore(queue): seed prompt/{relpath}",
+            dry_run=dry_run,
+        )
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -471,6 +526,10 @@ def main(argv: list[str] | None = None) -> int:
         _seed_ralph_skeleton(client, owner, args.repo, args.branch, dry_run=args.dry_run)
         # Seed .ralph/config.toml stub on queue_branch (idempotent)
         _seed_ralph_config_stub(client, owner, args.repo, args.branch, dry_run=args.dry_run)
+        # Seed prompt/ topic-folder tree on queue_branch (idempotent).
+        # Without this, the executor crashes on its first PBI claim because
+        # compose_prompt's iterdir() finds no <queue>/prompt directory.
+        _seed_prompt_tree(client, owner, args.repo, args.branch, dry_run=args.dry_run)
 
         # Protection-handling precedence: --no-protection always wins (even
         # under --dry-run), then --dry-run, then the real PUT. Keeping the

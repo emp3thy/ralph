@@ -22,8 +22,12 @@ Creates (idempotent on re-run):
 
 1. The GitHub repository (private; `--org <name>` to create under an org).
 2. `main` branch with a stub README.
-3. `ralph-queue` branch off `main` with the `.ralph/` state-folder skeleton
-   AND a `.ralph/config.toml` stub.
+3. `ralph-queue` branch off `main` with the `.ralph/` state-folder skeleton,
+   a `.ralph/config.toml` stub, AND the `prompt/` topic-folder tree the
+   executor reads at spawn time. The script mirrors the source `prompt/`
+   tree from this checkout onto the queue branch — without it, the
+   executor crashes on its first PBI claim because `compose_prompt` has
+   no topic folders to walk.
 4. Branch protection: `main` requires 1-approval PRs + no force-push + no
    deletion; `ralph-queue` no force-push + no deletion.
 
@@ -127,6 +131,10 @@ Re-running the setup script on a fully-provisioned repo is a no-op:
 - `.ralph/` skeleton skips per-file when each `.gitkeep` path exists on
   `ralph-queue`.
 - `.ralph/config.toml` stub skips when the file exists on `ralph-queue`.
+- `prompt/` tree skips per-file when each topic-folder file already exists
+  on `ralph-queue`. To re-seed an updated prompt file, delete it on the
+  queue branch first (or edit it via GitHub UI / a normal PR) — the
+  setup script does not overwrite existing content.
 - Branch-protection PUTs are idempotent on GitHub's side.
 
 A concurrent run that creates `ralph-queue` between the GET-ref check and
