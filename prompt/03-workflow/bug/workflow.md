@@ -1,9 +1,18 @@
 ## How to work a bug PBI
 
 1. **Read** in the order specified above.
-2. **Reproduce.** Run the commands in `REPRODUCE.md`. Confirm you observe
-   the failure signature documented in `BUG.md`. If you cannot reproduce,
-   write `STUCK.md` ("cannot reproduce: <what I saw instead>") and stop.
+2. **Reproduce.**
+
+   **If `BUG.md` frontmatter contains `signature: <hex>`** (autobug-emitted),
+   REPRODUCE.md may contain only observed artefacts, not runnable commands.
+   Your iteration's first task is to build the reproduction from the
+   stacktrace + env snapshot. The "cannot reproduce → STUCK" rule applies
+   only after a documented investigation attempt, not on initial read.
+
+   **Otherwise** (human-authored bug): run the commands in `REPRODUCE.md`.
+   Confirm you observe the failure signature documented in `BUG.md`. If
+   you cannot reproduce, write `STUCK.md` ("cannot reproduce: <what I
+   saw instead>") and stop.
 3. **Form a hypothesis.** Use `docs/INVESTIGATE.md` to navigate the
    codebase (key classes, log locations, external dependencies, common
    gotchas). State your hypothesis explicitly in `HISTORY.md` BEFORE
