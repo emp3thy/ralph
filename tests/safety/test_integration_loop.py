@@ -134,6 +134,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        instance_id="test-ralph",
         use_worktrees=True,
         workspace_root=workspace,
     )

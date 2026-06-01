@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import socket
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from ralph_executor.url_utils import parse_target_repo
 
@@ -111,6 +113,16 @@ DEFAULT_SAME_FILE_WINDOW_HOURS = 24.0
 DEFAULT_WATCH_MODE = False
 DEFAULT_IDLE_EXIT_THRESHOLD = 2
 
+# Per-instance identity. Multi-ralph (Scope 1) lets several ralph
+# executors share a queue repo by namespacing the workspace queue clone
+# (``<workspace_root>/queue-<instance_id>/``) and writing a per-PBI
+# ``CLAIM.json`` ownership marker. ``instance_id`` is resolved (highest
+# precedence first) from the ``--instance-id`` CLI flag, the
+# ``RALPH_INSTANCE_ID`` env var, the user TOML key, or — last resort —
+# a sanitised hostname. Must match ``_INSTANCE_ID_RE`` (filesystem-safe
+# lowercase, 1-63 chars, leading alnum).
+_INSTANCE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
 _VALID_LOG_LEVEL_NAMES = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
@@ -182,6 +194,12 @@ _TOML_KNOWN_KEYS = frozenset(
         # ``watch_mode = true``.
         "watch_mode",
         "idle_exit_threshold",
+        # Multi-ralph (Scope 1) per-instance identity. Used to namespace
+        # ``<workspace_root>/queue-<instance_id>/`` and to write
+        # ``CLAIM.json`` ownership markers on inbox → current claims so
+        # multiple ralph instances can co-operate on a shared queue repo.
+        # See ``resolve_instance_id`` for the full precedence chain.
+        "instance_id",
     }
 )
 
@@ -190,6 +208,65 @@ log = logging.getLogger(__name__)
 
 class ConfigError(RuntimeError):
     """Raised when ``load_config`` cannot resolve a valid configuration."""
+
+
+def validate_instance_id(value: str) -> None:
+    """Validate a resolved ``instance_id``.
+
+    Applied AFTER hostname sanitisation by ``resolve_instance_id``.
+    Empty / missing values are the resolver's problem, not this
+    validator's — by the time it reaches here the candidate is supposed
+    to be the final, filesystem-safe form. Raises ``ConfigError`` on
+    anything that would be unsafe to splice into a path or a git
+    branch / commit subject.
+    """
+    if not _INSTANCE_ID_RE.fullmatch(value):
+        raise ConfigError(
+            f"instance_id {value!r} must match {_INSTANCE_ID_RE.pattern} "
+            "(filesystem-safe lowercase, 1-63 chars, starts with alnum)"
+        )
+
+
+def sanitise_hostname(hostname: str) -> str:
+    """Lowercase + replace disallowed chars with ``-`` for hostname fallback.
+
+    Output is the candidate passed to ``validate_instance_id`` when
+    nothing better is set. Returns the empty string if the input is
+    empty; the resolver turns that into a ``ConfigError``.
+    """
+    lowered = hostname.lower()
+    return re.sub(r"[^a-z0-9_-]", "-", lowered)
+
+
+def resolve_instance_id(
+    *,
+    cli_value: str | None,
+    env_value: str | None,
+    toml_value: str | None,
+    hostname: str,
+) -> str:
+    """First-match-wins resolver. Returns a validated ``instance_id``.
+
+    Precedence: ``--instance-id`` CLI flag → ``RALPH_INSTANCE_ID`` env
+    var → ``~/.ralph/config.toml`` key → sanitised hostname. The first
+    non-``None`` candidate is validated and returned as-is — note that
+    only ``None`` short-circuits the search; empty / malformed strings
+    still reach the validator and raise ``ConfigError`` (so a deliberate
+    ``--instance-id ""`` doesn't silently fall through to the env / TOML
+    layers, per the truthiness-vs-None rule).
+    """
+    for candidate in (cli_value, env_value, toml_value):
+        if candidate is not None:
+            validate_instance_id(candidate)
+            return candidate
+    candidate = sanitise_hostname(hostname)
+    if not candidate:
+        raise ConfigError(
+            "could not derive instance_id from hostname; set instance_id in "
+            "~/.ralph/config.toml or pass --instance-id"
+        )
+    validate_instance_id(candidate)
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -242,6 +319,14 @@ class ExecutorConfig:
     # the classifier returns ``partial`` and the next iteration re-polls.
     pr_check_poll_max_attempts: int
     pr_check_poll_interval_seconds: float
+    # Multi-ralph (Scope 1) per-instance identity. Required, non-Optional
+    # — ``resolve_instance_id`` guarantees a validated string (CLI > env
+    # > TOML > sanitised hostname). The workspace queue clone is
+    # namespaced at ``<workspace_root>/queue-<instance_id>/`` and every
+    # claimed PBI carries a ``CLAIM.json`` whose ``instance_id`` is this
+    # value. Validated against ``_INSTANCE_ID_RE`` so it is safe to
+    # splice into directory names, commit subjects, and log lines.
+    instance_id: str
     # Execution model. Must be True after EXECUTOR-QUEUE-REPO-SPLIT —
     # ``load_config`` rejects ``False`` because the Stage-A single-checkout
     # branch-dance path is gone. The loop runs each PBI inside a per-PBI
@@ -749,6 +834,26 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: idle_exit_threshold must be positive (got {idle_exit_threshold})"
         )
 
+    # Multi-ralph (Scope 1) instance_id. The CLI flag layer plugs in via
+    # ``ralph_executor.cli._apply_overrides`` (added in a follow-up task);
+    # at the ``load_config`` level we cover env + TOML + hostname so the
+    # default N=1 operator never has to set anything.
+    env_instance_id = os.environ.get("RALPH_INSTANCE_ID")
+    if env_instance_id is not None and env_instance_id.strip() == "":
+        env_instance_id = None
+    toml_instance_id_raw = toml_overrides.get("instance_id")
+    if toml_instance_id_raw is not None and not isinstance(toml_instance_id_raw, str):
+        raise ConfigError(
+            f"{source_label}: instance_id must be a string, "
+            f"got {type(toml_instance_id_raw).__name__}"
+        )
+    instance_id = resolve_instance_id(
+        cli_value=None,
+        env_value=env_instance_id,
+        toml_value=toml_instance_id_raw,
+        hostname=socket.gethostname(),
+    )
+
     return ExecutorConfig(
         queue_repo=queue_repo,
         queue_branch=queue_branch,
@@ -766,6 +871,7 @@ def load_config() -> ExecutorConfig:
         halt_webhook=halt_webhook,
         pr_check_poll_max_attempts=pr_check_poll_max_attempts,
         pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
+        instance_id=instance_id,
         use_worktrees=use_worktrees,
         bot_author_email=bot_author_email,
         stale_days=stale_days,

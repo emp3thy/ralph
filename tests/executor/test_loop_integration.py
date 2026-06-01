@@ -323,6 +323,7 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
         halt_webhook="",
         pr_check_poll_max_attempts=6,
         pr_check_poll_interval_seconds=30.0,
+        instance_id="test-ralph",
         use_worktrees=True,
         bot_author_email="",
         stale_days=3,
