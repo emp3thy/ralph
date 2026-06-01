@@ -10,6 +10,50 @@
 
 **Source spec:** `docs/superpowers/specs/2026-06-01-loop-py-split-design.md` (commit `27ad1d3`).
 
+---
+
+## Guardrails (from `~/.better-memory/knowledge-base/standards/ralph-runtime.md` and high-confidence reflections)
+
+These rules are non-skippable. Each task below has been checked against every guardrail.
+
+- `[[be7ad6bf]]` **Writing-plans confidence-rating + sub-90% lift is a non-skippable gate.** _(confidence 0.9, useful_count 3)_ Each task carries a confidence percentage in its header. Sub-90% tasks include a Step 0 spike or mitigation embedded inline. None of the eight tasks ships at sub-90% after the revision below.
+- `[[da7ff62e]]` **Session startup MUST consult knowledge_list, not just memory_retrieve.** _(confidence 0.9)_ Standards docs (`standards/*.md`) live in a separate channel; bootstrap surfaces reflections only. This plan was originally drafted without that consult; this revision corrects it.
+- `[[2edb7d77]]` **Visualiser uses Bootstrap 5 LIGHT theme + bg-success/warning/danger badges, served as a full HTML doc starting with `<!DOCTYPE html>`.** _(confidence 1.0 — direct user preference)_ The original visualiser used a dark theme; the revision replaces it.
+- `[[ralph-runtime § Create the feature branch at task start]]` Feature branch `refactor/loop-py-split` is created in pre-flight, not deferred to commit time.
+- `[[ralph-runtime § commit-then-render-then-execute sequence]]` The fixed order after writing the plan is: (1) commit, (2) render in visualiser, (3) announce URL, (4) present execution choice. The original draft skipped step 2; this revision performs it before any execution dispatch.
+- `[[ralph-runtime § 3-bucket assumption surface]]` Real concerns / verified-safe / minor-accepted. See the Assumption surface section below.
+- `[[ralph-runtime § argv ceiling]]` `[[355faeb8]]` Windows cmd.exe 8191-char ceiling. Not triggered here (no large argv constructions).
+- `[[ralph-runtime § verify-before-commit on referenced patterns]]` Every relocation step names the exact source line range; the relocation convention forbids editing the body beyond the rename + import path.
+
+Dismissed (one-line reason):
+- `[[0c83e25d]]` Playwright DOM textContent — no Playwright in this plan.
+- `[[85e7ec84]]` tempfile.mkstemp + os.fdopen fd leak — no tempfile use.
+- `[[24644201]]` GitHub branch protection 403 — no protection ops.
+- `[[d1a577ce]]` Don't flip shared test fixture defaults mid-plan — fixtures preserved; tests move with assertions intact.
+
+## Assumption surface (3 buckets)
+
+### Real concerns (with mitigation options)
+
+1. **Task 3 worktree seam.** Extracting `materialise_worktree` from inside `_claim_pbi_worktree` requires identifying a clean seam between worktree creation and PBI mutation. Mitigation: Task 3 Step 0 runs a spike that prints the function body and exits if no obvious seam exists. Confidence lifted **85% → 93%**.
+2. **Task 5 collapse safety.** Removing `use_worktrees=False` branches assumes `config.py` already rejects that value at `load_config`. If a runtime path still accepts False, this task removes live behavior. Mitigation: Task 5 Step 0 greps `config.py` for the rejection guard; if absent, the task aborts and escalates. Confidence lifted **80% → 92%**.
+3. **`__init__.py` re-exports.** Some downstream code may import from `ralph_executor` top-level (e.g. `from ralph_executor import iterate_once`). Mitigation: Task 6 Step 1's grep covers `from ralph_executor.loop` AND `ralph_executor.iteration` AND any `__init__.py` re-export.
+
+### Verified safe (with verification)
+
+- **`queue_repo_root` is pure**, depends only on `cfg.workspace_root`. Verified by reading `ralph_executor/loop.py:79-90`.
+- **`_pull_queue` is a one-line wrapper** around `ensure_queue_clone`. Verified by reading `ralph_executor/loop.py:358-364`.
+- **Test fixtures in `tests/executor/conftest.py`** don't reference the moved private symbols by name (they monkeypatch via string paths). Verified by grep.
+- **Two pre-existing `test_config_toml.py` failures** are unrelated to this refactor — they predate the spec. Verified in the baseline run.
+
+### Minor / accepted
+
+- Backward-compat aliases (`_pull_queue = pull_queue`, `_ClaimError = ClaimError`, etc.) leave one underscore per moved symbol in the new `iteration.py`. Accepted: they keep older monkeypatch paths working and cost nothing.
+- The plan touches `claude_spawn.py` in Task 5 only (legacy branch removal). The wider claude_spawn split (finding #2) stays out of scope.
+- Module size targets (~400/250/180/100/250 lines) are approximate; ±20% is acceptable.
+
+---
+
 **Test baseline:** Before starting Task 1, run the full suite once and record the passing count. The 2 pre-existing failures in `tests/executor/test_config_toml.py` (`test_missing_toml_raises_for_missing_queue_repo`, `test_queue_repo_required_missing_raises`) are expected to remain failing. Every commit MUST leave the same count passing and the same 2 failing.
 
 **Convention for relocation steps.** Tasks 2, 3, and 4 move existing functions verbatim from `loop.py` into new modules. Inlining the full body of each moved function into this plan would balloon the document and invite drift. Instead, each relocation step gives the new file's header (imports + module docstring), the renaming map (`old_name → new_name`), and an explicit source-line range to copy. The engineer's verification step is `git diff` between the deleted old definition and the new one — any change beyond the rename and import path is a bug. The full new-file content is also obtainable in seconds by `cat` of the source range plus the rename substitutions.
@@ -41,7 +85,7 @@ All further commands run inside the worktree.
 
 ---
 
-## Task 1: Create `queue_git.py`
+## Task 1: Create `queue_git.py` &mdash; confidence **95%**
 
 **Files:**
 - Create: `ralph_executor/queue_git.py`
@@ -212,7 +256,7 @@ EOF
 
 ---
 
-## Task 2: Create `iteration_safety.py`
+## Task 2: Create `iteration_safety.py` &mdash; confidence **92%**
 
 **Files:**
 - Create: `ralph_executor/iteration_safety.py`
@@ -320,13 +364,26 @@ EOF
 
 ---
 
-## Task 3: Create `worktree_manager.py`
+## Task 3: Create `worktree_manager.py` &mdash; confidence **93%** (85% raw, lifted by Step 0 spike)
 
 **Files:**
 - Create: `ralph_executor/worktree_manager.py`
 - Modify: `ralph_executor/loop.py` (remove `_cleanup_work_worktree`; import from `worktree_manager`; extract the worktree-setup half of `_claim_pbi_worktree` into `materialise_worktree`)
 - Create: `tests/executor/test_worktree_manager.py`
 - Modify: `tests/executor/test_loop.py` (remove migrated tests)
+
+- [ ] **Step 0: Spike — find the worktree seam in `_claim_pbi_worktree`**
+
+Run:
+```bash
+grep -nE "def _claim_pbi_worktree|ensure_worktree|work_worktree_path|dataclasses.replace|return pbi" ralph_executor/loop.py
+```
+
+Expected output: contiguous block where `work_worktree_path(...)` precedes `ensure_worktree(...)`, then `dataclasses.replace(pbi, work_worktree=...)`, then `return pbi`. The seam lives between `ensure_worktree(...)` and the `dataclasses.replace(...)` call — `materialise_worktree` returns the worktree path; the `replace + return` stays in the caller.
+
+**If the seam is not contiguous** (e.g. interleaved with PBI mutation, conditional branches that depend on the worktree path mid-flow), STOP — re-scope by either (a) inlining the seam differently or (b) postponing the extraction to a follow-up. Do not force-fit the extraction.
+
+If contiguous: proceed.
 
 - [ ] **Step 1: Create `ralph_executor/worktree_manager.py`**
 
@@ -423,7 +480,7 @@ EOF
 
 ---
 
-## Task 4: Create `pbi_claim.py`
+## Task 4: Create `pbi_claim.py` &mdash; confidence **90%**
 
 **Files:**
 - Create: `ralph_executor/pbi_claim.py`
@@ -556,18 +613,32 @@ EOF
 
 ---
 
-## Task 5: Collapse `use_worktrees=False` legacy branches
+## Task 5: Collapse `use_worktrees=False` legacy branches &mdash; confidence **92%** (80% raw, lifted by Step 0 verification)
 
 **Files:**
 - Modify: `ralph_executor/loop.py`, `ralph_executor/pbi_claim.py`, `ralph_executor/claude_spawn.py` (touched files only)
 
-This task is the only one that changes behavior — by **removing dead code paths**. Before starting, confirm `cfg.use_worktrees` is not settable to `False` anywhere in production. From `config.py`:
+This task is the only one that changes behavior — by **removing dead code paths**. The pre-90% confidence reflects the risk that one legacy branch is in fact still live. Step 0 below MUST pass before any deletion.
 
+- [ ] **Step 0: Verify `cfg.use_worktrees=False` is rejected at config load**
+
+Run:
 ```bash
-grep -n "use_worktrees" ralph_executor/config.py
+grep -n -A 5 "use_worktrees" ralph_executor/config.py
 ```
 
-Expected: `use_worktrees=True` default + a validation that REJECTS `False` (see KILL-RALPH-HOME notes). If `False` is genuinely supported, STOP and re-scope this task — open the spec for amendment instead of touching code.
+Expected: a default of `True` AND a validation block that raises `ConfigError` (or similar) when the resolved value is `False`. Acceptable shapes include `if use_worktrees is False: raise ConfigError(...)`, `assert use_worktrees`, or a Literal[True] typing constraint with runtime check.
+
+Also run:
+```bash
+grep -rn "use_worktrees\s*=\s*False" ralph_executor/ tests/
+```
+
+Expected: matches ONLY in tests that deliberately exercise the rejection path, OR no matches at all. Production code paths setting `False` are a STOP signal.
+
+**If `cfg.use_worktrees=False` is silently accepted anywhere:** STOP, escalate to the user — this task changes behavior and the spec needs amending before touching code.
+
+If verified rejected: proceed to Step 1.
 
 - [ ] **Step 1: Find every legacy branch in the touched files**
 
@@ -641,7 +712,7 @@ EOF
 
 ---
 
-## Task 6: Rename `loop.py` → `iteration.py`
+## Task 6: Rename `loop.py` → `iteration.py` &mdash; confidence **97%**
 
 **Files:**
 - Rename: `ralph_executor/loop.py` → `ralph_executor/iteration.py`
@@ -696,7 +767,7 @@ EOF
 
 ---
 
-## Task 7: Rename `test_loop.py` → `test_iteration.py`
+## Task 7: Rename `test_loop.py` → `test_iteration.py` &mdash; confidence **98%**
 
 **Files:**
 - Rename: `tests/executor/test_loop.py` → `tests/executor/test_iteration.py`
@@ -746,7 +817,7 @@ EOF
 
 ---
 
-## Task 8: Doc + comment sweep
+## Task 8: Doc + comment sweep &mdash; confidence **96%**
 
 **Files:**
 - Modify: `docs/runbooks/ralph-architecture.md` if it exists and names `loop.py`
