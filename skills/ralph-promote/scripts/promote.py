@@ -227,7 +227,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        # Resolve instance_id BEFORE the clone so we land on the same
+        # namespaced path the executor uses (queue-<instance_id>/). The
+        # halt-sentinel file is gitignored, so it is only visible to skills
+        # that clone the executor's path, not the legacy queue/ path.
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
+        clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
 
         from_dir = clone / ".ralph" / args.from_state / args.pbi_id
         to_dir = clone / ".ralph" / args.to_state / args.pbi_id
@@ -270,7 +281,6 @@ def main(argv: list[str] | None = None) -> int:
         # be done by the instance that owns the claim. Other source folders
         # carry no CLAIM.json by design, so the guard is current-only.
         if args.from_state == CURRENT_FOLDER:
-            operator_instance_id = resolve_instance_id(args.instance_id)
             _enforce_claim_ownership(from_dir, operator_instance_id)
 
         # Resolve entry file BEFORE the move so we know which one to

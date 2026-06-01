@@ -36,6 +36,7 @@ if str(_REPO_ROOT) not in sys.path:
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -109,13 +110,30 @@ def main(argv: list[str] | None = None) -> int:
         default=1800,
         help="Auto-exit after N seconds of no requests. Default: 1800.",
     )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the executor's namespaced "
+            "queue clone (queue-<instance-id>/). Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
-        queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        operator_instance_id = resolve_instance_id(args.instance_id)
+        queue_clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
     except QueueWriterError as exc:
         print(f"ralph-report: {exc}", file=sys.stderr)
         return 2

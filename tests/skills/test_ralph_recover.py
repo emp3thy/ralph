@@ -157,6 +157,7 @@ def _argv(
     queue_repo: str,
     to_state: str,
     extra: list[str] | None = None,
+    instance_id: str | None = "test-ralph",
 ) -> list[str]:
     argv = [
         "--pbi-id",
@@ -168,6 +169,8 @@ def _argv(
         "--queue-repo",
         queue_repo,
     ]
+    if instance_id is not None:
+        argv.extend(["--instance-id", instance_id])
     if extra:
         argv.extend(extra)
     return argv
@@ -220,9 +223,9 @@ def test_recover_to_inbox_resets_attempts_and_deletes_claim(
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-INBOX", attempts=2)
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    tip_before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    tip_before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = recover_module.main(
         _argv(
@@ -259,7 +262,7 @@ def test_recover_to_inbox_resets_attempts_and_deletes_claim(
     assert "action: recover" in history
     assert f"from {FOREIGN_INSTANCE_ID}" in history
 
-    tip_after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    tip_after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert tip_after != tip_before, "the recover push must advance origin"
 
 
@@ -276,8 +279,8 @@ def test_recover_to_blocked_preserves_attempts(
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-BLOCKED", attempts=2)
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = recover_module.main(
         _argv(
@@ -321,8 +324,8 @@ def test_recover_refuses_when_pbi_not_in_current(
     workspace, queue_repo = queue_env
     # Seed in inbox/ instead of current/.
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-NOT-CURRENT")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = recover_module.main(
         _argv(
@@ -351,9 +354,9 @@ def test_recover_refuses_when_destination_has_existing_pbi(
     _seed_pbi(queue_repo, tmp_path, "current", "WI-DUP")
     # Seed a colliding directory in the destination state folder.
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-DUP", claim_instance_id=None)
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    tip_before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    tip_before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = recover_module.main(
         _argv(
@@ -367,7 +370,7 @@ def test_recover_refuses_when_destination_has_existing_pbi(
     stderr = capsys.readouterr().err.lower()
     assert "already exists" in stderr
 
-    tip_after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    tip_after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert tip_before == tip_after, "destination-collision refusal must not push"
 
 
@@ -385,7 +388,7 @@ def test_recover_refuses_when_halt_sentinel_active(
     # Pre-clone + drop an unacknowledged halt sentinel into the local
     # clone. acquire_queue_clone's git fetch + pull --ff-only preserves
     # untracked files so the sentinel survives the refresh.
-    clone = workspace / "queue"
+    clone = workspace / "queue-test-ralph"
     subprocess.run(["git", "clone", queue_repo, str(clone)], check=True)
     _configure_identity(clone)
     _write_halt_sentinel(clone)
@@ -426,8 +429,8 @@ def test_recover_stderr_audits_claim_contents_before_move(
     payload contains the foreign instance id."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-AUDIT")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = recover_module.main(
         _argv(
@@ -458,8 +461,8 @@ def test_recover_commit_subject_pinned(
     (not just that the tip advanced)."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-SUBJ")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = recover_module.main(
         _argv(
@@ -494,7 +497,7 @@ def test_recover_destination_carries_no_claim_json(
     is caught."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-NOCLAIM-DEST")
-    clone = workspace / "queue"
+    clone = workspace / "queue-test-ralph"
     subprocess.run(["git", "clone", queue_repo, str(clone)], check=True)
     _configure_identity(clone)
 

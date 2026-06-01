@@ -75,22 +75,29 @@ def acquire_queue_clone(
     queue_repo: str,
     queue_branch: str,
     *,
+    instance_id: str,
     timeout: float = 120.0,
 ) -> Path:
     """Idempotent queue clone for operator skills.
 
     Mirrors ``ralph_executor.queue_clone.ensure_queue_clone``. The branch
     is forwarded unchanged; the operator's ``~/.ralph/config.toml`` knob is
-    resolved by the caller via ``resolve_queue_branch``.
-
-    Scope 1 multi-ralph note: operator skills still use the legacy
-    ``<workspace_root>/queue/`` path because per-skill ``--instance-id``
-    threading lands in Tasks 12-15 of the multi-ralph plan. The executor
-    uses the namespaced path ``<workspace_root>/queue-<instance_id>/``
-    via ``ensure_queue_clone(..., instance_id=cfg.instance_id)``.
+    resolved by the caller via ``resolve_queue_branch``. Skills resolve
+    ``instance_id`` via :func:`resolve_instance_id` and pass it through so
+    every clone lands at the namespaced path
+    ``<workspace_root>/queue-<instance_id>/``. This MUST match the
+    executor's clone path so the halt-sentinel guard (and any other
+    .gitignored state file) is visible to skills running on the same
+    host as the executor.
     """
     try:
-        return ensure_queue_clone(workspace_root, queue_repo, queue_branch, timeout=timeout)
+        return ensure_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=instance_id,
+            timeout=timeout,
+        )
     except QueueCloneError as exc:
         raise QueueWriterError(str(exc)) from exc
 

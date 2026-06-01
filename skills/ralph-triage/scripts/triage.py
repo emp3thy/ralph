@@ -29,6 +29,7 @@ from scripts.queue_writer import (  # noqa: E402
     is_path_in_head,
     push,
     read_frontmatter,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -101,6 +102,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--queue-branch",
         metavar="BRANCH",
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
+    )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the executor's namespaced "
+            "queue clone (queue-<instance-id>/). Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
     )
     parser.add_argument(
         "--no-push",
@@ -187,7 +199,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        operator_instance_id = resolve_instance_id(args.instance_id)
+        clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
 
         from_dir = clone / ".ralph" / SOURCE_FOLDER / args.pbi_id
         to_dir = clone / ".ralph" / args.destination / args.pbi_id

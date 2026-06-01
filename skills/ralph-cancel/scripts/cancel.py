@@ -185,7 +185,12 @@ def main(argv: list[str] | None = None) -> int:
 
         operator_instance_id = resolve_instance_id(args.instance_id)
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
 
         pbi_dir = _resolve_current_pbi(clone, args.pbi_id)
         _enforce_claim_ownership(pbi_dir, operator_instance_id)

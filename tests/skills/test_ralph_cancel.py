@@ -183,8 +183,8 @@ def test_cancel_drops_sentinel_in_current(
     _seed_pbi(queue_repo, tmp_path, "current", "WI-1234")
 
     # Pre-clone so committer identity is configured before cancel commits.
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-1234", workspace=workspace, queue_repo=queue_repo)
@@ -213,8 +213,8 @@ def test_cancel_refuses_pbi_outside_current(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-2000")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-2000", workspace=workspace, queue_repo=queue_repo)
@@ -230,8 +230,8 @@ def test_cancel_errors_on_missing_pbi(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     workspace, queue_repo = queue_env
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-DOES-NOT-EXIST", workspace=workspace, queue_repo=queue_repo)
@@ -249,9 +249,9 @@ def test_cancel_no_push_keeps_remote_at_previous_sha(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-3000")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-3000", workspace=workspace, queue_repo=queue_repo, extra=["--no-push"])
@@ -260,7 +260,7 @@ def test_cancel_no_push_keeps_remote_at_previous_sha(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
 
 
@@ -291,7 +291,7 @@ def test_cancel_dry_run_writes_nothing(
     assert payload["commit_sha"] == ""
 
     # Dry-run must NOT clone the queue or push.
-    assert not (workspace / "queue").exists()
+    assert not (workspace / "queue-test-ralph").exists()
     after = subprocess.run(
         ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
@@ -320,8 +320,8 @@ def test_cancel_idempotent_when_sentinel_already_present(
     _git(seed, "commit", "-m", "chore(test): pre-existing cancel")
     _git(seed, "push", "origin", "ralph-queue")
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-5000", workspace=workspace, queue_repo=queue_repo)
@@ -350,9 +350,9 @@ def test_cancel_runs_full_path_when_sentinel_on_disk_but_not_committed(
     + push path."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-5050")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    clone = workspace / "queue"
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    clone = workspace / "queue-test-ralph"
     # Stage but do NOT commit — simulates a previously-failed cancel
     # whose ``git add`` succeeded but whose ``git commit`` hook rejected.
     (clone / ".ralph" / "current" / "WI-5050" / "CANCEL").write_text("", encoding="utf-8")
@@ -383,8 +383,8 @@ def test_cancel_pushes_ralph_queue_by_default(
     """ralph-cancel pushes to ralph-queue when no --queue-branch override."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-7000")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     pushed: list[tuple[Path, str]] = []
 
@@ -449,8 +449,8 @@ def test_cancel_queue_repo_resolved_from_toml(
         encoding="utf-8",
     )
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         [
@@ -491,9 +491,9 @@ def test_cancel_refuses_foreign_claim_with_exit_3(
         "WI-FOREIGN",
         claim_instance_id="other-ralph",
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    tip_before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    tip_before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-FOREIGN", workspace=workspace, queue_repo=queue_repo)
@@ -503,7 +503,7 @@ def test_cancel_refuses_foreign_claim_with_exit_3(
     assert "ralph-cancel: cannot cancel PBI claimed by 'other-ralph'" in stderr
     assert "use ralph-recover" in stderr
 
-    tip_after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    tip_after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert tip_before == tip_after, "foreign-claim refusal must not push anything"
 
 
@@ -525,8 +525,8 @@ def test_cancel_refuses_missing_claim_with_exit_3(
         "WI-NOCLAIM",
         claim_instance_id=None,
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-NOCLAIM", workspace=workspace, queue_repo=queue_repo)
@@ -553,8 +553,8 @@ def test_cancel_proceeds_when_claim_owned_by_operator(
         "WI-OWN",
         claim_instance_id=OWN_INSTANCE_ID,
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-OWN", workspace=workspace, queue_repo=queue_repo)
@@ -595,8 +595,8 @@ def test_cancel_refuses_malformed_claim_with_exit_3(
     _git(overwrite, "commit", "-m", "chore(test): break CLAIM.json")
     _git(overwrite, "push", "origin", "ralph-queue")
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = cancel_module.main(
         _argv(pbi_id="WI-BAD", workspace=workspace, queue_repo=queue_repo)
@@ -618,8 +618,10 @@ def test_cancel_resolves_instance_id_from_env_when_flag_omitted(
     the (real-host) hostname fallback so the seeded claim matches."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-ENV", claim_instance_id="env-ralph")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    # RALPH_INSTANCE_ID resolves to "env-ralph", so the skill clones to
+    # ws/queue-env-ralph/ — not ws/queue-test-ralph/. Pre-clone there.
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-env-ralph")], check=True)
+    _configure_identity(workspace / "queue-env-ralph")
     monkeypatch.setenv("RALPH_INSTANCE_ID", "env-ralph")
     # Isolate the user-config layer so a real ~/.ralph/config.toml does
     # not inject an instance_id that pre-empts the env var.

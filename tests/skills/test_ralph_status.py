@@ -588,9 +588,22 @@ def test_status_acquires_ralph_queue_by_default(
 
     real_acquire = status_module.acquire_queue_clone
 
-    def fake_acquire(workspace_root: Path, repo: str, branch: str) -> Path:
+    def fake_acquire(
+        workspace_root: Path,
+        repo: str,
+        branch: str,
+        *,
+        instance_id: str,
+        timeout: float = 120.0,
+    ) -> Path:
         calls.append((workspace_root, repo, branch))
-        return real_acquire(workspace_root, repo, branch)
+        return real_acquire(
+            workspace_root,
+            repo,
+            branch,
+            instance_id=instance_id,
+            timeout=timeout,
+        )
 
     monkeypatch.setattr(status_module, "acquire_queue_clone", fake_acquire)
 

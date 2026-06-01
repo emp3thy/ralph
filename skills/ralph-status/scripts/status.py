@@ -29,6 +29,7 @@ from scripts.pbi_reader import (  # noqa: E402
 from scripts.queue_writer import (  # noqa: E402
     QueueWriterError,
     acquire_queue_clone,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -74,6 +75,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         dest="queue_branch",
         metavar="BRANCH",
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
+    )
+    parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the executor's namespaced "
+            "queue clone (queue-<instance-id>/). Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -264,7 +276,13 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root = resolve_workspace_root(args.workspace)
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
-        queue_clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        operator_instance_id = resolve_instance_id(args.instance_id)
+        queue_clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
     except QueueWriterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

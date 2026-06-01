@@ -199,8 +199,8 @@ def test_promote_moves_pbi_between_states(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-100")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -240,8 +240,8 @@ def test_promote_bug_pbi_uses_bug_md(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "blocked", "BUG-1", entry_file="BUG.md", pbi_type="bug")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -268,8 +268,8 @@ def test_promote_errors_on_missing_pbi_at_from_state(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     workspace, queue_repo = queue_env
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -334,9 +334,9 @@ def test_promote_no_push_keeps_remote_unchanged(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-200")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = promote_module.main(
         _argv(
@@ -352,7 +352,7 @@ def test_promote_no_push_keeps_remote_unchanged(
     payload = json.loads(capsys.readouterr().out)
     assert payload["pushed"] is False
     assert payload["commit_sha"]
-    after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert before == after
 
 
@@ -390,7 +390,7 @@ def test_promote_dry_run_writes_nothing(
     assert payload["commit_sha"] == ""
 
     # Dry-run must NOT clone the queue or push.
-    assert not (workspace / "queue").exists()
+    assert not (workspace / "queue-test-ralph").exists()
     after = subprocess.run(
         ["git", "ls-remote", queue_repo, "ralph-queue"],
         check=True,
@@ -412,8 +412,8 @@ def test_promote_idempotent_when_already_at_destination(
     operation is a no-op — already_promoted=True, no new commit."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "current", "WI-400")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -439,8 +439,8 @@ def test_promote_appends_history_entry(
 ) -> None:
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-500")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -512,8 +512,8 @@ def test_promote_queue_repo_resolved_from_toml(
         encoding="utf-8",
     )
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         [
@@ -526,6 +526,8 @@ def test_promote_queue_repo_resolved_from_toml(
             "--workspace",
             str(workspace),
             "--no-push",
+            "--instance-id",
+            "test-ralph",
         ]
     )
     assert exit_code == 0, capsys.readouterr().err
@@ -546,10 +548,10 @@ def test_promote_refuses_when_destination_dir_exists(
     guards against silent data loss if git mv would error."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-700")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
     # Pre-create the destination dir locally to simulate the conflict.
-    stale = workspace / "queue" / ".ralph" / "current" / "WI-700"
+    stale = workspace / "queue-test-ralph" / ".ralph" / "current" / "WI-700"
     stale.mkdir(parents=True)
     (stale / "PBI.md").write_text("stale", encoding="utf-8")
 
@@ -578,8 +580,8 @@ def test_promote_pushes_ralph_queue_by_default(
     """ralph-promote pushes to ralph-queue when no --queue-branch override."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-7100")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     pushed: list[tuple[Path, str]] = []
 
@@ -624,9 +626,9 @@ def test_promote_refuses_foreign_claim_out_of_current(
         "WI-FOREIGN",
         claim_instance_id="other-ralph",
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
-    tip_before = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
+    tip_before = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
 
     exit_code = promote_module.main(
         _argv(
@@ -642,7 +644,7 @@ def test_promote_refuses_foreign_claim_out_of_current(
     assert "ralph-promote: cannot promote PBI claimed by 'other-ralph'" in stderr
     assert "use ralph-recover" in stderr
 
-    tip_after = _git(workspace / "queue", "ls-remote", "origin", "ralph-queue").strip()
+    tip_after = _git(workspace / "queue-test-ralph", "ls-remote", "origin", "ralph-queue").strip()
     assert tip_before == tip_after, "foreign-claim refusal must not push anything"
 
 
@@ -664,8 +666,8 @@ def test_promote_refuses_missing_claim_out_of_current(
         "WI-NOCLAIM",
         claim_instance_id=None,
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -706,8 +708,8 @@ def test_promote_refuses_malformed_claim_out_of_current(
     _git(overwrite, "commit", "-m", "chore(test): break CLAIM.json")
     _git(overwrite, "push", "origin", "ralph-queue")
 
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -740,8 +742,8 @@ def test_promote_proceeds_out_of_current_when_claim_owned_by_operator(
         "WI-OWN",
         claim_instance_id=OWN_INSTANCE_ID,
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -773,8 +775,8 @@ def test_promote_into_current_does_not_require_claim(
     blocked by the guard — they would never have a CLAIM.json to consult."""
     workspace, queue_repo = queue_env
     _seed_pbi(queue_repo, tmp_path, "inbox", "WI-INTO-CURRENT")
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-test-ralph")], check=True)
+    _configure_identity(workspace / "queue-test-ralph")
 
     exit_code = promote_module.main(
         _argv(
@@ -806,8 +808,10 @@ def test_promote_resolves_instance_id_from_env_when_flag_omitted(
         "WI-ENV",
         claim_instance_id="env-ralph",
     )
-    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue")], check=True)
-    _configure_identity(workspace / "queue")
+    # RALPH_INSTANCE_ID resolves to "env-ralph", so the skill clones to
+    # ws/queue-env-ralph/ — not ws/queue-test-ralph/. Pre-clone there.
+    subprocess.run(["git", "clone", queue_repo, str(workspace / "queue-env-ralph")], check=True)
+    _configure_identity(workspace / "queue-env-ralph")
     monkeypatch.setenv("RALPH_INSTANCE_ID", "env-ralph")
     # Isolate the user-config layer so a real ~/.ralph/config.toml does
     # not inject an instance_id that pre-empts the env var.

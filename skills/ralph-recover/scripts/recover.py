@@ -40,6 +40,7 @@ from scripts.queue_writer import (  # noqa: E402
     commit_paths,
     push,
     read_frontmatter,
+    resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
@@ -121,6 +122,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Override queue_branch from ~/.ralph/config.toml (default: ralph-queue).",
     )
     parser.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the same namespaced queue "
+            "clone path (queue-<instance-id>/) the executor uses. The "
+            "halt-sentinel file is gitignored and only visible to skills "
+            "that clone the executor's path. Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Commit the recover locally but do not push.",
@@ -178,7 +192,19 @@ def main(argv: list[str] | None = None) -> int:
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
 
-        clone = acquire_queue_clone(workspace_root, queue_repo, queue_branch)
+        # Resolve instance_id BEFORE the clone so we land on the same
+        # namespaced path the executor uses (queue-<instance-id>/). The
+        # halt-sentinel file is gitignored, so it is only visible to
+        # skills that clone the executor's path, not the legacy queue/
+        # path. BugBot finding 2026-06-01 (PR #69 recover.py:187).
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
+        clone = acquire_queue_clone(
+            workspace_root,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
 
         # Halt sentinel guard. ralph-recover is queue-state-mutating;
         # running it during an active halt could mask the unresolved
@@ -201,9 +227,13 @@ def main(argv: list[str] | None = None) -> int:
         # Read + audit CLAIM.json BEFORE the move so the previous
         # owner's identity lands in the commit subject + HISTORY entry,
         # and the raw payload is preserved on stderr for forensic use.
+        # Capture had_claim eagerly: ``git mv`` below renames the dir,
+        # so ``claim_path_before.is_file()`` flips to False afterwards
+        # and any later check would mis-classify the path.
         claim_path_before = from_dir / CLAIM_FILENAME
+        had_claim = claim_path_before.is_file()
         recovered_from = _RECOVERED_FROM_NO_CLAIM
-        if claim_path_before.is_file():
+        if had_claim:
             recovered_from, claim_text = _read_claim_audit(claim_path_before)
             print(
                 f"ralph-recover: claim contents before move:\n{claim_text}",
@@ -250,9 +280,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         history_file = to_dir / "HISTORY.md"
+        # Only include claim_after in commit_paths when a CLAIM.json
+        # actually existed in the source — otherwise nothing was renamed
+        # to claim_after and nothing was unlinked, so ``git add --
+        # claim_after`` would fail with "pathspec did not match any
+        # files". BugBot finding 2026-06-01 (PR #69 recover.py:255).
+        paths_to_commit = [entry_after, history_file]
+        if had_claim:
+            paths_to_commit.append(claim_after)
         commit_sha = commit_paths(
             clone,
-            [entry_after, history_file, claim_after],
+            paths_to_commit,
             f"chore(queue): recover {args.pbi_id} from {recovered_from}",
         )
 
