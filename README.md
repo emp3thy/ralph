@@ -92,10 +92,15 @@ the config — the executor will retry on its next iteration.
 
 ## Working the queue
 
-Add a PBI with `ralph-new` (interactive) or by writing a Markdown file
-under `.ralph/inbox/<PBI-ID>/PBI.md` on the queue repo's `ralph-queue`
-branch. The PBI's `target_repo` frontmatter field points at the GitHub
-repo to be modified. Ralph clones every target it encounters under
+`ralph-new` is the single sanctioned adder. Add a PBI with `ralph-new`
+(interactive) or by writing a Markdown file under
+`.ralph/inbox/<PBI-ID>/PBI.md` on the queue repo's `ralph-queue` branch.
+The retired `ralph-add` skill is auto-removed by `ralph-executor init`
+from both `claude_skills_dir` (`~/.claude/skills/` by default) and the
+configured `skills_root` — operators upgrading from a pre-93d3158
+install no longer need to scrub it by hand. The PBI's `target_repo`
+frontmatter field points at the GitHub repo to be modified. Ralph
+clones every target it encounters under
 `<workspace_root>/clones/<owner>/<name>/`.
 
 Five skills cover the operator workflow. All read or write

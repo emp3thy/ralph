@@ -292,3 +292,97 @@ def test_init_handles_closed_stdin_on_queue_repo_prompt(
     assert "queue_repo" in out
     assert "WARNING" in out
     assert read_queue_repo() is None
+
+
+# ---------------------------------------------------------------------------
+# cmd_init — stale ralph-add cleanup (BUG-SETUP-REMOVE-STALE-RALPH-ADD)
+# ---------------------------------------------------------------------------
+
+
+def test_init_removes_stale_ralph_add_from_claude_skills_dir(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Operators upgrading from a pre-93d3158 install still have
+    ``~/.claude/skills/ralph-add/`` staged. ``cmd_init`` must remove it
+    and print a one-line WARNING naming the path."""
+    monkeypatch.delenv("RALPH_CLAUDE_SKILLS_DIR", raising=False)
+    monkeypatch.delenv("RALPH_SKILLS_ROOT", raising=False)
+    stale = fake_home / ".claude" / "skills" / "ralph-add"
+    stale.mkdir(parents=True)
+    (stale / "SKILL.md").write_text("legacy skill body")
+
+    exit_code = cmd_init(assume_yes=True)
+
+    assert exit_code == 0
+    assert not stale.exists()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "ralph-add" in out
+    assert str(stale) in out
+
+
+def test_init_noop_when_ralph_add_absent(
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fresh install has no ralph-add anywhere. Cleanup must be a silent
+    no-op — no removal warning in the output, exit 0."""
+    monkeypatch.delenv("RALPH_CLAUDE_SKILLS_DIR", raising=False)
+    monkeypatch.delenv("RALPH_SKILLS_ROOT", raising=False)
+
+    exit_code = cmd_init(assume_yes=True)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "removed stale ralph-add" not in out
+
+
+def test_init_removes_stale_ralph_add_from_skills_root(
+    fake_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Source-tree ``skills_root`` (resolved via ``RALPH_SKILLS_ROOT``)
+    is also scrubbed — covers operators whose checkout still carries
+    the dir from a pre-93d3158 clone."""
+    monkeypatch.delenv("RALPH_CLAUDE_SKILLS_DIR", raising=False)
+    skills_root = tmp_path / "src-skills"
+    stale = skills_root / "ralph-add"
+    stale.mkdir(parents=True)
+    (stale / "SKILL.md").write_text("legacy")
+    monkeypatch.setenv("RALPH_SKILLS_ROOT", str(skills_root))
+
+    exit_code = cmd_init(assume_yes=True)
+
+    assert exit_code == 0
+    assert not stale.exists()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert str(stale) in out
+
+
+def test_init_dedupes_when_skills_root_equals_claude_skills_dir(
+    fake_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If both knobs resolve to the same directory, the removal WARNING
+    appears exactly once — guards against double-printing on operators
+    who point ``RALPH_SKILLS_ROOT`` at ``~/.claude/skills``."""
+    shared = tmp_path / "shared-skills"
+    stale = shared / "ralph-add"
+    stale.mkdir(parents=True)
+    monkeypatch.setenv("RALPH_CLAUDE_SKILLS_DIR", str(shared))
+    monkeypatch.setenv("RALPH_SKILLS_ROOT", str(shared))
+
+    exit_code = cmd_init(assume_yes=True)
+
+    assert exit_code == 0
+    assert not stale.exists()
+    out = capsys.readouterr().out
+    assert out.count("removed stale ralph-add") == 1
