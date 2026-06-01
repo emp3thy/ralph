@@ -1616,6 +1616,19 @@ def test_iterate_once_resume_self_heals_missing_work_worktree(
     )
     (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    # Multi-ralph invariant: every current/<id>/ carries a CLAIM.json.
+    # The claim commit lands BEFORE any worktree work; a crash between
+    # claim-commit and worktree-creation still leaves CLAIM.json behind.
+    from ralph_executor.queue.claim import Claim, write_claim
+
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=cfg_for_repo.instance_id,
+            claimed_at="2026-05-24T09:15:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", "test: seed WI-RESUME directly in current/")
     _git(fake_repo, "push", "origin", "main")
@@ -1695,6 +1708,18 @@ def test_iterate_once_resume_demotes_to_blocked_when_worktree_cannot_be_created(
     )
     (pbi_dir / "PLAN.md").write_text("# PLAN\n", encoding="utf-8")
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+    # Multi-ralph invariant: current/<id>/ carries CLAIM.json (claim
+    # commit lands before any worktree work).
+    from ralph_executor.queue.claim import Claim, write_claim
+
+    write_claim(
+        pbi_dir / "CLAIM.json",
+        Claim(
+            instance_id=cfg_for_repo.instance_id,
+            claimed_at="2026-05-24T09:15:00+00:00",
+            hostname="test-host",
+        ),
+    )
     _git(fake_repo, "add", str(pbi_dir.relative_to(fake_repo)))
     _git(fake_repo, "commit", "-m", "test: seed WI-STRANDED in current/")
     _git(fake_repo, "push", "origin", "main")
