@@ -38,13 +38,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Resolve workspace_root via the same chain report.py uses, so we know
 # where the child will land server-info before we have to poll for it.
 WORKSPACE_ROOT="$(
-  uv run python -c "
+  WORKSPACE_INPUT="$WORKSPACE" REPO_ROOT_INPUT="$REPO_ROOT" uv run python -c "
+import os
 import sys
 from pathlib import Path
-sys.path.insert(0, '$REPO_ROOT')
+sys.path.insert(0, os.environ['REPO_ROOT_INPUT'])
 from scripts.queue_writer import QueueWriterError, resolve_workspace_root
 try:
-    cli = Path('$WORKSPACE') if '$WORKSPACE' else None
+    ws_in = os.environ.get('WORKSPACE_INPUT', '')
+    cli = Path(ws_in) if ws_in else None
     print(resolve_workspace_root(cli))
 except QueueWriterError as exc:
     print(f'start-server.sh: {exc}', file=sys.stderr)
