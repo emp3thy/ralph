@@ -173,7 +173,7 @@ class FilesystemQueueSource:
 
     @property
     def _root(self) -> Path:
-        return self._config.workspace_root / "queue" / ".ralph"
+        return self._config.queue_clone_path / ".ralph"
 
     def _list_pbis(self, state: str) -> list[PBI]:
         state_dir = self._root / state

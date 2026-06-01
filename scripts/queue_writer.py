@@ -82,6 +82,12 @@ def acquire_queue_clone(
     Mirrors ``ralph_executor.queue_clone.ensure_queue_clone``. The branch
     is forwarded unchanged; the operator's ``~/.ralph/config.toml`` knob is
     resolved by the caller via ``resolve_queue_branch``.
+
+    Scope 1 multi-ralph note: operator skills still use the legacy
+    ``<workspace_root>/queue/`` path because per-skill ``--instance-id``
+    threading lands in Tasks 12-15 of the multi-ralph plan. The executor
+    uses the namespaced path ``<workspace_root>/queue-<instance_id>/``
+    via ``ensure_queue_clone(..., instance_id=cfg.instance_id)``.
     """
     try:
         return ensure_queue_clone(workspace_root, queue_repo, queue_branch, timeout=timeout)

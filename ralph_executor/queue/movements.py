@@ -35,10 +35,11 @@ log = logging.getLogger(__name__)
 def _queue_repo(cfg: ExecutorConfig) -> Path:
     """Filesystem path of the queue clone for this run.
 
-    The queue is its own repository checked out at
-    ``<workspace_root>/queue/`` and always sits on ``main``.
+    Scope 1 multi-ralph: the queue clone is namespaced per-instance at
+    ``<workspace_root>/queue-<instance_id>/``. Delegates to
+    :attr:`ExecutorConfig.queue_clone_path`.
     """
-    return cfg.workspace_root / "queue"
+    return cfg.queue_clone_path
 
 
 class QueueMovementError(RuntimeError):

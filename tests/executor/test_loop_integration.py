@@ -221,7 +221,9 @@ def _build_dual_branch_queue(tmp_path: Path) -> tuple[Path, Path]:
     bare = tmp_path / "queue.git"
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
-    clone = workspace / "queue"
+    # Scope 1 multi-ralph: namespaced clone path matching the cfg below
+    # (``instance_id="test-ralph"``).
+    clone = workspace / "queue-test-ralph"
     seed = tmp_path / "seed"
 
     subprocess.run(

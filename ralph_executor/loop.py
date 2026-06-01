@@ -77,17 +77,22 @@ log = logging.getLogger(__name__)
 
 
 def _queue_repo_root(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone. Always ``<workspace_root>/queue``.
+    """Filesystem path of the queue clone for this instance.
 
-    The queue repo is cloned by ``ensure_queue_clone`` into
-    ``<workspace_root>/queue`` and owns ``.ralph/`` (events.db, sentinel,
-    blocked/, …). Every operation that reads or writes under ``.ralph/`` —
-    opening the event log, moving PBIs to ``.ralph/blocked/``, handling
-    STUCK.md, checking/writing the halt sentinel — routes through this
-    helper so the side-effects land in the queue clone that gets pushed
-    to ``origin/main`` of ``queue_repo``.
+    Scope 1 multi-ralph: the queue clone is namespaced per-instance at
+    ``<workspace_root>/queue-<instance_id>/``. Delegates to
+    :attr:`ExecutorConfig.queue_clone_path` so every module that needs
+    the path agrees with the executor's view.
+
+    The queue repo is cloned by ``ensure_queue_clone`` into this path
+    and owns ``.ralph/`` (events.db, sentinel, blocked/, …). Every
+    operation that reads or writes under ``.ralph/`` — opening the
+    event log, moving PBIs to ``.ralph/blocked/``, handling STUCK.md,
+    checking/writing the halt sentinel — routes through this helper so
+    the side-effects land in the queue clone that gets pushed to
+    ``origin/<queue_branch>`` of ``queue_repo``.
     """
-    return cfg.workspace_root / "queue"
+    return cfg.queue_clone_path
 
 
 IterationOutcome = Literal[
@@ -361,7 +366,12 @@ def _pull_queue(cfg: ExecutorConfig) -> None:
         cfg.queue_repo,
         cfg.queue_branch,
     )
-    ensure_queue_clone(cfg.workspace_root, cfg.queue_repo, cfg.queue_branch)
+    ensure_queue_clone(
+        cfg.workspace_root,
+        cfg.queue_repo,
+        cfg.queue_branch,
+        instance_id=cfg.instance_id,
+    )
 
 
 def _feature_branch_name(pbi: PBI) -> str:

@@ -390,6 +390,18 @@ class ExecutorConfig:
     watch_mode: bool = DEFAULT_WATCH_MODE
     idle_exit_threshold: int = DEFAULT_IDLE_EXIT_THRESHOLD
 
+    @property
+    def queue_clone_path(self) -> Path:
+        """Filesystem path of this instance's queue clone.
+
+        Scope 1 multi-ralph: the queue clone lives at
+        ``<workspace_root>/queue-<instance_id>/``. Every module that
+        derives the queue-clone path (loop, claude_spawn, movements,
+        filesystem, safety.stuck) routes through this property so the
+        path stays consistent across the codebase.
+        """
+        return self.workspace_root / f"queue-{self.instance_id}"
+
 
 def _load_user_toml_overrides() -> Mapping[str, Any]:
     """Read ``~/.ralph/config.toml`` and return overrides keyed by knob name.

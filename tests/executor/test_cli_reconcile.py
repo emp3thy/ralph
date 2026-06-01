@@ -20,13 +20,16 @@ def _make_orphan(pending_dir: Path, pbi_id: str) -> Path:
 def fake_repo_with_orphan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Layout the queue-clone topology the post-split CLI expects.
 
-    The reconcile CLI reads ``.ralph/`` from ``<workspace_root>/queue/``,
-    so ``RALPH_WORKSPACE`` is monkeypatched to ``<tmp_path>/ws`` and the
-    orphan is placed at ``<tmp_path>/ws/queue/.ralph/pending-pr/ORPHAN-1``.
+    The reconcile CLI reads ``.ralph/`` from
+    ``<workspace_root>/queue-<instance_id>/`` (Scope 1 multi-ralph). The
+    fixture sets ``RALPH_INSTANCE_ID=test-ralph`` and seeds the clone
+    at ``<tmp_path>/ws/queue-test-ralph/`` so ``cfg.queue_clone_path``
+    resolves there.
     """
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "test-ralph")
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    repo = workspace / "queue"
+    repo = workspace / "queue-test-ralph"
     repo.mkdir()
     (repo / ".git").mkdir()
     queue = repo / ".ralph"
@@ -264,8 +267,9 @@ def test_reconcile_subcommand_missing_scripts_dir_exits_2(
     )
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("RALPH_INSTANCE_ID", "test-ralph")
     monkeypatch.setenv("RALPH_WORKSPACE", str(tmp_path / "ws"))
-    (tmp_path / "ws" / "queue").mkdir(parents=True)
+    (tmp_path / "ws" / "queue-test-ralph").mkdir(parents=True)
     exit_code = cli_main(["reconcile"])
 
     assert exit_code == 2

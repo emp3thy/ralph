@@ -258,10 +258,12 @@ def test_sweep_repo_name_is_queue_clone_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_run_sweep labels SweepContext.repo_name with the queue clone
-    directory name (``queue`` under workspace_root).
+    directory name (``queue-<instance_id>`` under workspace_root).
 
     After KILL-RALPH-HOME T8, ``ExecutorConfig.repo_path`` is gone — the
     sweep label is unambiguously derived from ``_queue_repo_root(cfg).name``.
+    Scope 1 multi-ralph: the queue clone is namespaced per-instance so
+    the label is ``queue-<instance_id>`` (here ``queue-test-ralph``).
     """
     from ralph_executor.loop import _run_sweep
     from ralph_executor.queue.filesystem import FilesystemQueueSource
@@ -278,6 +280,4 @@ def test_sweep_repo_name_is_queue_clone_name(
     cfg = replace(cfg_for_repo, bot_author_email="ralph-bot@example.com")
     _run_sweep(cfg, FilesystemQueueSource(cfg))
 
-    # Sweep context labels itself ``queue`` (the queue clone dir name
-    # under workspace_root).
-    assert seen["repo_name"] == "queue"
+    assert seen["repo_name"] == "queue-test-ralph"
