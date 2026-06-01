@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.git_ops import PushRebaseConflict
+from ralph_executor.queue.claim import CLAIM_FILENAME, read_claim
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     QueueMovementError,
@@ -306,3 +309,189 @@ def test_move_inbox_to_current_survives_concurrent_remote_advance(
     assert "race: concurrent commit" in log
     # And the move's own commit landed on top of (or rebased above) it.
     assert any("move WI-1234 from inbox to current" in line for line in log)
+
+
+# ---------------------------------------------------------------------------
+# Task 9: claim path writes CLAIM.json atomically with the move + pins
+# the commit subject + rolls back on push-rebase conflict.
+# ---------------------------------------------------------------------------
+
+
+def test_claim_writes_claim_json_and_pins_commit_subject(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """When ``instance_id`` + ``hostname`` are provided, ``move_inbox_to_current``
+    writes ``CLAIM.json`` into ``current/<id>/`` AND pins the commit
+    subject to ``chore(queue): claim <id> for <instance_id>``.
+
+    The ``commit_all`` call inside ``_move`` runs ``git add -A`` before
+    committing, so the brand-new ``CLAIM.json`` lands in the SAME commit
+    as the ``git mv`` rename + the ``_rewrite_status`` frontmatter edit.
+    Single-commit atomicity is the load-bearing invariant — a partial
+    state on the queue branch would be visible to a second ralph as
+    "claimed without owner" or "no claim but in current/".
+    """
+    pbi_dir = _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+    pinned_when = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+
+    moved = move_inbox_to_current(
+        cfg_for_repo,
+        pbi,
+        instance_id="ralph-a",
+        hostname="box-alpha",
+        claimed_at=pinned_when,
+    )
+
+    # CLAIM.json present with the expected content (Claim round-trip).
+    claim_path = moved.path / CLAIM_FILENAME
+    assert claim_path.is_file()
+    claim = read_claim(claim_path)
+    assert claim.instance_id == "ralph-a"
+    assert claim.hostname == "box-alpha"
+    assert claim.claimed_at == pinned_when.isoformat()
+
+    # JSON shape: only the three documented keys, hostname is the literal
+    # operator-provided string (no double-encoding regression).
+    raw = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert sorted(raw.keys()) == ["claimed_at", "hostname", "instance_id"]
+    assert raw["hostname"] == "box-alpha"
+
+    # Source dir is gone from inbox/.
+    assert not pbi_dir.exists()
+
+    # Commit subject is the pinned claim subject.
+    subject = _git(fake_repo, "log", "-1", "--format=%s", "main").strip()
+    assert subject == "chore(queue): claim WI-1234 for ralph-a"
+
+    # Atomic: the SINGLE claim commit touches the moved entry file AND
+    # CLAIM.json. ``git diff-tree --name-only`` of HEAD enumerates the
+    # paths in the commit.
+    files_in_commit = sorted(
+        line
+        for line in _git(
+            fake_repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).splitlines()
+        if line.strip()
+    )
+    assert ".ralph/current/WI-1234/CLAIM.json" in files_in_commit
+    assert ".ralph/current/WI-1234/PBI.md" in files_in_commit
+    # Only the moved PBI's inbox path is referenced — no unrelated
+    # inbox/ paths get pulled into the claim commit.
+    stray_inbox = [
+        p
+        for p in files_in_commit
+        if p.startswith(".ralph/inbox/") and not p.startswith(".ralph/inbox/WI-1234")
+    ]
+    assert stray_inbox == []
+
+
+def test_claim_requires_hostname_when_instance_id_set(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """``hostname`` is required whenever ``instance_id`` is provided —
+    the claim marker carries both, so passing one without the other is
+    a caller bug and surfaces as ``QueueMovementError``."""
+    _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+    with pytest.raises(QueueMovementError, match="hostname is required"):
+        move_inbox_to_current(cfg_for_repo, pbi, instance_id="ralph-a")
+
+
+def test_claim_loses_rebase_race_cleanly(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PushRebaseConflict`` from the claim push must roll back the
+    local clone to ``origin/<queue_branch>`` and re-raise.
+
+    Without the rollback the loser's local clone diverges from origin:
+    it has a local claim commit + working tree that moved the PBI into
+    ``current/<id>/``, while origin's tip has the winner's claim of the
+    same PBI. The next iteration's ``_pull_queue`` (ff-only pull) would
+    then fail. Rolling back to ``origin/<branch>`` drops the local
+    commit + resets the working tree, leaving no leftover
+    ``current/<id>/`` on the loser.
+
+    Stubs ``push_with_rebase`` to raise ``PushRebaseConflict`` AFTER the
+    local commit has already been made by ``commit_all`` — exactly the
+    state ``push_with_rebase``'s real implementation leaves behind when
+    it ``rebase --abort``s.
+    """
+    from ralph_executor import git_ops as git_ops_mod
+
+    pbi_dir = _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+
+    def fake_push(repo: Path, *, remote: str, branch: str) -> None:
+        raise PushRebaseConflict(("inbox/WI-1234/PBI.md",))
+
+    monkeypatch.setattr(git_ops_mod, "push_with_rebase", fake_push)
+
+    with pytest.raises(PushRebaseConflict):
+        move_inbox_to_current(
+            cfg_for_repo,
+            pbi,
+            instance_id="ralph-b",
+            hostname="box-beta",
+        )
+
+    # Local rollback: working tree reset to origin/<queue_branch>, so the
+    # PBI is back in inbox/ and there's no leftover current/<id>/ or
+    # CLAIM.json on the losing clone.
+    assert pbi_dir.is_dir(), "inbox/<id>/ must be restored after rollback"
+    current_dir = fake_repo / ".ralph" / "current" / "WI-1234"
+    assert not current_dir.exists(), "no leftover current/<id>/ on the losing clone"
+    # Local HEAD matches origin/<queue_branch> — no diverged commit
+    # would otherwise break the next iteration's ff-only pull.
+    local_head = _git(fake_repo, "rev-parse", "HEAD").strip()
+    origin_head = _git(fake_repo, "rev-parse", f"origin/{cfg_for_repo.queue_branch}").strip()
+    assert local_head == origin_head
+
+
+def test_claim_uses_now_when_claimed_at_omitted(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """``claimed_at`` defaults to ``datetime.now(UTC).isoformat()`` when
+    the caller does not pin it. The resulting string must be ISO-8601
+    UTC and parseable back to a tz-aware datetime."""
+    _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+
+    before = datetime.now(tz=UTC)
+    moved = move_inbox_to_current(
+        cfg_for_repo,
+        pbi,
+        instance_id="ralph-a",
+        hostname="box-alpha",
+    )
+    after = datetime.now(tz=UTC)
+
+    claim = read_claim(moved.path / CLAIM_FILENAME)
+    parsed = datetime.fromisoformat(claim.claimed_at)
+    assert parsed.tzinfo is not None, "claimed_at must be tz-aware"
+    assert before - timedelta(seconds=1) <= parsed <= after + timedelta(seconds=1)
+
+
+def test_claim_omitted_instance_id_keeps_legacy_subject_and_no_claim_file(
+    cfg_for_repo: ExecutorConfig, fake_repo: Path
+) -> None:
+    """When ``instance_id`` is NOT provided, ``move_inbox_to_current``
+    falls back to the legacy commit subject (per the back-compat shim
+    consumed by the older test fixtures that don't thread the multi-ralph
+    args) AND does not write ``CLAIM.json``. Guards against accidentally
+    coupling the helper to the Task-9 claim path for every caller."""
+    _populate_inbox(fake_repo)
+    source = FilesystemQueueSource(cfg_for_repo)
+    pbi = source.inbox_pbis()[0]
+
+    moved = move_inbox_to_current(cfg_for_repo, pbi)
+
+    assert not (moved.path / CLAIM_FILENAME).exists()
+    subject = _git(fake_repo, "log", "-1", "--format=%s", "main").strip()
+    assert subject == "chore(ralph-queue): move WI-1234 from inbox to current"

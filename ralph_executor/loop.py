@@ -617,6 +617,8 @@ def _claim_pbi_worktree(
             pbi,
             event_log=event_log,
             now=datetime.now(tz=UTC),
+            instance_id=cfg.instance_id,
+            hostname=socket.gethostname(),
         )
     finally:
         event_log.close()

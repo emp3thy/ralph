@@ -12,11 +12,13 @@ The result is a new ``PBI`` dataclass reflecting the new on-disk state.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ralph_executor import git_ops
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.queue.claim import CLAIM_FILENAME, Claim, write_claim
 from ralph_executor.queue.filesystem import (
     ENTRY_FILE_BY_TYPE,
     parse_pbi_directory,
@@ -108,6 +110,8 @@ def _move(
     expected_state: PBIStatus,
     target_state: PBIStatus,
     commit_prefix: str,
+    extra_files_writer: Callable[[Path], None] | None = None,
+    commit_subject_override: str | None = None,
 ) -> PBI:
     if pbi.status != expected_state:
         raise QueueMovementError(f"PBI {pbi.id} must be in {expected_state}, found in {pbi.status}")
@@ -134,10 +138,22 @@ def _move(
     entry_name = ENTRY_FILE_BY_TYPE[pbi.type]
     _rewrite_status(dst / entry_name, target_state)
 
-    git_ops.commit_all(
-        queue_repo,
-        f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}",
+    if extra_files_writer is not None:
+        extra_files_writer(dst)
+
+    message = (
+        commit_subject_override
+        if commit_subject_override is not None
+        else f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}"
     )
+    # ``commit_all`` runs ``git add -A`` before committing — so files the
+    # ``extra_files_writer`` callback drops into ``dst`` (e.g. CLAIM.json
+    # in the claim path) are auto-staged into the SAME commit as the
+    # ``git mv`` rename + the ``_rewrite_status`` frontmatter edit. Per
+    # [[63c4e75a]] a brand-new file inside a ``git mv``-d directory is
+    # NOT auto-staged by ``git mv`` itself; ``commit_all``'s ``-A`` flag
+    # is what picks it up.
+    git_ops.commit_all(queue_repo, message)
     # push_with_rebase tolerates concurrent writers (operator commits, a
     # second ralph instance, web commits) racing the queue repo's
     # cfg.queue_branch between this iteration's start and the move's push.
@@ -153,20 +169,68 @@ def move_inbox_to_current(
     *,
     event_log: EventLog | None = None,
     now: datetime | None = None,
+    instance_id: str | None = None,
+    hostname: str | None = None,
+    claimed_at: datetime | None = None,
 ) -> PBI:
     """Claim a PBI from inbox into the single-focus current folder.
 
     Emits ``PBI_OPENED`` to ``event_log`` when ``event_log`` is provided.
     The cycle detector's ``whack_a_mole`` rule consumes opens vs closes
     over a rolling window.
+
+    Scope 1 multi-ralph (Task 9): when ``instance_id`` is provided the
+    claim atomically writes ``CLAIM.json`` into ``current/<id>/`` as part
+    of the same commit as the ``git mv`` rename + frontmatter rewrite,
+    and pins the commit subject to
+    ``chore(queue): claim <id> for <instance_id>``. ``hostname`` is
+    required when ``instance_id`` is set (the claim marker carries
+    both). ``claimed_at`` defaults to ``datetime.now(UTC)`` for callers
+    that don't pin it.
+
+    On ``PushRebaseConflict`` from the claim path's
+    ``push_with_rebase``: the local clone is reset to
+    ``origin/<queue_branch>`` so the next iteration sees no leftover
+    ``current/<id>/`` and ``_pull_queue``'s ff-only pull succeeds.
+    Without the reset the loser would diverge from origin permanently.
     """
-    moved = _move(
-        cfg,
-        pbi,
-        expected_state="inbox",
-        target_state="current",
-        commit_prefix="chore(ralph-queue)",
-    )
+    extra_writer: Callable[[Path], None] | None
+    commit_subject_override: str | None
+    if instance_id is not None:
+        if hostname is None:
+            raise QueueMovementError("hostname is required when instance_id is provided")
+        when = claimed_at if claimed_at is not None else datetime.now(tz=UTC)
+        claim = Claim(
+            instance_id=instance_id,
+            claimed_at=when.isoformat(),
+            hostname=hostname,
+        )
+
+        def _write_claim_file(dst: Path) -> None:
+            write_claim(dst / CLAIM_FILENAME, claim)
+
+        extra_writer = _write_claim_file
+        commit_subject_override = f"chore(queue): claim {pbi.id} for {instance_id}"
+    else:
+        extra_writer = None
+        commit_subject_override = None
+    try:
+        moved = _move(
+            cfg,
+            pbi,
+            expected_state="inbox",
+            target_state="current",
+            commit_prefix="chore(ralph-queue)",
+            extra_files_writer=extra_writer,
+            commit_subject_override=commit_subject_override,
+        )
+    except git_ops.PushRebaseConflict:
+        if instance_id is not None:
+            # Roll back the local claim commit + working tree so the
+            # next iteration's ff-only pull succeeds and no stale
+            # ``current/<id>/`` lingers on the losing clone.
+            git_ops.reset_hard(_queue_repo(cfg), f"origin/{cfg.queue_branch}")
+        raise
     if event_log is not None:
         recorded_at = now if now is not None else datetime.now(tz=UTC)
         event_log.append(
