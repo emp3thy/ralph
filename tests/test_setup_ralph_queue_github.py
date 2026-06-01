@@ -109,12 +109,52 @@ def _register_protection_put() -> None:
     )
 
 
+def _prompt_source_relpaths() -> list[str]:
+    """Posix-style relative paths under the source ``prompt/`` tree.
+
+    Derived from the on-disk tree the setup script will seed onto the
+    queue branch. Used to register the per-file responses fixtures.
+    """
+    source = setup_ralph_queue_github._source_prompt_root()
+    return [rel for rel, _ in setup_ralph_queue_github._iter_prompt_source(source)]
+
+
+def _register_prompt_seed_gets_404() -> None:
+    """Register GET 404 for every prompt file. Used by dry-run tests."""
+    for rel in _prompt_source_relpaths():
+        responses.add(
+            responses.GET,
+            f"{REPO_URL}/contents/prompt/{rel}",
+            json={"message": "Not Found"},
+            status=404,
+        )
+
+
+def _register_prompt_seed_endpoints() -> None:
+    """Register GET 404 + PUT 201 for every prompt file under the source tree."""
+    for rel in _prompt_source_relpaths():
+        responses.add(
+            responses.GET,
+            f"{REPO_URL}/contents/prompt/{rel}",
+            json={"message": "Not Found"},
+            status=404,
+        )
+        responses.add(
+            responses.PUT,
+            f"{REPO_URL}/contents/prompt/{rel}",
+            json={"commit": {"sha": "p" * 40}},
+            status=201,
+        )
+
+
 def _register_seed_endpoints() -> None:
     """Register the content GETs (absent) + PUTs for the seed step.
 
     Task 13 adds README.md on main and `.ralph/<folder>/.gitkeep` skeleton
     files on ralph-queue. Each PUT is preceded by a GET to check existence
-    (idempotency); we register the GETs as 404 and the PUTs as 201.
+    (idempotency); we register the GETs as 404 and the PUTs as 201. The
+    prompt/ topic-folder tree is also seeded; each prompt file gets the
+    same GET-404 / PUT-201 pair registered.
     """
     # README.md on main
     responses.add(
@@ -156,6 +196,8 @@ def _register_seed_endpoints() -> None:
         json={"commit": {"sha": "c" * 40}},
         status=201,
     )
+    # prompt/ topic-folder tree on ralph-queue
+    _register_prompt_seed_endpoints()
 
 
 @responses.activate
@@ -268,6 +310,9 @@ def test_dry_run_makes_no_mutations(env: None, capsys: pytest.CaptureFixture[str
         json={"message": "Not Found"},
         status=404,
     )
+    # The setup script also iterates the on-disk prompt/ tree under
+    # --dry-run, issuing existence GETs but skipping the PUTs.
+    _register_prompt_seed_gets_404()
 
     exit_code = setup_ralph_queue_github.main(["--repo", REPO, "--dry-run"])
     assert exit_code == 0
@@ -639,6 +684,76 @@ def test_protection_applied_to_main_and_ralph_queue(monkeypatch):
     assert rc == 0
     assert any(p.endswith("/branches/main/protection") for p in protected)
     assert any(p.endswith("/branches/ralph-queue/protection") for p in protected)
+
+
+def test_seeds_prompt_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setup script mirrors the source prompt/ topic-folder tree onto the queue branch.
+
+    Regression for SETUP-RALPH-QUEUE-GITHUB-OMITS-PROMPT-TREE: before this
+    fix, the queue branch had no prompt/ directory and the executor crashed
+    on its first PBI claim because compose_prompt's iterdir() failed.
+    """
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            if "/contents/README.md" in path or "/contents/.ralph" in path:
+                raise setup.GhError(404, "not found", path)
+            if "/contents/prompt/" in path:
+                raise setup.GhError(404, "not found", path)
+            return {"object": {"sha": "abc123"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append((path, json_body or {}))
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    prompt_puts = [path for path, _ in puts if "/contents/prompt/" in path]
+    assert prompt_puts, "expected at least one prompt/ file to be PUT"
+    # Sanity-check that every file under the on-disk prompt/ tree got a
+    # PUT — drift between source and PUT set is the regression we guard.
+    expected = {
+        f"/repos/test/queue/contents/prompt/{rel}"
+        for rel in (rel for rel, _ in setup._iter_prompt_source(setup._source_prompt_root()))
+    }
+    assert set(prompt_puts) == expected
+
+
+def test_prompt_seed_idempotent_when_files_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-running on a fully-provisioned queue branch skips every prompt PUT."""
+    from scripts import setup_ralph_queue_github as setup
+
+    puts: list[str] = []
+
+    class FakeClient:
+        def get(self, path: str, **_: Any) -> Any:
+            # Pretend everything already exists -- no GhError raised.
+            return {"object": {"sha": "abc123"}}
+
+        def post(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            return {}
+
+        def put(self, path: str, *, json_body: Any = None, **_: Any) -> Any:
+            puts.append(path)
+            return {}
+
+    monkeypatch.setattr(setup, "GhClient", lambda token: FakeClient())
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setenv("GH_OWNER", "test")
+
+    rc = setup.main(["--repo", "queue", "--no-protection"])
+    assert rc == 0
+    assert not any("/contents/prompt/" in p for p in puts)
 
 
 def test_seeds_ralph_config_toml_stub(monkeypatch: pytest.MonkeyPatch) -> None:

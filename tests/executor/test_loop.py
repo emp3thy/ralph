@@ -186,6 +186,49 @@ def test_iterate_once_treats_error_like_partial(
     assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
 
 
+def test_iterate_once_catches_prompt_compose_error(
+    cfg_for_repo: ExecutorConfig,
+    fake_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for SETUP-RALPH-QUEUE-GITHUB-OMITS-PROMPT-TREE.
+
+    Before this fix, a PromptComposeError raised inside ``spawn_claude_p``
+    (e.g. when the queue clone is missing the ``prompt/`` topic-folder
+    tree) propagated unhandled through ``_run_ralph`` → ``iterate_once``
+    → ``run_loop`` → ``cli.main``'s safety net, killing the whole
+    executor process. The loop must classify this as an ``error``
+    iteration instead so the PBI stays in ``current/`` (or moves to
+    ``blocked/`` after max attempts) and the executor keeps running.
+    """
+    from ralph_executor.prompt_composer import PromptComposeError
+
+    _populate_inbox(fake_repo)
+    iterate_once(cfg_for_repo)  # claim WI-1234
+
+    def _raise_compose_error(
+        cfg: ExecutorConfig,
+        pbi: object,
+        *,
+        cwd: Path | None = None,
+        pbi_dir: Path | None = None,
+    ) -> ClaudeOutcome:
+        raise PromptComposeError("prompt_root /fake/queue/prompt is missing or not a directory")
+
+    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _raise_compose_error)
+
+    result = iterate_once(cfg_for_repo)
+    assert result.outcome == "ran_error"
+    assert result.pbi_id == "WI-1234"
+    # PBI must stay in current/ for the next iteration to retry.
+    assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
+    history = (fake_repo / ".ralph" / "current" / "WI-1234" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    assert "prompt compose error" in history
+    assert "is missing or not a directory" in history
+
+
 def test_iterate_once_recovers_from_push_conflict(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
