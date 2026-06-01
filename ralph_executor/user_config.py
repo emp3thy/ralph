@@ -152,6 +152,28 @@ def read_queue_branch() -> str | None:
     return raw.strip()
 
 
+def read_instance_id() -> str | None:
+    """Return the ``instance_id`` value from the user config, or None.
+
+    Multi-ralph (Scope 1) per-instance identity. Mirrors
+    ``read_queue_branch`` / ``read_queue_repo`` for the matching knob.
+    ``ralph_executor.config.load_config`` consults this layer as part of
+    the CLI > env > TOML > sanitised-hostname resolution chain; an empty
+    / whitespace-only value is treated as malformed here (defence in
+    depth — the resolver's validator would also reject it).
+    """
+    data = _load_user_config()
+    raw = data.get("instance_id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(
+            f"{user_config_path()}: instance_id must be a non-empty string, "
+            f"got {type(raw).__name__}"
+        )
+    return raw.strip()
+
+
 def _toml_escape_basic_string(value: str) -> str:
     """Escape a string for use as a TOML basic-string value.
 
@@ -249,6 +271,16 @@ def write_queue_branch(branch: str) -> Path:
     Merges with existing keys so ``queue_repo`` / ``workspace_root`` survive.
     """
     return _write_user_config({"queue_branch": branch})
+
+
+def write_instance_id(value: str) -> Path:
+    """Persist ``instance_id`` to ``~/.ralph/config.toml``.
+
+    Merges with existing keys so ``queue_repo`` / ``queue_branch`` /
+    ``workspace_root`` survive. Used by ``ralph-executor init`` (Task 4)
+    to write the operator-chosen ``instance_id`` once at setup time.
+    """
+    return _write_user_config({"instance_id": value})
 
 
 def write_workspace_root(value: Path) -> Path:
