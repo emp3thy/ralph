@@ -57,6 +57,7 @@ from ralph_executor.config import (
     ConfigError,
     ExecutorConfig,
     load_config,
+    validate_instance_id,
 )
 from ralph_executor.host_select import (
     HostSelectionError,
@@ -128,6 +129,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Override the queue_branch TOML value for this run "
             "(branch name on the queue repo; default: ralph-queue)."
+        ),
+    )
+    # Multi-ralph (Scope 1) per-instance identity. Top-level only (no
+    # subparser equivalent) so all subcommands inherit by default. Value
+    # routes through ``_apply_overrides`` → ``validate_instance_id``; an
+    # explicit ``--instance-id ""`` reaches the validator (per the
+    # truthiness-vs-None rule) and surfaces a clean ConfigError rather
+    # than silently falling back to env / TOML / hostname.
+    parser.add_argument(
+        "--instance-id",
+        metavar="NAME",
+        help=(
+            "Override the instance_id for this run. Highest-precedence "
+            "source in the CLI > env > TOML > hostname chain. Must match "
+            "^[a-z0-9][a-z0-9_-]{0,62}$ (filesystem-safe lowercase, 1-63 "
+            "chars, leading alnum)."
         ),
     )
 
@@ -235,6 +252,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
     queue_repo: str = cfg.queue_repo
     queue_branch: str = cfg.queue_branch
     watch_mode: bool = cfg.watch_mode
+    instance_id: str = cfg.instance_id
     changed = False
     if args.log_level:
         log_level = int(logging.getLevelName(args.log_level))
@@ -265,6 +283,13 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
             )
         queue_branch = stripped
         changed = True
+    if getattr(args, "instance_id", None) is not None:
+        # `is not None` (not truthiness): `--instance-id ""` must reach the
+        # validator below so the empty-string ConfigError surfaces instead of
+        # silently falling back to env / TOML / hostname.
+        validate_instance_id(args.instance_id)
+        instance_id = args.instance_id
+        changed = True
     # --watch overrides any TOML / env value; absence of the flag does NOT
     # disable a TOML watch_mode=true (operators who pinned daemon mode in
     # config keep it).
@@ -278,6 +303,7 @@ def _apply_overrides(cfg: ExecutorConfig, args: argparse.Namespace) -> ExecutorC
         log_level=log_level,
         queue_repo=queue_repo,
         queue_branch=queue_branch,
+        instance_id=instance_id,
         watch_mode=watch_mode,
     )
 
