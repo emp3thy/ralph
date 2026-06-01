@@ -1,6 +1,22 @@
-# ralph autobug v1 — implementation plan (v3 — confidence-rated, full task bodies)
+# ralph autobug v1 — implementation plan (v4 — post-multi-ralph re-validation)
 
-**Status:** Approved 2026-05-31. Pending execution; user will re-validate after current ralph run completes.
+**Status:** Approved 2026-05-31 (v3), amended 2026-06-01 (v4) after rebasing onto post-multi-ralph `main`. v4 is a surgical patch over v3, not a full re-author.
+
+## v4 changelog (defects found in v3 by re-validating against `main` after MULTI-RALPH-SCOPE-1 / PR #69 / commit `01312f1` landed)
+
+1. **`Context.queue_root` path corrected.** v3 used `cfg.workspace_root / "queue"`. Multi-ralph renamed the workspace queue clone to `cfg.workspace_root / f"queue-{instance_id}"` and added `ExecutorConfig.queue_clone_path` as the canonical property. Replaced the three production-code Context constructions (T17 wire, T18 cli wrapper, T19 iterate_once wrapper) accordingly. Test-fixture constructions that use `tmp_path / "queue"` are unchanged — those are scratch paths, not production paths.
+2. **G11 guardrail wording corrected.** Now points at `cfg.queue_clone_path` (not `cfg.workspace_root / "queue"`).
+3. **T17 helper rename.** `cfg.queue_clone_path` retired in favour of `cfg.queue_clone_path` directly — no helper indirection needed; the existing `loop._queue_repo_root` already returns `cfg.queue_clone_path` (verified at `ralph_executor/loop.py:100`).
+4. **T14 Step 0 add: `instance_id` threading.** Multi-ralph made `ExecutorConfig.instance_id` REQUIRED non-Optional. Every `ExecutorConfig(...)` construction in tests must now pass `instance_id=...`. Multi-ralph #69 already threaded this through every pre-existing test site (per its commit message). T14's new autobug-specific tests must follow the same pattern: `ExecutorConfig(..., instance_id="test-autobug")`.
+5. **T19 Step 0 add: re-grep loop.py except sites.** v3 cited lines 192 / 454 / 470 / 813. Multi-ralph (5551 insertions) + the empty-target-repo fix (PR #67 / `bde2fce`) shifted those line numbers significantly. v3's enumeration must be re-run against current `main` before wiring; the enumeration RULE (skip `PushRebaseConflict` / `UncommittedSource` / `KeyboardInterrupt` / `HaltedError`; wire real defect swallows) is unchanged. Also: `bde2fce` added `_move_current_to_blocked_with_reason` plus a resume-self-heal branch in `iterate_once` — re-grep covers the new sites.
+6. **T6.5 — `tests/executor/test_movements.py` confirmed.** Multi-ralph created this file (per #69 commit message). v3 Step 0 said "verify location first"; resolved to that file.
+7. **T22 — CLAIM.json interaction note.** `move_inbox_to_current` now also writes a per-PBI `CLAIM.json` (multi-ralph ownership marker). The roundtrip integration test must assert autobug's own writes do NOT touch / overwrite `CLAIM.json`. Add an assertion that the file content is byte-equal before and after each autobug write path.
+
+Spec patch applied at the same time: `docs/superpowers/specs/2026-05-31-ralph-autobug-design.md` Assumption #1 ("multi-ralph race") changed from "revisit when multi-ralph lands" to "LIVE as of 2026-06-01; v1 accepts N×cap, v2 migrates rate-limit log into queue branch".
+
+**Out of scope for v4 (deferred to v5 or later):**
+- Adding `instance_id` to `Context` dataclass. Reasoning: autobug emits to inbox/, NEVER claims its own emission. CLAIM.json is written by the next iteration's `move_inbox_to_current` (multi-ralph already handles it). Autobug doesn't need to know who it is.
+- Renaming autobug PBIs to include `instance_id` (e.g. `autobug-<sig>-<instance>-<seq>`). The existing `_next_seq` scan + `push_with_rebase` handles same-time-same-sig races correctly across instances.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -30,7 +46,7 @@
 | G8 | `target_repo` is REQUIRED at claim time despite PROMPT.md docstring | mem `77c83c6c` | 0.70 | T9 (frontmatter includes `target_repo` with a real value) |
 | G9 | Spec-provided test code is NOT lint-clean by default; `from datetime import UTC` not `timezone.utc`; drop unused `import pytest` | standards | 1.0 | All test tasks |
 | G10 | When work is dispatched to ralph queue, do NOT propose execution mode | mem `b017b510` | 0.90 | This plan's footer says nothing about execution choice |
-| G11 | Use `cfg.workspace_root / "queue"` for queue_root, NOT `cfg.repo_path` | mem `43e430f5` | 0.90 | T1, T11, T17, T18, T19, T22, T23, T24, T25 (Context construction) |
+| G11 | Use `cfg.queue_clone_path` for queue_root (post-multi-ralph: `workspace_root / f"queue-{instance_id}"`). NEVER use `cfg.repo_path` or the deprecated literal `cfg.workspace_root / "queue"`. | mem `43e430f5` + multi-ralph #69 | 0.95 | T1, T11, T17, T18, T19, T22, T23, T24, T25 (Context construction) |
 
 Dismissed memories:
 - `0c83e25d` Playwright text-transform: no Playwright tests in this plan.
@@ -2586,8 +2602,8 @@ After `classify_outcome` returns (after line 726, just before the `return classi
             from datetime import UTC, datetime
             from ralph_executor import autobug
             ctx = autobug.Context(
-                queue_root=_queue_repo_root_for_spawn(cfg),
-                state_dir=_queue_repo_root_for_spawn(cfg) / ".ralph" / "state",
+                queue_root=cfg.queue_clone_path,
+                state_dir=cfg.queue_clone_path / ".ralph" / "state",
                 env=dict(os.environ),
                 now=datetime.now(tz=UTC),
                 ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
@@ -2725,8 +2741,8 @@ def run_loop_with_autobug(cfg) -> int:
 
                 from ralph_executor import autobug
                 ctx = autobug.Context(
-                    queue_root=cfg.workspace_root / "queue",
-                    state_dir=cfg.workspace_root / "queue" / ".ralph" / "state",
+                    queue_root=cfg.queue_clone_path,
+                    state_dir=cfg.queue_clone_path / ".ralph" / "state",
                     env=dict(os.environ),
                     now=datetime.now(tz=UTC),
                     ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
@@ -2848,8 +2864,8 @@ Wrap the body of `iterate_once` in a try/except. Add at the top of the function 
                 from datetime import UTC, datetime as _dt
                 from ralph_executor import autobug as _autobug
                 _ctx = _autobug.Context(
-                    queue_root=cfg.workspace_root / "queue",
-                    state_dir=cfg.workspace_root / "queue" / ".ralph" / "state",
+                    queue_root=cfg.queue_clone_path,
+                    state_dir=cfg.queue_clone_path / ".ralph" / "state",
                     env=dict(os.environ),
                     now=_dt.now(tz=UTC),
                     ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
