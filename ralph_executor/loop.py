@@ -44,6 +44,7 @@ from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
+from ralph_executor.prompt_composer import PromptComposeError
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
     UncommittedSource,
@@ -353,6 +354,31 @@ def _persist_iteration_writes(
                         payload={"files": files},
                     )
                 )
+
+
+def _append_compose_error_to_history(
+    pbi_dir_in_queue: Path, exc: PromptComposeError, now: datetime
+) -> None:
+    """Append a single iteration entry to HISTORY.md noting a compose failure.
+
+    Runs before Claude is spawned, so the standard "Claude wrote files
+    in the PBI dir" path never fires. Without this note the operator
+    would see an ``error`` iteration in the event log with no PBI-side
+    breadcrumb explaining why. ``_persist_iteration_writes`` picks the
+    append up on the same iteration's commit.
+    """
+    if not pbi_dir_in_queue.is_dir():
+        # Defensive: claim_pbi materialises this directory before
+        # _run_ralph is called. Skip rather than crash the recovery path.
+        return
+    history = pbi_dir_in_queue / "HISTORY.md"
+    entry = (
+        f"\n## Iteration — {now.isoformat()} — prompt compose error\n"
+        f"- error: {exc}\n"
+        f"- outcome: error (loop did not crash)\n"
+    )
+    with history.open("a", encoding="utf-8") as handle:
+        handle.write(entry)
 
 
 def _pull_queue(cfg: ExecutorConfig) -> None:
@@ -671,11 +697,33 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
         # can read PROMPT.md / HISTORY.md / PBI.md and write STUCK.md /
         # HISTORY.md without leaving its target-clone working tree.
         pbi_dir_in_queue = _queue_repo_root(cfg) / ".ralph" / "current" / pbi.id
-        outcome = spawn_claude_p(
-            cfg,
-            pbi,
-            pbi_dir=pbi_dir_in_queue,
-        )
+        try:
+            outcome = spawn_claude_p(
+                cfg,
+                pbi,
+                pbi_dir=pbi_dir_in_queue,
+            )
+        except PromptComposeError as exc:
+            # PromptComposeError fires when the queue clone is missing
+            # the prompt/ topic-folder tree (or it's malformed). The
+            # composer's own docstring promises this is surfaced as a
+            # classified ``error`` iteration so the loop survives —
+            # before this catch, the exception propagated unhandled
+            # through ``run_loop`` and felled the whole executor process
+            # on the first PBI claim of a brand-new queue repo. Record
+            # the reason in HISTORY.md and synthesise an error outcome
+            # so the existing attempt-counter / max-attempts machinery
+            # routes the PBI through the normal failure path.
+            log.error("PBI %s prompt-compose failed: %s", pbi.id, exc)
+            _append_compose_error_to_history(pbi_dir_in_queue, exc, now)
+            outcome = ClaudeOutcome(
+                kind="error",
+                pr_url=None,
+                stdout="",
+                stderr=f"prompt-compose error: {exc}",
+                exit_code=1,
+                duration_seconds=0.0,
+            )
         log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
 
         # --- Plan 9: bump attempt counter ONLY on failure outcomes -------
