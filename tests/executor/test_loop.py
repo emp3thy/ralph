@@ -213,9 +213,7 @@ def test_iterate_once_catches_prompt_compose_error(
         cwd: Path | None = None,
         pbi_dir: Path | None = None,
     ) -> ClaudeOutcome:
-        raise PromptComposeError(
-            "prompt_root /fake/queue/prompt is missing or not a directory"
-        )
+        raise PromptComposeError("prompt_root /fake/queue/prompt is missing or not a directory")
 
     monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _raise_compose_error)
 
