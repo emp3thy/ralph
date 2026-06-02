@@ -38,9 +38,7 @@ def _find_by_signature(state_dir: Path, signature: str) -> str | None:
     return None
 
 
-def _find_by_signature_since(
-    state_dir: Path, signature: str, cutoff: datetime
-) -> str | None:
+def _find_by_signature_since(state_dir: Path, signature: str, cutoff: datetime) -> str | None:
     if not state_dir.is_dir():
         return None
     for child in sorted(state_dir.iterdir()):
@@ -76,9 +74,7 @@ def lookup(signature: str, queue_root: Path, now: datetime) -> DedupResult:
         if match:
             return DedupResult(kind="bump_existing", existing_pbi_id=match)
     cutoff = now - timedelta(days=30)
-    match = _find_by_signature_since(
-        queue_root / ".ralph" / "done", signature, cutoff
-    )
+    match = _find_by_signature_since(queue_root / ".ralph" / "done", signature, cutoff)
     if match:
         return DedupResult(kind="reopen_regression", existing_pbi_id=match)
     return DedupResult(kind="new")

@@ -32,9 +32,7 @@ def _ctx_for(fake_repo: Path) -> Context:
     )
 
 
-def test_roundtrip_preserves_autobug_extras(
-    fake_repo: Path, cfg_for_repo: ExecutorConfig
-) -> None:
+def test_roundtrip_preserves_autobug_extras(fake_repo: Path, cfg_for_repo: ExecutorConfig) -> None:
     ctx = _ctx_for(fake_repo)
     try:
         raise RuntimeError("roundtrip test")

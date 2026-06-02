@@ -59,9 +59,7 @@ def test_emit_bump_increments_occurrences_and_appends_trace(fake_repo: Path) -> 
         raise RuntimeError("second")
     except RuntimeError as exc:
         bump(pbi_id, exc, ctx)
-    bug_text = (fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md").read_text(
-        encoding="utf-8"
-    )
+    bug_text = (fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md").read_text(encoding="utf-8")
     assert "occurrences: 2" in bug_text
     assert "## Trace 2" in bug_text
 
@@ -82,7 +80,5 @@ def test_emit_reopen_creates_new_pbi_with_regression_of(fake_repo: Path) -> None
         )
     assert new_pbi_id.startswith("autobug-cccccc-")
     assert new_pbi_id != "autobug-cccccc-001"
-    bug_text = (fake_repo / ".ralph" / "inbox" / new_pbi_id / "BUG.md").read_text(
-        encoding="utf-8"
-    )
+    bug_text = (fake_repo / ".ralph" / "inbox" / new_pbi_id / "BUG.md").read_text(encoding="utf-8")
     assert "regression_of: autobug-cccccc-001" in bug_text

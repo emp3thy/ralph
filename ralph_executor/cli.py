@@ -540,8 +540,7 @@ def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
                 )
             except BaseException as autobug_exc:  # noqa: BLE001 — never let autobug mask the original
                 log.error(
-                    "AUTOBUG FAILED while handling original crash. "
-                    "Original: %r. Autobug: %r",
+                    "AUTOBUG FAILED while handling original crash. Original: %r. Autobug: %r",
                     original_exc,
                     autobug_exc,
                     exc_info=original_exc,

@@ -25,9 +25,7 @@ def test_python_crash_in_iteration_emits_autobug_pbi(
         cli.run_loop_with_autobug(cfg)
 
     inbox = fake_repo / ".ralph" / "inbox"
-    autobug_dirs = [
-        d for d in inbox.iterdir() if d.is_dir() and d.name.startswith("autobug-")
-    ]
+    autobug_dirs = [d for d in inbox.iterdir() if d.is_dir() and d.name.startswith("autobug-")]
     assert autobug_dirs, "expected an autobug PBI to land in inbox/"
     bug_md = (autobug_dirs[0] / "BUG.md").read_text(encoding="utf-8")
     assert "RuntimeError" in bug_md

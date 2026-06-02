@@ -117,12 +117,8 @@ def build_bug_md(exc: BaseException, ctx: Context) -> str:
             ),
         )
     )
-    parts.append(
-        _section("Environment", _safe(lambda: _env_snapshot(ctx), "<env unavailable>"))
-    )
-    parts.append(
-        _section("Triggering PBI", _safe(lambda: _pbi_ref(ctx), "<no PBI context>"))
-    )
+    parts.append(_section("Environment", _safe(lambda: _env_snapshot(ctx), "<env unavailable>")))
+    parts.append(_section("Triggering PBI", _safe(lambda: _pbi_ref(ctx), "<no PBI context>")))
     assert parts, "build_bug_md produced no sections — refusing to emit empty BUG.md"
     return "\n\n".join(parts)
 
