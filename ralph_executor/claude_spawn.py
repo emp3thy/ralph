@@ -780,6 +780,10 @@ def spawn_claude_p(
                 triggering_pbi_id=pbi.id,
                 queue_branch=cfg.queue_branch,
             )
+            from datetime import timedelta as _td
+
+            from ralph_executor.autobug.fuses import RateLimitConfig
+
             autobug.detect_subprocess_crash(
                 exit_code=returncode,
                 stderr=stderr_text,
@@ -787,6 +791,11 @@ def spawn_claude_p(
                 ctx=ctx,
                 target_repo=cfg.queue_repo,
                 severity=cfg.autobug_severity_subprocess_crash,
+                rate_cfg=RateLimitConfig(
+                    max_writes=cfg.autobug_rate_max,
+                    window=_td(minutes=cfg.autobug_rate_window_minutes),
+                ),
+                dedup_window_days=cfg.autobug_dedup_done_window_days,
             )
         except BaseException as inner:  # noqa: BLE001 — no-op-safe by design
             log.warning("autobug subprocess wire failed: %s", inner)

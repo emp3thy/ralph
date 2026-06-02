@@ -82,3 +82,33 @@ def test_lookup_returns_new_when_done_older_than_30d(tmp_path: Path) -> None:
 def test_dedup_result_reexport() -> None:
     r = DedupResult(kind="new")
     assert r.kind == "new"
+
+
+def test_lookup_window_days_override_widens_done_window(tmp_path: Path) -> None:
+    """Done PBI 60 days old falls outside the default 30d window but inside a 90d override."""
+    sig = "f" * 64
+    _write_pbi(
+        tmp_path,
+        "done",
+        "autobug-ffffff-001",
+        sig,
+        closed_at="2026-04-01T00:00:00+00:00",
+    )
+    now = datetime(2026, 5, 31, 14, tzinfo=UTC)
+    assert lookup(sig, tmp_path, now).kind == "new"
+    assert lookup(sig, tmp_path, now, window_days=90).kind == "reopen_regression"
+
+
+def test_lookup_window_days_override_narrows_done_window(tmp_path: Path) -> None:
+    """Done PBI 6 days old falls inside the default 30d window but outside a 3d override."""
+    sig = "9" * 64
+    _write_pbi(
+        tmp_path,
+        "done",
+        "autobug-999999-001",
+        sig,
+        closed_at="2026-05-25T00:00:00+00:00",
+    )
+    now = datetime(2026, 5, 31, 14, tzinfo=UTC)
+    assert lookup(sig, tmp_path, now).kind == "reopen_regression"
+    assert lookup(sig, tmp_path, now, window_days=3).kind == "new"

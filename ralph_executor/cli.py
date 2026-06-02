@@ -532,11 +532,20 @@ def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
                     triggering_pbi_id=None,
                     queue_branch=cfg.queue_branch,
                 )
+                from datetime import timedelta as _td
+
+                from ralph_executor.autobug.fuses import RateLimitConfig
+
                 autobug.detect_python_crash(
                     original_exc,
                     ctx,
                     target_repo=cfg.queue_repo,
                     severity=cfg.autobug_severity_python_crash,
+                    rate_cfg=RateLimitConfig(
+                        max_writes=cfg.autobug_rate_max,
+                        window=_td(minutes=cfg.autobug_rate_window_minutes),
+                    ),
+                    dedup_window_days=cfg.autobug_dedup_done_window_days,
                 )
             except BaseException as autobug_exc:  # noqa: BLE001 — never let autobug mask the original
                 log.error(

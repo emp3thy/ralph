@@ -68,12 +68,18 @@ def _find_by_signature_since(state_dir: Path, signature: str, cutoff: datetime) 
     return None
 
 
-def lookup(signature: str, queue_root: Path, now: datetime) -> DedupResult:
+def lookup(
+    signature: str,
+    queue_root: Path,
+    now: datetime,
+    *,
+    window_days: int = 30,
+) -> DedupResult:
     for state in ("inbox", "current", "pending-pr"):
         match = _find_by_signature(queue_root / ".ralph" / state, signature)
         if match:
             return DedupResult(kind="bump_existing", existing_pbi_id=match)
-    cutoff = now - timedelta(days=30)
+    cutoff = now - timedelta(days=window_days)
     match = _find_by_signature_since(queue_root / ".ralph" / "done", signature, cutoff)
     if match:
         return DedupResult(kind="reopen_regression", existing_pbi_id=match)

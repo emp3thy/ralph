@@ -21,9 +21,17 @@ def detect_python_crash(
     target_repo: str,
     severity: str = "critical",
     rate_cfg: RateLimitConfig = _DEFAULT_RATE,
+    dedup_window_days: int = 30,
 ) -> None:
     try:
-        _do_detect_python(exc, ctx, target_repo=target_repo, severity=severity, rate_cfg=rate_cfg)
+        _do_detect_python(
+            exc,
+            ctx,
+            target_repo=target_repo,
+            severity=severity,
+            rate_cfg=rate_cfg,
+            dedup_window_days=dedup_window_days,
+        )
     except BaseException as inner:
         log.warning("autobug.detect_python_crash itself failed: %s", inner)
 
@@ -37,6 +45,7 @@ def detect_subprocess_crash(
     target_repo: str,
     severity: str = "high",
     rate_cfg: RateLimitConfig = _DEFAULT_RATE,
+    dedup_window_days: int = 30,
 ) -> None:
     try:
         _do_detect_subprocess(
@@ -47,6 +56,7 @@ def detect_subprocess_crash(
             target_repo=target_repo,
             severity=severity,
             rate_cfg=rate_cfg,
+            dedup_window_days=dedup_window_days,
         )
     except BaseException as inner:
         log.warning("autobug.detect_subprocess_crash itself failed: %s", inner)
@@ -59,6 +69,7 @@ def _do_detect_python(
     target_repo: str,
     severity: str,
     rate_cfg: RateLimitConfig,
+    dedup_window_days: int,
 ) -> None:
     if not fuses.recursion_check(ctx.env):
         log.warning("autobug: recursion guard tripped (python)")
@@ -71,7 +82,7 @@ def _do_detect_python(
     if not ctx.bot_author_email:
         log.warning("autobug: bot_author_email missing; aborting emit signature=%s", sig[:8])
         return
-    result = dedup.lookup(sig, ctx.queue_root, ctx.now)
+    result = dedup.lookup(sig, ctx.queue_root, ctx.now, window_days=dedup_window_days)
     _dispatch(
         result,
         sig,
@@ -93,6 +104,7 @@ def _do_detect_subprocess(
     target_repo: str,
     severity: str,
     rate_cfg: RateLimitConfig,
+    dedup_window_days: int,
 ) -> None:
     del command
     if not fuses.recursion_check(ctx.env):
@@ -109,7 +121,7 @@ def _do_detect_subprocess(
             sig[:8],
         )
         return
-    result = dedup.lookup(sig, ctx.queue_root, ctx.now)
+    result = dedup.lookup(sig, ctx.queue_root, ctx.now, window_days=dedup_window_days)
     tail = stderr.splitlines()[-1] if stderr else ""
     synth: BaseException = RuntimeError(f"subprocess exit {exit_code}: {tail}")
     _dispatch(

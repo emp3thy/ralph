@@ -944,11 +944,20 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                     triggering_pbi_id=_current_pbi_id_or_none(cfg),
                     queue_branch=cfg.queue_branch,
                 )
+                from datetime import timedelta as _td
+
+                from ralph_executor.autobug.fuses import RateLimitConfig
+
                 _autobug.detect_python_crash(
                     exc,
                     _ctx,
                     target_repo=cfg.queue_repo,
                     severity=cfg.autobug_severity_python_crash,
+                    rate_cfg=RateLimitConfig(
+                        max_writes=cfg.autobug_rate_max,
+                        window=_td(minutes=cfg.autobug_rate_window_minutes),
+                    ),
+                    dedup_window_days=cfg.autobug_dedup_done_window_days,
                 )
             except BaseException as inner:  # noqa: BLE001 — never mask the original
                 log.warning("autobug loop wire failed: %s", inner)

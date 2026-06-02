@@ -112,3 +112,99 @@ def test_detect_signature_failure_aborts(
             exc, ctx, target_repo="https://github.com/x/y", severity="critical"
         )
     assert not calls
+
+
+def test_detect_python_crash_forwards_dedup_window_days(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dedup_window_days kwarg must reach dedup.lookup unchanged."""
+    ctx = _ctx(fake_repo)
+    captured: list[dict[str, Any]] = []
+    from ralph_executor.autobug import dedup, emit
+    from ralph_executor.autobug.types import DedupResult
+
+    def _capture_lookup(*args: Any, **kwargs: Any) -> DedupResult:
+        captured.append({"args": args, "kwargs": kwargs})
+        return DedupResult(kind="new")
+
+    monkeypatch.setattr(dedup, "lookup", _capture_lookup)
+    monkeypatch.setattr(emit, "new", lambda **kw: "autobug-x-001")
+
+    try:
+        raise RuntimeError("test")
+    except RuntimeError as exc:
+        detect.detect_python_crash(
+            exc,
+            ctx,
+            target_repo="https://github.com/x/y",
+            severity="critical",
+            dedup_window_days=90,
+        )
+    assert captured, "dedup.lookup should have been called"
+    assert captured[0]["kwargs"].get("window_days") == 90, (
+        f"expected window_days=90 forwarded to dedup.lookup; got {captured[0]}"
+    )
+
+
+def test_detect_subprocess_crash_forwards_dedup_window_days(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """detect_subprocess_crash must also forward dedup_window_days."""
+    ctx = _ctx(fake_repo)
+    captured: list[dict[str, Any]] = []
+    from ralph_executor.autobug import dedup, emit
+    from ralph_executor.autobug.types import DedupResult
+
+    def _capture_lookup(*args: Any, **kwargs: Any) -> DedupResult:
+        captured.append({"kwargs": kwargs})
+        return DedupResult(kind="new")
+
+    monkeypatch.setattr(dedup, "lookup", _capture_lookup)
+    monkeypatch.setattr(emit, "new", lambda **kw: "autobug-y-001")
+
+    detect.detect_subprocess_crash(
+        exit_code=137,
+        stderr="oom\n",
+        command=["claude"],
+        ctx=ctx,
+        target_repo="https://github.com/x/y",
+        severity="high",
+        dedup_window_days=14,
+    )
+    assert captured, "dedup.lookup should have been called"
+    assert captured[0]["kwargs"].get("window_days") == 14
+
+
+def test_detect_python_crash_forwards_rate_cfg(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Custom rate_cfg must reach fuses.rate_check; verifies wiring at the boundary."""
+    ctx = _ctx(fake_repo)
+    rate_cfg_seen: list[Any] = []
+    from ralph_executor.autobug import emit, fuses
+    from ralph_executor.autobug.fuses import RateLimitConfig
+
+    def _capture_rate_check(state_dir: Any, cfg: Any, now: Any) -> bool:
+        rate_cfg_seen.append(cfg)
+        return True
+
+    monkeypatch.setattr(fuses, "rate_check", _capture_rate_check)
+    monkeypatch.setattr(fuses, "append_emission", lambda *a, **k: None)
+    monkeypatch.setattr(emit, "new", lambda **kw: "autobug-z-001")
+
+    custom_rate = RateLimitConfig(max_writes=99, window=fuses.timedelta(minutes=42))
+
+    try:
+        raise RuntimeError("rate-test")
+    except RuntimeError as exc:
+        detect.detect_python_crash(
+            exc,
+            ctx,
+            target_repo="https://github.com/x/y",
+            severity="critical",
+            rate_cfg=custom_rate,
+        )
+    assert rate_cfg_seen, "fuses.rate_check should have been called"
+    assert rate_cfg_seen[0] is custom_rate, (
+        f"expected the custom RateLimitConfig forwarded; got {rate_cfg_seen[0]!r}"
+    )
