@@ -31,6 +31,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -51,6 +52,33 @@ OutcomeKind = Literal["pr_created", "stuck", "partial", "error"]
 
 _STUCK_FILENAME = "STUCK.md"
 _GH_BINARY = "gh"
+
+_SIG_FM_RE = re.compile(r"^signature:\s*[0-9a-f]+\s*$", re.MULTILINE)
+
+
+def _pbi_frontmatter_has_signature(pbi: PBI) -> bool:
+    """True iff any of the PBI's entry-file frontmatters contains ``signature: <hex>``.
+
+    Used by ``spawn_claude_p`` to set ``RALPH_AUTOBUG_DEPTH=1`` for autobug
+    PBIs so a downstream crash inside the spawned Claude does NOT spawn a
+    second autobug for the same signature (recursion guard via env-marker).
+
+    Every candidate file is tried — a missing signature in the first
+    matching file (or an OSError reading it) must NOT short-circuit the
+    search, or PBIs whose signature lives in a later entry file would
+    silently bypass the recursion guard.
+    """
+    for entry in ("BUG.md", "PBI.md", "FEEDBACK.md"):
+        f = pbi.path / entry
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _SIG_FM_RE.search(text):
+            return True
+    return False
 
 
 def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
@@ -600,6 +628,13 @@ def spawn_claude_p(
         # observations don't leak into whatever project name the
         # operator happens to have set for ralph itself.
         env.pop("BETTER_MEMORY_PROJECT", None)
+    # Autobug recursion guard: when the spawned Claude is itself iterating
+    # on an autobug PBI, mark the child env so any further crash inside
+    # that subprocess is suppressed by ``fuses.recursion_check`` (which
+    # reads ``RALPH_AUTOBUG_DEPTH``). Prevents an autobug loop emitting
+    # a second autobug for the same signature.
+    if _pbi_frontmatter_has_signature(pbi):
+        env["RALPH_AUTOBUG_DEPTH"] = "1"
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout
@@ -724,7 +759,7 @@ def spawn_claude_p(
                 max_polls=cfg.pr_check_poll_max_attempts,
                 interval_seconds=cfg.pr_check_poll_interval_seconds,
             )
-    return classify_outcome(
+    outcome = classify_outcome(
         pbi_dir=effective_pbi_dir,
         stdout=stdout_text,
         stderr=stderr_text,
@@ -734,6 +769,45 @@ def spawn_claude_p(
         pr_check_state=pr_check_state,
         pr_check_failed_names=pr_check_failed_names,
     )
+    # Autobug subprocess wire: surface a non-zero / timeout exit as a bug
+    # PBI. No-op-safe — every failure path in the autobug code is
+    # swallowed and logged; the original outcome is always returned.
+    if outcome.kind == "error" and getattr(cfg, "autobug_enabled", True):
+        try:
+            from datetime import UTC, datetime
+
+            from ralph_executor import autobug
+
+            ctx = autobug.Context(
+                queue_root=cfg.queue_clone_path,
+                state_dir=cfg.queue_clone_path / ".ralph" / "state",
+                env=dict(env),
+                now=datetime.now(tz=UTC),
+                ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
+                bot_author_email=cfg.bot_author_email,
+                triggering_pbi_id=pbi.id,
+                queue_branch=cfg.queue_branch,
+            )
+            from datetime import timedelta as _td
+
+            from ralph_executor.autobug.fuses import RateLimitConfig
+
+            autobug.detect_subprocess_crash(
+                exit_code=returncode,
+                stderr=stderr_text,
+                command=argv,
+                ctx=ctx,
+                target_repo=cfg.queue_repo,
+                severity=cfg.autobug_severity_subprocess_crash,
+                rate_cfg=RateLimitConfig(
+                    max_writes=cfg.autobug_rate_max,
+                    window=_td(minutes=cfg.autobug_rate_window_minutes),
+                ),
+                dedup_window_days=cfg.autobug_dedup_done_window_days,
+            )
+        except BaseException as inner:  # noqa: BLE001 — no-op-safe by design
+            log.warning("autobug subprocess wire failed: %s", inner)
+    return outcome
 
 
 def classify_outcome(

@@ -45,6 +45,7 @@ class EventType(StrEnum):
     SIGNATURE_OBSERVED = "signature.observed"
     ATTEMPT_INCREMENTED = "attempt.incremented"
     ITERATION_COMPLETED = "iteration.completed"
+    AUTOBUG_EMITTED = "autobug_emitted"
 
 
 @dataclass(frozen=True)

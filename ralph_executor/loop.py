@@ -27,7 +27,9 @@ import overrides in production; the loop itself stays untouched.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import logging
+import os
 import shutil
 import socket
 import time
@@ -903,7 +905,72 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
         event_log.close()
 
 
+def _current_pbi_id_or_none(cfg: ExecutorConfig) -> str | None:
+    try:
+        cur = FilesystemQueueSource(cfg).current_pbi()
+        return cur.id if cur else None
+    except Exception:  # noqa: BLE001 — best-effort context for autobug
+        return None
+
+
 def iterate_once(cfg: ExecutorConfig) -> IterationResult:
+    """Run one iteration; wrap the body in a defensive autobug fuse.
+
+    Delegates to :func:`_iterate_once_inner` for the actual work. The
+    control-flow exits (``KeyboardInterrupt`` / ``HaltedError`` /
+    ``PushRebaseConflict`` / ``UncommittedSource``) propagate unchanged —
+    they are handled inline by callers. Any OTHER ``BaseException`` is
+    reported to :func:`autobug.detect_python_crash` BEFORE being
+    re-raised, so an inner-loop crash is captured as a bug PBI without
+    waiting for the top-level ``cli.run_loop_with_autobug`` wrapper to
+    catch it. Carries ``triggering_pbi_id`` from the queue's current/
+    state so the emitted bug has direct context.
+    """
+    try:
+        return _iterate_once_inner(cfg)
+    except (KeyboardInterrupt, HaltedError, PushRebaseConflict, UncommittedSource):
+        raise
+    except BaseException as exc:
+        if getattr(cfg, "autobug_enabled", True):
+            try:
+                from ralph_executor import autobug as _autobug
+
+                _ctx = _autobug.Context(
+                    queue_root=cfg.queue_clone_path,
+                    state_dir=cfg.queue_clone_path / ".ralph" / "state",
+                    env=dict(os.environ),
+                    now=datetime.now(tz=UTC),
+                    ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
+                    bot_author_email=cfg.bot_author_email,
+                    triggering_pbi_id=_current_pbi_id_or_none(cfg),
+                    queue_branch=cfg.queue_branch,
+                )
+                from datetime import timedelta as _td
+
+                from ralph_executor.autobug.fuses import RateLimitConfig
+
+                _autobug.detect_python_crash(
+                    exc,
+                    _ctx,
+                    target_repo=cfg.queue_repo,
+                    severity=cfg.autobug_severity_python_crash,
+                    rate_cfg=RateLimitConfig(
+                        max_writes=cfg.autobug_rate_max,
+                        window=_td(minutes=cfg.autobug_rate_window_minutes),
+                    ),
+                    dedup_window_days=cfg.autobug_dedup_done_window_days,
+                )
+                # Mark the exception so cli.run_loop_with_autobug's outer
+                # handler does not re-emit (which would dedup-bump
+                # occurrences to 2 for a single crash).
+                with contextlib.suppress(AttributeError, TypeError):
+                    exc.__autobug_emitted__ = True  # type: ignore[attr-defined]
+            except BaseException as inner:  # noqa: BLE001 — never mask the original
+                log.warning("autobug loop wire failed: %s", inner)
+        raise
+
+
+def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
     """Run a single iteration of the loop and return the outcome.
 
     Idempotent in the no-work case: if current/ is empty and the inbox

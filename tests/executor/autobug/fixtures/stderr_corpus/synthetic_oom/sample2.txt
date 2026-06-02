@@ -1,0 +1,3 @@
+2026-06-01T09:11:42.123Z [WI-301] worker 51cc97a starting
+2026-06-01T09:11:50Z [WI-301] allocating buffer at 0x7fffabcd
+Killed

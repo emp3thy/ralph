@@ -71,7 +71,12 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
-def _rewrite_status(entry_file: Path, new_status: PBIStatus) -> None:
+def _rewrite_status(
+    entry_file: Path,
+    new_status: PBIStatus,
+    *,
+    stamp_closed_at: bool = False,
+) -> None:
     text = entry_file.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
@@ -85,6 +90,7 @@ def _rewrite_status(entry_file: Path, new_status: PBIStatus) -> None:
         raise QueueMovementError(f"{entry_file}: no closing '---' fence to rewrite")
     rewrote_status = False
     rewrote_updated = False
+    rewrote_closed = False
     now = _now_iso()
     for idx in range(1, end):
         stripped = lines[idx].lstrip()
@@ -94,12 +100,18 @@ def _rewrite_status(entry_file: Path, new_status: PBIStatus) -> None:
         elif stripped.startswith("updated_at:"):
             lines[idx] = f"updated_at: {now}\n"
             rewrote_updated = True
+        elif stripped.startswith("closed_at:") and stamp_closed_at:
+            lines[idx] = f"closed_at: {now}\n"
+            rewrote_closed = True
     if not rewrote_status:
         # Insert before the closing fence.
         lines.insert(end, f"status: {new_status}\n")
         end += 1
     if not rewrote_updated:
         lines.insert(end, f"updated_at: {now}\n")
+        end += 1
+    if stamp_closed_at and not rewrote_closed:
+        lines.insert(end, f"closed_at: {now}\n")
     entry_file.write_text("".join(lines), encoding="utf-8")
 
 
@@ -136,7 +148,11 @@ def _move(
     git_ops.mv(queue_repo, src, dst)
 
     entry_name = ENTRY_FILE_BY_TYPE[pbi.type]
-    _rewrite_status(dst / entry_name, target_state)
+    _rewrite_status(
+        dst / entry_name,
+        target_state,
+        stamp_closed_at=(target_state == "done"),
+    )
 
     if extra_files_writer is not None:
         extra_files_writer(dst)
@@ -292,6 +308,17 @@ def move_current_to_blocked(cfg: ExecutorConfig, pbi: PBI) -> PBI:
         pbi,
         expected_state="current",
         target_state="blocked",
+        commit_prefix="chore(ralph-queue)",
+    )
+
+
+def move_pending_pr_to_done(cfg: ExecutorConfig, pbi: PBI) -> PBI:
+    """Promote a merged-PR PBI from pending-pr to done. Stamps closed_at."""
+    return _move(
+        cfg,
+        pbi,
+        expected_state="pending-pr",
+        target_state="done",
         commit_prefix="chore(ralph-queue)",
     )
 

@@ -51,6 +51,7 @@ import logging
 import os
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ralph_executor.config import (
@@ -463,6 +464,101 @@ def _print_current_reconcile_report(
     print(f"\n{total} current/ entries inspected: {n_del} deleted, {n_keep} kept, {n_err} errors.")
 
 
+def validate_startup(cfg: ExecutorConfig) -> None:
+    """One-time startup validation. Warns on soft misconfigurations.
+
+    Specifically: missing bot_author_email when EITHER autobug is enabled
+    OR sweep can run (its PR-skill scripts dir exists). The loop still
+    starts; the operator gets one banner-shaped warning instead of one
+    per iteration.
+    """
+    if cfg.bot_author_email:
+        return
+    autobug_active = getattr(cfg, "autobug_enabled", True)
+    sweep_active = _pr_skill_scripts_path(cfg).is_dir()
+    if not (autobug_active or sweep_active):
+        return
+    affected: list[str] = []
+    if autobug_active:
+        affected.append("autobug")
+    if sweep_active:
+        affected.append("sweep")
+    log.warning(
+        "ralph startup: bot_author_email is not set; %s will skip / abort on "
+        "every iteration. Set TOML key 'bot_author_email' or env "
+        "RALPH_ADO_AUTHOR_EMAIL.",
+        " AND ".join(affected),
+    )
+
+
+def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
+    """Iterate ``run_loop(cfg)`` wrapped in a top-level autobug try/except.
+
+    Guarantees:
+
+    1. Any exception raised by the generator (during yield) is captured by
+       ``autobug.detect_python_crash``.
+    2. Even if autobug itself raises, the ORIGINAL exception is re-raised
+       so the operator sees the original traceback.
+    3. ``KeyboardInterrupt`` short-circuits cleanly and does NOT trigger
+       autobug emission.
+    """
+    try:
+        for result in run_loop(cfg):
+            log.info(
+                "iteration outcome=%s pbi=%s",
+                getattr(result, "outcome", result),
+                getattr(result, "pbi_id", None),
+            )
+            if getattr(result, "outcome", None) == "halted":
+                log.warning("loop halted -- exiting")
+                return 0
+        return 0
+    except KeyboardInterrupt:
+        log.info("interrupted; exiting cleanly")
+        return 0
+    except BaseException as original_exc:
+        if getattr(cfg, "autobug_enabled", True) and not getattr(
+            original_exc, "__autobug_emitted__", False
+        ):
+            try:
+                from ralph_executor import autobug
+
+                ctx = autobug.Context(
+                    queue_root=cfg.queue_clone_path,
+                    state_dir=cfg.queue_clone_path / ".ralph" / "state",
+                    env=dict(os.environ),
+                    now=datetime.now(tz=UTC),
+                    ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
+                    bot_author_email=cfg.bot_author_email,
+                    triggering_pbi_id=None,
+                    queue_branch=cfg.queue_branch,
+                )
+                from datetime import timedelta as _td
+
+                from ralph_executor.autobug.fuses import RateLimitConfig
+
+                autobug.detect_python_crash(
+                    original_exc,
+                    ctx,
+                    target_repo=cfg.queue_repo,
+                    severity=cfg.autobug_severity_python_crash,
+                    rate_cfg=RateLimitConfig(
+                        max_writes=cfg.autobug_rate_max,
+                        window=_td(minutes=cfg.autobug_rate_window_minutes),
+                    ),
+                    dedup_window_days=cfg.autobug_dedup_done_window_days,
+                )
+            except BaseException as autobug_exc:  # noqa: BLE001 — never let autobug mask the original
+                log.error(
+                    "AUTOBUG FAILED while handling original crash. Original: %r. Autobug: %r",
+                    original_exc,
+                    autobug_exc,
+                    exc_info=original_exc,
+                )
+        raise
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
@@ -511,6 +607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     _configure_logging(cfg.log_level)
+    validate_startup(cfg)
 
     log.info(
         "ralph-executor starting (workspace_root=%s queue_repo=%s queue_branch=%s main=%s)",
@@ -564,13 +661,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     log.warning("loop halted -- exiting")
                     return 0
             return 0
-        # Run until interrupted.
-        for result in run_loop(cfg):
-            log.info("iteration outcome=%s pbi=%s", result.outcome, result.pbi_id)
-            if result.outcome == "halted":
-                log.warning("loop halted -- exiting")
-                return 0
-        return 0
+        # Run until interrupted -- delegate to the autobug-wrapped iterator
+        # so any unhandled exception during yield is captured into a queue
+        # PBI before propagating.
+        return run_loop_with_autobug(cfg)
     except KeyboardInterrupt:
         log.info("interrupted; exiting cleanly")
         return 0
