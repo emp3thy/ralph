@@ -239,12 +239,8 @@ def test_commit_paths_only_stages_named_paths(fake_repo: Path) -> None:
     (fake_repo / "named").mkdir()
     (fake_repo / "named" / "kept.txt").write_text("keep", encoding="utf-8")
     (fake_repo / "outside.txt").write_text("outside", encoding="utf-8")
-    git_ops.commit_paths(
-        fake_repo, "test: only named", [fake_repo / "named"]
-    )
-    files = _git(
-        fake_repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
-    ).splitlines()
+    git_ops.commit_paths(fake_repo, "test: only named", [fake_repo / "named"])
+    files = _git(fake_repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines()
     assert "named/kept.txt" in files
     assert "outside.txt" not in files
     # Working tree still shows the untracked outsider.

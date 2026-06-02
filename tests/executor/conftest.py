@@ -83,9 +83,7 @@ def fake_repo(tmp_path: Path) -> Iterator[Path]:
     # ``movements._move`` would stage the worktree dir as a gitlink and
     # trip every test that asserts a clean working tree after a
     # stuck/blocked move.
-    (seed / ".gitignore").write_text(
-        ".ralph/state/\n.ralph-work/\n.ralph.lock\n", encoding="utf-8"
-    )
+    (seed / ".gitignore").write_text(".ralph/state/\n.ralph-work/\n.ralph.lock\n", encoding="utf-8")
     _git(seed, "add", ".gitignore")
     _git(seed, "commit", "-m", "chore: gitignore .ralph/state/")
     for sub in ("inbox", "current", "pending-pr", "done", "blocked"):
