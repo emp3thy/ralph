@@ -42,6 +42,8 @@ def new(
     trigger_kind: str,
     severity: str,
     target_repo: str,
+    stderr: str | None = None,
+    exit_code: int | None = None,
 ) -> str:
     short_sig = signature[:6]
     seq = _next_seq(ctx.queue_root, short_sig)
@@ -63,17 +65,15 @@ def new(
             pbi_id,
             trigger_kind=trigger_kind,
             exc=exc,
-            stderr=None,
-            exit_code=None,
+            stderr=stderr,
+            exit_code=exit_code,
             ctx=ctx,
         )
         + "\n",
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _commit_and_push(
-        ctx, f"chore(queue): add {pbi_id} (autobug signature {short_sig})"
-    )
+    _commit_and_push(ctx, f"chore(queue): add {pbi_id} (autobug signature {short_sig})")
     return pbi_id
 
 
@@ -106,6 +106,8 @@ def reopen(
     trigger_kind: str,
     severity: str,
     target_repo: str,
+    stderr: str | None = None,
+    exit_code: int | None = None,
 ) -> str:
     short_sig = signature[:6]
     seq = _next_seq(ctx.queue_root, short_sig)
@@ -136,8 +138,8 @@ def reopen(
             pbi_id,
             trigger_kind=trigger_kind,
             exc=exc,
-            stderr=None,
-            exit_code=None,
+            stderr=stderr,
+            exit_code=exit_code,
             ctx=ctx,
         )
         + "\n",

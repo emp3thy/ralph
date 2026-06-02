@@ -773,7 +773,7 @@ def spawn_claude_p(
             ctx = autobug.Context(
                 queue_root=cfg.queue_clone_path,
                 state_dir=cfg.queue_clone_path / ".ralph" / "state",
-                env=dict(os.environ),
+                env=dict(env),
                 now=datetime.now(tz=UTC),
                 ralph_sha=os.environ.get("RALPH_SHA", "<unknown>"),
                 bot_author_email=cfg.bot_author_email,

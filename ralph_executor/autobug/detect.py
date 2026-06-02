@@ -23,9 +23,7 @@ def detect_python_crash(
     rate_cfg: RateLimitConfig = _DEFAULT_RATE,
 ) -> None:
     try:
-        _do_detect_python(
-            exc, ctx, target_repo=target_repo, severity=severity, rate_cfg=rate_cfg
-        )
+        _do_detect_python(exc, ctx, target_repo=target_repo, severity=severity, rate_cfg=rate_cfg)
     except BaseException as inner:
         log.warning("autobug.detect_python_crash itself failed: %s", inner)
 
@@ -71,9 +69,7 @@ def _do_detect_python(
         log.warning("autobug: signature computation failed: %s", e)
         return
     if not ctx.bot_author_email:
-        log.warning(
-            "autobug: bot_author_email missing; aborting emit signature=%s", sig[:8]
-        )
+        log.warning("autobug: bot_author_email missing; aborting emit signature=%s", sig[:8])
         return
     result = dedup.lookup(sig, ctx.queue_root, ctx.now)
     _dispatch(
@@ -125,6 +121,8 @@ def _do_detect_subprocess(
         severity=severity,
         trigger_kind="subprocess_crash",
         rate_cfg=rate_cfg,
+        stderr=stderr,
+        exit_code=exit_code,
     )
 
 
@@ -138,6 +136,8 @@ def _dispatch(
     severity: str,
     trigger_kind: str,
     rate_cfg: RateLimitConfig,
+    stderr: str | None = None,
+    exit_code: int | None = None,
 ) -> None:
     if result.kind == "bump_existing":
         if result.existing_pbi_id is None:
@@ -160,6 +160,8 @@ def _dispatch(
             trigger_kind=trigger_kind,
             severity=severity,
             target_repo=target_repo,
+            stderr=stderr,
+            exit_code=exit_code,
         )
         fuses.append_emission(ctx.state_dir, ctx.now)
         return
@@ -173,5 +175,7 @@ def _dispatch(
         trigger_kind=trigger_kind,
         severity=severity,
         target_repo=target_repo,
+        stderr=stderr,
+        exit_code=exit_code,
     )
     fuses.append_emission(ctx.state_dir, ctx.now)

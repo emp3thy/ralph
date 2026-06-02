@@ -31,9 +31,18 @@ def test_subprocess_nonzero_exit_emits_autobug_pbi(
     claude_spawn.spawn_claude_p(cfg, pbi, cwd=fake_repo, pbi_dir=pbi_dir)
 
     inbox = fake_repo / ".ralph" / "inbox"
-    autobug_dirs = [
-        d for d in inbox.iterdir() if d.is_dir() and d.name.startswith("autobug-")
-    ]
+    autobug_dirs = [d for d in inbox.iterdir() if d.is_dir() and d.name.startswith("autobug-")]
     assert autobug_dirs, "expected an autobug PBI on non-zero subprocess exit"
     bug_md = (autobug_dirs[0] / "BUG.md").read_text(encoding="utf-8")
     assert "subprocess" in bug_md.lower() or "subprocess_crash" in bug_md
+    reproduce_md = (autobug_dirs[0] / "REPRODUCE.md").read_text(encoding="utf-8")
+    assert "## stderr" in reproduce_md, (
+        "REPRODUCE.md must include the stderr section for subprocess crashes "
+        f"(got: {reproduce_md!r})"
+    )
+    assert "Killed" in reproduce_md, (
+        f"REPRODUCE.md stderr section must contain the real stderr tail; got: {reproduce_md!r}"
+    )
+    assert "Exit code: 137" in reproduce_md, (
+        f"REPRODUCE.md must include the exit code; got: {reproduce_md!r}"
+    )
