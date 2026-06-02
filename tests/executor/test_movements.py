@@ -324,12 +324,13 @@ def test_claim_writes_claim_json_and_pins_commit_subject(
     writes ``CLAIM.json`` into ``current/<id>/`` AND pins the commit
     subject to ``chore(queue): claim <id> for <instance_id>``.
 
-    The ``commit_all`` call inside ``_move`` runs ``git add -A`` before
-    committing, so the brand-new ``CLAIM.json`` lands in the SAME commit
-    as the ``git mv`` rename + the ``_rewrite_status`` frontmatter edit.
-    Single-commit atomicity is the load-bearing invariant — a partial
-    state on the queue branch would be visible to a second ralph as
-    "claimed without owner" or "no claim but in current/".
+    The ``commit_paths(repo, msg, [dst])`` call inside ``_move`` runs
+    ``git add -A -- dst`` before committing, so the brand-new
+    ``CLAIM.json`` lands in the SAME commit as the ``git mv`` rename +
+    the ``_rewrite_status`` frontmatter edit. Single-commit atomicity is
+    the load-bearing invariant — a partial state on the queue branch
+    would be visible to a second ralph as "claimed without owner" or
+    "no claim but in current/".
     """
     pbi_dir = _populate_inbox(fake_repo)
     source = FilesystemQueueSource(cfg_for_repo)
@@ -417,7 +418,7 @@ def test_claim_loses_rebase_race_cleanly(
     ``current/<id>/`` on the loser.
 
     Stubs ``push_with_rebase`` to raise ``PushRebaseConflict`` AFTER the
-    local commit has already been made by ``commit_all`` — exactly the
+    local commit has already been made by ``commit_paths`` — exactly the
     state ``push_with_rebase``'s real implementation leaves behind when
     it ``rebase --abort``s.
     """

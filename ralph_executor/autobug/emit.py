@@ -73,7 +73,11 @@ def new(
         encoding="utf-8",
     )
     (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _commit_and_push(ctx, f"chore(queue): add {pbi_id} (autobug signature {short_sig})")
+    _commit_and_push(
+        ctx,
+        f"chore(queue): add {pbi_id} (autobug signature {short_sig})",
+        paths=[pbi_dir],
+    )
     return pbi_id
 
 
@@ -94,7 +98,11 @@ def bump(pbi_id: str, exc: BaseException, ctx: Context) -> None:
     trace_n = _read_occurrences(text)
     text += f"\n\n## Trace {trace_n}\n\n```\n{_format_traceback(exc)}\n```\n"
     bug_path.write_text(text, encoding="utf-8")
-    _commit_and_push(ctx, f"chore(ralph-queue): bump {pbi_id} (occurrence {trace_n})")
+    _commit_and_push(
+        ctx,
+        f"chore(ralph-queue): bump {pbi_id} (occurrence {trace_n})",
+        paths=[bug_path],
+    )
 
 
 def reopen(
@@ -150,7 +158,11 @@ def reopen(
         f"Re-emerged on {ctx.now.replace(microsecond=0).isoformat()}.\n",
         encoding="utf-8",
     )
-    _commit_and_push(ctx, f"chore(queue): reopen {existing_pbi_id} as {pbi_id}")
+    _commit_and_push(
+        ctx,
+        f"chore(queue): reopen {existing_pbi_id} as {pbi_id}",
+        paths=[pbi_dir],
+    )
     return pbi_id
 
 
@@ -184,6 +196,14 @@ def _set_last_seen(text: str, ctx: Context) -> str:
     return _LAST_SEEN_RE.sub(f"last_seen: {iso}", text)
 
 
-def _commit_and_push(ctx: Context, msg: str) -> None:
-    git_ops.commit_all(ctx.queue_root, msg)
+def _commit_and_push(ctx: Context, msg: str, *, paths: list[Path]) -> None:
+    """Stage the named paths and commit + push on the queue branch.
+
+    ``paths`` is REQUIRED — ``git add -A`` over the whole worktree is
+    unsafe while ralph holds the exclusive ``.ralph.lock`` byte-range
+    lock on Windows (BUG-COMMIT-ALL-RALPH-LOCK-WINDOWS). Callers pass
+    the PBI dir (for ``new`` / ``reopen``) or the modified ``BUG.md``
+    path (for ``bump``).
+    """
+    git_ops.commit_paths(ctx.queue_root, msg, paths)
     git_ops.push_with_rebase(ctx.queue_root, remote="origin", branch=ctx.queue_branch)
