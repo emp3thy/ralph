@@ -87,3 +87,34 @@ def test_main_wrapper_skips_autobug_when_disabled(
     with pytest.raises(RuntimeError, match="skip-autobug"):
         cli.run_loop_with_autobug(cfg)
     assert called is False
+
+
+def test_main_wrapper_skips_autobug_when_already_emitted_by_inner_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: iterate_once marks exceptions it already routed through
+    autobug with ``__autobug_emitted__ = True``. The outer wrapper must
+    honour that flag or every iteration crash dedup-bumps to occurrences=2.
+    """
+    called = 0
+
+    def _track(exc: BaseException, ctx: object, **kw: object) -> None:
+        nonlocal called
+        called += 1
+
+    monkeypatch.setattr(autobug, "detect_python_crash", _track)
+
+    def bad_iter(cfg: ExecutorConfig):  # type: ignore[no-untyped-def]
+        if False:
+            yield
+        exc = RuntimeError("already-emitted")
+        exc.__autobug_emitted__ = True  # type: ignore[attr-defined]
+        raise exc
+
+    monkeypatch.setattr(cli, "run_loop", bad_iter)
+    cfg = _build_cfg()
+    with pytest.raises(RuntimeError, match="already-emitted"):
+        cli.run_loop_with_autobug(cfg)
+    assert called == 0, (
+        f"outer wrapper must not re-emit when iterate_once already did; got {called} calls"
+    )

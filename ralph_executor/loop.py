@@ -27,6 +27,7 @@ import overrides in production; the loop itself stays untouched.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import logging
 import os
 import shutil
@@ -959,6 +960,11 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
                     ),
                     dedup_window_days=cfg.autobug_dedup_done_window_days,
                 )
+                # Mark the exception so cli.run_loop_with_autobug's outer
+                # handler does not re-emit (which would dedup-bump
+                # occurrences to 2 for a single crash).
+                with contextlib.suppress(AttributeError, TypeError):
+                    exc.__autobug_emitted__ = True  # type: ignore[attr-defined]
             except BaseException as inner:  # noqa: BLE001 — never mask the original
                 log.warning("autobug loop wire failed: %s", inner)
         raise

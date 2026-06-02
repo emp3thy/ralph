@@ -518,7 +518,9 @@ def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
         log.info("interrupted; exiting cleanly")
         return 0
     except BaseException as original_exc:
-        if getattr(cfg, "autobug_enabled", True):
+        if getattr(cfg, "autobug_enabled", True) and not getattr(
+            original_exc, "__autobug_emitted__", False
+        ):
             try:
                 from ralph_executor import autobug
 

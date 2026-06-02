@@ -82,3 +82,32 @@ def test_iterate_once_skips_autobug_when_disabled(
         loop.iterate_once(cfg_disabled)
 
     assert captured == []
+
+
+def test_iterate_once_marks_exception_as_autobug_emitted(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_repo: Path,
+    cfg_for_repo: ExecutorConfig,
+) -> None:
+    """Regression: iterate_once must mark the re-raised exception with
+    ``__autobug_emitted__ = True`` so cli.run_loop_with_autobug skips
+    its own detect_python_crash call. Without the flag, the outer
+    handler dedup-bumps occurrences from 1 to 2 for a single crash.
+    """
+
+    def _fake_detect(exc: BaseException, ctx: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(autobug, "detect_python_crash", _fake_detect)
+
+    def _boom(_cfg: ExecutorConfig) -> None:
+        raise RuntimeError("double-emit guard")
+
+    monkeypatch.setattr(loop, "_pull_queue", _boom)
+
+    with pytest.raises(RuntimeError, match="double-emit guard") as excinfo:
+        loop.iterate_once(cfg_for_repo)
+
+    assert getattr(excinfo.value, "__autobug_emitted__", False) is True, (
+        "iterate_once should mark the exception to suppress outer re-emission"
+    )
