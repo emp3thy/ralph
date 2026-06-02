@@ -57,19 +57,27 @@ _SIG_FM_RE = re.compile(r"^signature:\s*[0-9a-f]+\s*$", re.MULTILINE)
 
 
 def _pbi_frontmatter_has_signature(pbi: PBI) -> bool:
-    """True iff the PBI's entry-file frontmatter contains ``signature: <hex>``.
+    """True iff any of the PBI's entry-file frontmatters contains ``signature: <hex>``.
 
     Used by ``spawn_claude_p`` to set ``RALPH_AUTOBUG_DEPTH=1`` for autobug
     PBIs so a downstream crash inside the spawned Claude does NOT spawn a
     second autobug for the same signature (recursion guard via env-marker).
+
+    Every candidate file is tried — a missing signature in the first
+    matching file (or an OSError reading it) must NOT short-circuit the
+    search, or PBIs whose signature lives in a later entry file would
+    silently bypass the recursion guard.
     """
     for entry in ("BUG.md", "PBI.md", "FEEDBACK.md"):
         f = pbi.path / entry
-        if f.is_file():
-            try:
-                return bool(_SIG_FM_RE.search(f.read_text(encoding="utf-8")))
-            except OSError:
-                return False
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _SIG_FM_RE.search(text):
+            return True
     return False
 
 

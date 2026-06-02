@@ -112,3 +112,21 @@ def test_lookup_window_days_override_narrows_done_window(tmp_path: Path) -> None
     now = datetime(2026, 5, 31, 14, tzinfo=UTC)
     assert lookup(sig, tmp_path, now).kind == "reopen_regression"
     assert lookup(sig, tmp_path, now, window_days=3).kind == "new"
+
+
+def test_lookup_handles_tz_naive_closed_at_without_raising(tmp_path: Path) -> None:
+    """Regression: a tz-naive ``closed_at`` (operator-edited frontmatter)
+    must NOT raise TypeError during cutoff comparison — it's treated as UTC.
+    """
+    sig = "7" * 64
+    _write_pbi(
+        tmp_path,
+        "done",
+        "autobug-777777-001",
+        sig,
+        closed_at="2026-05-25T00:00:00",  # no tz suffix
+    )
+    now = datetime(2026, 5, 31, 14, tzinfo=UTC)
+    r = lookup(sig, tmp_path, now)
+    assert r.kind == "reopen_regression"
+    assert r.existing_pbi_id == "autobug-777777-001"

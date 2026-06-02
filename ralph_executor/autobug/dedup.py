@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ralph_executor.autobug.types import DedupResult
@@ -62,6 +62,13 @@ def _find_by_signature_since(state_dir: Path, signature: str, cutoff: datetime) 
                 closed = datetime.fromisoformat(closed_m.group(1))
             except ValueError:
                 continue
+            # closed may be tz-naive if the stored frontmatter lacks a
+            # UTC suffix (operator-edited PBIs). cutoff is always
+            # tz-aware (built from datetime.now(tz=UTC)). Treat naive
+            # values as UTC rather than raising a TypeError that would
+            # silently fail the dedup check.
+            if closed.tzinfo is None:
+                closed = closed.replace(tzinfo=UTC)
             if closed >= cutoff:
                 id_m = _ID_RE.search(text)
                 return id_m.group(1) if id_m else child.name
