@@ -8,12 +8,14 @@ HEAD, commit shas — rather than mocking subprocess.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from ralph_executor import git_ops
 from ralph_executor.git_ops import GitCommandError
+from ralph_executor.lockfile import WorkspaceLockfile
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -196,6 +198,108 @@ def test_clone_raises_git_command_error_on_non_zero_exit(
 
     with pytest.raises(GitCommandError, match="repository not found"):
         git_ops.clone("https://github.com/missing/repo.git", tmp_path / "x")
+
+
+# ---------------------------------------------------------------------------
+# commit_paths — explicit-path commit that sidesteps the Windows
+# ``.ralph.lock`` ``Permission denied`` foot-gun documented in
+# BUG-COMMIT-ALL-RALPH-LOCK-WINDOWS.
+# ---------------------------------------------------------------------------
+
+
+def test_commit_paths_creates_a_commit(fake_repo: Path) -> None:
+    (fake_repo / "scratch.txt").write_text("hello", encoding="utf-8")
+    before = _git(fake_repo, "rev-parse", "HEAD").strip()
+    sha = git_ops.commit_paths(
+        fake_repo, "test: add scratch via commit_paths", [fake_repo / "scratch.txt"]
+    )
+    after = _git(fake_repo, "rev-parse", "HEAD").strip()
+    assert sha == after
+    assert before != after
+
+
+def test_commit_paths_no_staged_changes_returns_head(fake_repo: Path) -> None:
+    head = _git(fake_repo, "rev-parse", "HEAD").strip()
+    # An untracked file outside the named path produces no staged change.
+    (fake_repo / "outside.txt").write_text("outside", encoding="utf-8")
+    target = fake_repo / "named"
+    target.mkdir()
+    sha = git_ops.commit_paths(fake_repo, "test: empty stage", [target])
+    assert sha == head
+
+
+def test_commit_paths_only_stages_named_paths(fake_repo: Path) -> None:
+    """``commit_paths`` must not stage files outside its ``paths`` argument.
+
+    This is the load-bearing property that makes the helper safe to use
+    inside ``movements._move`` while ralph holds the workspace lockfile:
+    the commit touches only the moved PBI dir, never the lockfile at
+    the queue-clone root.
+    """
+    (fake_repo / "named").mkdir()
+    (fake_repo / "named" / "kept.txt").write_text("keep", encoding="utf-8")
+    (fake_repo / "outside.txt").write_text("outside", encoding="utf-8")
+    git_ops.commit_paths(
+        fake_repo, "test: only named", [fake_repo / "named"]
+    )
+    files = _git(
+        fake_repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+    ).splitlines()
+    assert "named/kept.txt" in files
+    assert "outside.txt" not in files
+    # Working tree still shows the untracked outsider.
+    status = _git(fake_repo, "status", "--porcelain").strip()
+    assert "outside.txt" in status
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="msvcrt.locking is a mandatory range lock; fcntl.flock on POSIX is "
+    "advisory so git can still read the lockfile. Bug is Windows-only.",
+)
+def test_commit_paths_succeeds_while_lockfile_is_held_on_windows(
+    fake_repo: Path,
+) -> None:
+    """Regression for BUG-COMMIT-ALL-RALPH-LOCK-WINDOWS.
+
+    Pre-fix, ``movements._move`` ran ``git_ops.commit_all`` which shelled
+    out to ``git add -A``. ``git add -A`` walked the worktree and tried
+    to read ``.ralph.lock`` to hash it for the index; on Windows the
+    lockfile is held with an exclusive ``msvcrt.locking`` byte-range lock
+    by the parent ralph process, so the OS denied the read and git
+    aborted with::
+
+        error: read error while indexing .ralph.lock: Permission denied
+
+    ``commit_paths`` stages only the named paths and never visits the
+    lockfile, so the move (and any other commit produced while ralph
+    holds the lock) succeeds.
+    """
+    lock_path = fake_repo / ".ralph.lock"
+    lock = WorkspaceLockfile(lock_path, instance_id="repro", hostname="repro")
+    lock.acquire()
+    try:
+        pbi_dir = fake_repo / ".ralph" / "inbox" / "REPRO-1"
+        pbi_dir.mkdir(parents=True)
+        (pbi_dir / "BUG.md").write_text("repro\n", encoding="utf-8")
+        # Should NOT raise GitCommandError with 'Permission denied' on
+        # ``.ralph.lock`` — the explicit path means ``git add`` never
+        # visits the lockfile.
+        sha = git_ops.commit_paths(
+            fake_repo,
+            "test: lockfile held during commit",
+            [pbi_dir],
+        )
+        head = _git(fake_repo, "rev-parse", "HEAD").strip()
+        assert sha == head
+        files = _git(
+            fake_repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).splitlines()
+        assert ".ralph/inbox/REPRO-1/BUG.md" in files
+        # Lockfile is NOT in the commit (it's outside the named path).
+        assert ".ralph.lock" not in files
+    finally:
+        lock.release()
 
 
 def test_clone_passes_timeout_to_subprocess(
