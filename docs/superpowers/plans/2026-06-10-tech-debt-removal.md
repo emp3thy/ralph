@@ -31,15 +31,9 @@ Considered and dismissed: Playwright/text-match reflections (no UI work), Execut
 
 ### Real concerns — pick a mitigation each (A/B/C)
 
-**RC1 — Scout evidence may be hallucinated** (wrong file:line, misread code). Findings drive PR-sized work; bad evidence wastes a fix cycle.
-- **A:** Accept; synthesis dedup + your approval gate filter it.
-- **B (recommended):** Add a verification step to Task 5: after synthesis, one read-only agent spot-checks every evidence entry of the chosen top5 (open file at line, confirm the note holds); failed entries are corrected or the finding swapped for rank #6. Cost ~5–10k tokens.
-- **C:** Make scouts quote the literal source line in each evidence entry; mechanically verify quotes against files before synthesis. Strongest, most tokens.
+**RC1 — Scout evidence may be hallucinated** (wrong file:line, misread code). **RESOLVED: user picked B (2026-06-10)** — Task 5 Step 5 runs a read-only verifier agent over every evidence entry of the chosen top5; failed entries are corrected or the finding swapped for rank #6. Cost ~5–10k tokens.
 
-**RC2 — loop.py split plan refresh may understate drift** (+236 lines since plan written; more of its 8 tasks may be invalid than expected).
-- **A:** Refresh as planned regardless of how much survives.
-- **B (recommended):** Threshold rule — if >50% of the 8 tasks are invalidated at re-validation, abandon refresh and re-run the loop.py split design from scratch via writing-plans.
-- **C:** Skip the refresh, always replan from scratch.
+**RC2 — loop.py split plan refresh may understate drift** (+236 lines since plan written). **RESOLVED: user picked B (2026-06-10)** — threshold rule: if >50% of the 8 tasks are invalidated at re-validation, abandon the refresh and re-run the loop.py split design from scratch via writing-plans. Encoded in Task 8 Step 2.
 
 ### Verified safe
 
@@ -63,7 +57,7 @@ Considered and dismissed: Playwright/text-match reflections (no UI work), Execut
 | T2 inventory | 88% | 96% | Script written to file and run by path; kills PowerShell `-c` here-string quoting + argv-length risk [[355faeb8]] |
 | T3 scouts | 85% | 93% | Read-only Explore type; ≥2 verified evidence entries required; malformed → 1 retry → drop + `## Scan gaps` note |
 | T4 persist | 97% | 97% | — |
-| T5 synthesis | 87% | 93% | Prompt persisted for audit; strict JSON schema + 1 retry; RC1 mitigation slots here |
+| T5 synthesis | 87% | 94% | Prompt persisted for audit; strict JSON schema + 1 retry; RC1-B verifier step baked in (v2→v3: 93→94) |
 | T6 render | 96% | 96% | — |
 | T7 gate | 97% | 97% | — |
 | T8 per-finding plan | 80% | 92% | Unknown-finding risk contained by nested writing-plans gates (per-task 92% floor applies to each per-finding plan) + RC2 threshold rule + cross-cutting-test grep sweep |
@@ -206,7 +200,7 @@ Expected: 18–48 findings, categories ⊆ the 6 dispatched, no exception.
 
 ### Task 5: Synthesize top 5
 
-**Confidence: 93%** (pre-lift 87%) — lifted by persisting the prompt for audit, strict JSON schema with 1 retry, and the RC1 evidence-verification mitigation (if RC1-B/C chosen, it executes as Step 5 of this task).
+**Confidence: 94%** (pre-lift 87%; v2 93%) — lifted by persisting the prompt for audit, strict JSON schema with 1 retry, and the RC1-B evidence-verification step (Step 5) now baked in. v2→v3 delta: +1 for the verifier closing the hallucinated-evidence gap; verifier output shares the same retry-on-malformed path.
 
 **Files:**
 - Create: `.tech-debt/synthesis-prompt.txt`
@@ -241,6 +235,17 @@ Previous top 5 (2026-06-01):
 
 Run: `python -c "import json; d=json.load(open(r'C:\Users\gethi\source\ralph\.tech-debt\top5.json')); assert len(d['top5'])==5; print([ (f['slug'], f['severity'], f['carry_over']) for f in d['top5'] ])"`
 Expected: exactly 5 entries printed, no exception.
+
+- [ ] **Step 5: Verify evidence (RC1-B).** Dispatch one read-only `Explore` agent:
+
+```text
+For each evidence entry below, open the named file at the named line in C:\Users\gethi\source\ralph and judge whether the note accurately describes what is there (allow ±10 lines of drift; report the corrected line if drifted).
+Return ONLY JSON: [{"file": "...", "line": <claimed>, "verdict": "confirmed" | "corrected" | "refuted", "corrected_line": <int or null>, "reason": "<one line>"}]
+Evidence entries:
+<all evidence arrays from .tech-debt/top5.json>
+```
+
+Apply results: `corrected` → fix the line number in `top5.json`; `refuted` → if a finding loses enough evidence to fall below 2 entries, swap it for the synthesis run's rank #6 (re-verify that one) and note the swap in design.md. Rewrite `top5.json` with the cleaned data.
 
 ### Task 6: Render design.md and report
 
@@ -315,7 +320,7 @@ git checkout main && git pull
 ```
 
 - [ ] **Step 2: Write the per-finding plan** using superpowers:writing-plans, seeded with the finding's evidence + suggested_fix from `.tech-debt/design.md`. Sizing rule:
-  - Large refactor (god-module split scale): short design doc + full TDD plan. If the finding `carry_over`s `loop-py-god-module`, refresh `docs/superpowers/plans/2026-06-01-loop-py-split-implementation.md` — re-validate each of its 8 tasks against the current file line-by-line, keep valid tasks, rewrite invalidated ones — rather than planning from scratch.
+  - Large refactor (god-module split scale): short design doc + full TDD plan. If the finding `carry_over`s `loop-py-god-module`, refresh `docs/superpowers/plans/2026-06-01-loop-py-split-implementation.md` — re-validate each of its 8 tasks against the current file line-by-line, keep valid tasks, rewrite invalidated ones. **RC2-B threshold rule:** if >4 of the 8 tasks are invalidated, abandon the refresh and re-run the loop.py split design + plan from scratch via writing-plans.
   - Small fix (doc scrub, dead-code delete): plan of 1–3 tasks, no separate design doc.
   - Every plan ends with: full test suite green, docs/README swept for impact (per repo convention), commit.
 
