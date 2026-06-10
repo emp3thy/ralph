@@ -36,22 +36,35 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Any
 
 from ralph_executor.config import ConfigError, ExecutorConfig
+
+# Imported under the old private names so spawn_claude_p keeps resolving
+# them as claude_spawn module globals — tests patch
+# ``ralph_executor.claude_spawn._query_open_pr_via_gh`` /
+# ``._wait_for_pr_checks`` and those targets must keep intercepting.
+from ralph_executor.gh_queries import (
+    query_open_pr_via_gh as _query_open_pr_via_gh,
+)
+from ralph_executor.gh_queries import (
+    wait_for_pr_checks as _wait_for_pr_checks,
+)
+from ralph_executor.outcome import ClaudeOutcome, OutcomeKind, PrCheckState, classify_outcome
 from ralph_executor.prompt_composer import compose_prompt
-from ralph_executor.subprocess_utils import popen_text, run_text
+from ralph_executor.subprocess_utils import popen_text
 from ralph_executor.types import PBI
 
+__all__ = [
+    "ClaudeOutcome",
+    "OutcomeKind",
+    "PrCheckState",
+    "classify_outcome",
+    "spawn_claude_p",
+]
+
 log = logging.getLogger(__name__)
-
-OutcomeKind = Literal["pr_created", "stuck", "partial", "error"]
-
-_STUCK_FILENAME = "STUCK.md"
-_GH_BINARY = "gh"
 
 _SIG_FM_RE = re.compile(r"^signature:\s*[0-9a-f]+\s*$", re.MULTILINE)
 
@@ -95,18 +108,6 @@ def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
     exactly.
     """
     return cfg.queue_clone_path
-
-
-@dataclass(frozen=True)
-class ClaudeOutcome:
-    """Result of a single ``claude -p`` invocation against the current PBI."""
-
-    kind: OutcomeKind
-    pr_url: str | None
-    stdout: str
-    stderr: str
-    exit_code: int
-    duration_seconds: float
 
 
 def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path, pbi: PBI) -> list[str]:
@@ -178,224 +179,6 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path, pbi: PBI) -> list[str]:
         (f"Read {standing_path} for your standing instructions, then work the PBI in {pbi_dir}."),
     ]
     return argv
-
-
-def _query_open_pr_via_gh(repo_path: Path, branch: str) -> str | None:
-    """Ask the GitHub CLI whether an OPEN PR exists for ``branch``.
-
-    Returns the PR URL or ``None`` if no open PR is found. Returns
-    ``None`` on any subprocess / parse failure too — classifier callers
-    treat "couldn't check" the same as "no PR" so a transient gh outage
-    doesn't make the executor mis-classify a partial iteration as
-    pr_created. The real PR state is reconciled by sweep (Plan 8).
-    """
-    try:
-        result = run_text(
-            [
-                _GH_BINARY,
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--state",
-                "open",
-                "--json",
-                "url",
-                "--limit",
-                "1",
-            ],
-            cwd=str(repo_path),
-            check=False,
-            capture_output=True,
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        # OSError catches FileNotFoundError (gh not installed),
-        # PermissionError (gh present but not executable in this
-        # container/CI), and any other transient OS-level failure.
-        # All map to "no PR detected" — sweep (Plan 8) will reconcile.
-        log.warning("gh pr list failed for %s: %s", branch, exc)
-        return None
-    if result.returncode != 0:
-        log.warning(
-            "gh pr list returned %d for %s: %s",
-            result.returncode,
-            branch,
-            result.stderr.strip()[:200],
-        )
-        return None
-    try:
-        payload = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        log.warning("gh pr list returned non-JSON for %s: %s", branch, exc)
-        return None
-    if not isinstance(payload, list) or not payload:
-        return None
-    first = payload[0]
-    if not isinstance(first, dict):
-        return None
-    url = first.get("url")
-    return str(url) if isinstance(url, str) and url else None
-
-
-PrCheckState = Literal["pass", "fail", "pending", "error"]
-
-
-def _query_pr_checks(
-    repo_path: Path,
-    pr_number: int,
-    *,
-    timeout_seconds: float = 30.0,
-) -> tuple[PrCheckState, list[str]]:
-    """Call ``gh pr checks <num> --required --json bucket,name`` once.
-
-    The verifier in Plan 18 uses this to decide whether to classify a
-    just-pushed PR as ``pr_created`` (real CI green) or to fall back to
-    ``partial`` (so the next iteration tries again).
-
-    Returns a (state, names) tuple:
-
-      * ``("pass", [])`` — every required check has ``bucket == "pass"``.
-        Note: when ``gh`` returns an empty array (no required checks are
-        configured on the branch) we ALSO return ``"pass"`` and log a
-        WARNING. This PBI assumes the operator has required checks
-        configured; if they don't, the verifier has nothing to gate on.
-      * ``("fail", [<failed names>])`` — at least one required check has
-        ``bucket == "fail"``. ``names`` is the list of failing check
-        names so the classifier can surface them on stderr for the next
-        iteration to read.
-      * ``("pending", [])`` — gh exited 8 (at least one bucket is
-        ``"pending"``). Caller's polling loop re-tries.
-      * ``("error", [<one-line summary>])`` — gh missing, timed out,
-        returned non-JSON, or some other unexpected failure. Caller
-        treats as ``partial`` (re-poll next iteration).
-
-    Failure mapping is intentionally pessimistic: anything we cannot
-    confidently parse as "all required checks green" returns non-``pass``
-    so the classifier never escalates a partial iteration to
-    ``pr_created`` on a transient gh outage.
-    """
-    try:
-        result = run_text(
-            [
-                _GH_BINARY,
-                "pr",
-                "checks",
-                str(pr_number),
-                "--required",
-                "--json",
-                "bucket,name",
-            ],
-            cwd=str(repo_path),
-            check=False,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        log.warning("gh pr checks timed out after %ss for PR #%d", timeout_seconds, pr_number)
-        return ("error", [f"gh pr checks timed out after {timeout_seconds}s"])
-    except OSError as exc:
-        # FileNotFoundError (gh not installed), PermissionError, etc.
-        log.warning("gh pr checks failed for PR #%d: %s", pr_number, exc)
-        return ("error", [str(exc)])
-
-    # ``gh pr checks --json bucket,name`` always emits a JSON array on
-    # stdout when it ran at all — even when at least one check failed
-    # (exit 1) or is pending (exit 8). We therefore parse the JSON FIRST
-    # and use the buckets as the source of truth; the exit code is only a
-    # fallback when stdout is empty/unparseable.
-    if result.returncode == 8 and not (result.stdout or "").strip():
-        return ("pending", [])
-
-    try:
-        payload = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
-        if result.returncode == 8:
-            return ("pending", [])
-        summary = (result.stderr or "").strip()[:200]
-        return ("error", [summary or f"gh pr checks exit {result.returncode}"])
-    if not isinstance(payload, list):
-        return ("error", ["gh pr checks JSON payload was not a list"])
-    if not payload:
-        # No required checks configured. The verifier has nothing to gate
-        # on; we return "pass" but warn loudly so the operator notices.
-        log.warning(
-            "PR #%d has no required checks configured; treating as pass",
-            pr_number,
-        )
-        return ("pass", [])
-
-    failed: list[str] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            return ("error", ["gh pr checks JSON contained a non-object entry"])
-        if item.get("bucket") == "fail":
-            name = item.get("name")
-            failed.append(str(name) if isinstance(name, str) else "<unnamed>")
-    if failed:
-        return ("fail", failed)
-
-    buckets = {str(item.get("bucket")) for item in payload}
-    if buckets == {"pass"}:
-        return ("pass", [])
-    if "pending" in buckets:
-        return ("pending", [])
-    # Any other state (e.g. all "skipping" / "cancel") is conservatively
-    # treated as error so we never mis-classify it as pass.
-    return ("error", ["unexpected bucket states: " + repr(sorted(buckets))])
-
-
-def _wait_for_pr_checks(
-    repo_path: Path,
-    pr_number: int,
-    *,
-    max_polls: int = 6,
-    interval_seconds: float = 30.0,
-) -> tuple[PrCheckState, list[str]]:
-    """Poll ``_query_pr_checks`` until terminal or the budget is exhausted.
-
-    Polls up to ``max_polls`` times, sleeping ``interval_seconds`` between
-    attempts. Total wall budget = ``max_polls * interval_seconds`` (default
-    6 × 30 s = 3 minutes per iteration).
-
-    A state is **terminal** if it lets the classifier make a confident
-    decision now:
-
-      * ``pass``    — CI green; classifier returns ``pr_created``.
-      * ``fail``    — at least one required check failed; classifier
-                      returns ``partial`` with the failed names visible
-                      on stderr.
-      * ``error``   — gh-side problem (binary missing, timeout, malformed
-                      JSON). Retrying within the same iteration is
-                      unlikely to help and would just burn the budget;
-                      we surface the error to the caller, which treats
-                      it as ``partial`` so the NEXT iteration re-polls.
-
-    Non-terminal:
-
-      * ``pending`` — at least one check is still running. Sleep and
-                      re-poll.
-
-    Returns ``("pending", [])`` if the budget is exhausted without a
-    decision; the caller treats this as ``partial`` so the PBI stays in
-    ``current/`` and the next iteration polls again.
-    """
-    if max_polls < 1:
-        return ("pending", [])
-    # Scale the per-call subprocess timeout to the configured poll
-    # interval so the documented total wall budget actually holds. With
-    # a hard-coded timeout, an operator setting interval_seconds=5 to
-    # get faster feedback would still see each gh-call block up to 30 s
-    # and overrun the 30-s total budget. Floor at 5 s to leave gh
-    # enough time to spin up + hit the API even on slow links.
-    per_call_timeout = max(interval_seconds, 5.0)
-    for attempt in range(max_polls):
-        state, names = _query_pr_checks(repo_path, pr_number, timeout_seconds=per_call_timeout)
-        if state != "pending":
-            return (state, names)
-        if attempt < max_polls - 1:
-            time.sleep(interval_seconds)
-    return ("pending", [])
 
 
 def _pr_number_from_url(pr_url: str) -> int | None:
@@ -539,6 +322,95 @@ def _tee_stream(
         err_slot.append(exc)
 
 
+def _resolve_spawn_paths(
+    pbi: PBI,
+    cwd: Path | None,
+    pbi_dir: Path | None,
+) -> tuple[Path, Path]:
+    """Resolve and validate the subprocess cwd and PBI directory.
+
+    ``cwd`` overrides the subprocess working directory; falls back to
+    ``pbi.work_worktree`` and raises ``ConfigError`` when neither is
+    available. ``pbi_dir`` overrides the on-disk PBI directory; defaults
+    to ``pbi.path``. Both are validated as existing directories so a
+    misconfigured worktree fails fast. Returns
+    ``(effective_cwd, effective_pbi_dir)``.
+    """
+    effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
+    if cwd is not None:
+        effective_cwd = Path(cwd)
+    elif pbi.work_worktree is not None:
+        effective_cwd = pbi.work_worktree
+    else:
+        raise ConfigError(
+            f"spawn_claude_p: PBI {pbi.id} has no work_worktree set and no "
+            "cwd override was supplied. The per-PBI worktree must be "
+            "materialised by _claim_pbi or recovered by the resume path "
+            "in iterate_once before Claude can be spawned."
+        )
+    if not effective_pbi_dir.is_dir():
+        raise FileNotFoundError(
+            f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
+        )
+    if not effective_cwd.is_dir():
+        raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
+    return effective_cwd, effective_pbi_dir
+
+
+def _build_subprocess_env(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    effective_pbi_dir: Path,
+) -> dict[str, str]:
+    """Build the child-process environment for the spawned Claude.
+
+    Copies ``os.environ`` and wires ``RALPH_PBI_DIR``,
+    ``ANTHROPIC_API_KEY``, ``BASH_MAX_TIMEOUT_MS``, ``GH_OWNER``,
+    ``BETTER_MEMORY_PROJECT`` and ``RALPH_AUTOBUG_DEPTH`` as documented
+    inline. Mutations are scoped to the returned dict — ralph's parent
+    env stays untouched.
+    """
+    env = os.environ.copy()
+    env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
+    # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
+    # Empty string breaks claude CLI's OAuth fallback — leave it absent
+    # so the claude CLI picks up its own OAuth session.
+    if cfg.anthropic_api_key:
+        env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
+    # Subprocess-scoped bridge for the Claude Code per-bash-tool ceiling.
+    # Claude Code's own default is 600_000 (10 min); ralph's default is
+    # 900_000 (15 min), overridable per repo via TOML and per shell via
+    # env. Setting on ``env`` (not os.environ) keeps the override scoped
+    # to this child — ralph's parent env stays untouched.
+    env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
+    # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
+    # ``gh`` invocation that reads GH_OWNER) writes to the target repo
+    # owner from ``pbi.target_repo``, not whatever owner the operator
+    # configured for ralph itself. None in legacy single-target mode.
+    if pbi.target_info is not None:
+        env["GH_OWNER"] = pbi.target_info.owner
+        # Per-PBI better-memory project scope so the subagent's observations
+        # land in the target repo's project rather than the cwd-derived
+        # worktree path. Requires BETTER_MEMORY_PROJECT support in
+        # better-memory's project resolver (see better-memory PR
+        # memory-project-env-override).
+        env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
+    else:
+        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
+        # inherited from ralph's parent env so the subagent's
+        # observations don't leak into whatever project name the
+        # operator happens to have set for ralph itself.
+        env.pop("BETTER_MEMORY_PROJECT", None)
+    # Autobug recursion guard: when the spawned Claude is itself iterating
+    # on an autobug PBI, mark the child env so any further crash inside
+    # that subprocess is suppressed by ``fuses.recursion_check`` (which
+    # reads ``RALPH_AUTOBUG_DEPTH``). Prevents an autobug loop emitting
+    # a second autobug for the same signature.
+    if _pbi_frontmatter_has_signature(pbi):
+        env["RALPH_AUTOBUG_DEPTH"] = "1"
+    return env
+
+
 def spawn_claude_p(
     cfg: ExecutorConfig,
     pbi: PBI,
@@ -578,63 +450,9 @@ def spawn_claude_p(
     block interpreter shutdown indefinitely on a pipe read that nobody
     can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
-    effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
-    if cwd is not None:
-        effective_cwd = Path(cwd)
-    elif pbi.work_worktree is not None:
-        effective_cwd = pbi.work_worktree
-    else:
-        raise ConfigError(
-            f"spawn_claude_p: PBI {pbi.id} has no work_worktree set and no "
-            "cwd override was supplied. The per-PBI worktree must be "
-            "materialised by _claim_pbi or recovered by the resume path "
-            "in iterate_once before Claude can be spawned."
-        )
-    if not effective_pbi_dir.is_dir():
-        raise FileNotFoundError(
-            f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
-        )
-    if not effective_cwd.is_dir():
-        raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
+    effective_cwd, effective_pbi_dir = _resolve_spawn_paths(pbi, cwd, pbi_dir)
     argv = _build_argv(cfg, pbi_dir=effective_pbi_dir, pbi=pbi)
-    env = os.environ.copy()
-    env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
-    # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
-    # Empty string breaks claude CLI's OAuth fallback — leave it absent
-    # so the claude CLI picks up its own OAuth session.
-    if cfg.anthropic_api_key:
-        env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
-    # Subprocess-scoped bridge for the Claude Code per-bash-tool ceiling.
-    # Claude Code's own default is 600_000 (10 min); ralph's default is
-    # 900_000 (15 min), overridable per repo via TOML and per shell via
-    # env. Setting on ``env`` (not os.environ) keeps the override scoped
-    # to this child — ralph's parent env stays untouched.
-    env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
-    # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
-    # ``gh`` invocation that reads GH_OWNER) writes to the target repo
-    # owner from ``pbi.target_repo``, not whatever owner the operator
-    # configured for ralph itself. None in legacy single-target mode.
-    if pbi.target_info is not None:
-        env["GH_OWNER"] = pbi.target_info.owner
-        # Per-PBI better-memory project scope so the subagent's observations
-        # land in the target repo's project rather than the cwd-derived
-        # worktree path. Requires BETTER_MEMORY_PROJECT support in
-        # better-memory's project resolver (see better-memory PR
-        # memory-project-env-override).
-        env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
-    else:
-        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
-        # inherited from ralph's parent env so the subagent's
-        # observations don't leak into whatever project name the
-        # operator happens to have set for ralph itself.
-        env.pop("BETTER_MEMORY_PROJECT", None)
-    # Autobug recursion guard: when the spawned Claude is itself iterating
-    # on an autobug PBI, mark the child env so any further crash inside
-    # that subprocess is suppressed by ``fuses.recursion_check`` (which
-    # reads ``RALPH_AUTOBUG_DEPTH``). Prevents an autobug loop emitting
-    # a second autobug for the same signature.
-    if _pbi_frontmatter_has_signature(pbi):
-        env["RALPH_AUTOBUG_DEPTH"] = "1"
+    env = _build_subprocess_env(cfg, pbi, effective_pbi_dir)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout
@@ -808,110 +626,3 @@ def spawn_claude_p(
         except BaseException as inner:  # noqa: BLE001 — no-op-safe by design
             log.warning("autobug subprocess wire failed: %s", inner)
     return outcome
-
-
-def classify_outcome(
-    *,
-    pbi_dir: Path,
-    stdout: str,
-    stderr: str,
-    exit_code: int,
-    duration_seconds: float,
-    pr_url: str | None = None,
-    pr_lookup: Callable[[], str | None] | None = None,
-    pr_check_state: PrCheckState = "pass",
-    pr_check_failed_names: list[str] | None = None,
-) -> ClaudeOutcome:
-    """Map the raw (stdout, stderr, exit, on-disk, pr-state) tuple to a
-    typed outcome.
-
-    Precedence (highest first):
-      1. STUCK.md present on disk → ``stuck``
-      2. Exit code non-zero       → ``error``
-      3. open PR exists for the feature branch AND
-         ``pr_check_state == "pass"`` → ``pr_created``
-         (``pr_url`` is taken directly; if not provided, ``pr_lookup``
-         is called once and its return value is used)
-      4. open PR exists but ``pr_check_state == "fail"`` → ``partial``
-         with a synthetic stderr line naming the failed required checks
-         so the next iteration's Claude session reads them.
-      5. open PR exists but ``pr_check_state in ("pending", "error")``
-         → ``partial`` (no synthetic stderr; the next iteration's
-         polling will re-decide).
-      6. Otherwise                → ``partial``
-
-    ``pr_url`` and ``pr_lookup`` exist so tests can inject the PR-state
-    answer without monkeypatching subprocess. Production callers pass
-    ``pr_url`` (already resolved by ``_query_open_pr_via_gh``) AND
-    ``pr_check_state`` (resolved by ``_wait_for_pr_checks``).
-
-    ``pr_check_state`` defaults to ``"pass"`` so legacy tests that
-    pre-date the CI-green verifier (and don't care about it) keep
-    classifying as ``pr_created`` when a ``pr_url`` is set. Production
-    code paths in ``spawn_claude_p`` always pass the real state.
-    """
-    stuck_present = (pbi_dir / _STUCK_FILENAME).is_file()
-
-    if stuck_present:
-        return ClaudeOutcome(
-            kind="stuck",
-            pr_url=None,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            duration_seconds=duration_seconds,
-        )
-    if exit_code != 0:
-        return ClaudeOutcome(
-            kind="error",
-            pr_url=None,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            duration_seconds=duration_seconds,
-        )
-    if pr_url is None and pr_lookup is not None:
-        pr_url = pr_lookup()
-    if pr_url:
-        if pr_check_state == "pass":
-            return ClaudeOutcome(
-                kind="pr_created",
-                pr_url=pr_url,
-                stdout=stdout,
-                stderr=stderr,
-                exit_code=exit_code,
-                duration_seconds=duration_seconds,
-            )
-        if pr_check_state == "fail":
-            names = pr_check_failed_names or []
-            synthetic = (
-                f"PR {pr_url} required checks failed: "
-                f"{', '.join(names) if names else '<unnamed>'}. "
-                f"Fix the failures next iteration."
-            )
-            joined_stderr = (stderr + "\n" + synthetic) if stderr else synthetic
-            return ClaudeOutcome(
-                kind="partial",
-                pr_url=pr_url,
-                stdout=stdout,
-                stderr=joined_stderr,
-                exit_code=exit_code,
-                duration_seconds=duration_seconds,
-            )
-        # pending or error: keep PBI in current/; next iteration re-polls.
-        return ClaudeOutcome(
-            kind="partial",
-            pr_url=pr_url,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code,
-            duration_seconds=duration_seconds,
-        )
-    return ClaudeOutcome(
-        kind="partial",
-        pr_url=None,
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        duration_seconds=duration_seconds,
-    )
