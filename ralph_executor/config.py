@@ -32,7 +32,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, NamedTuple, cast
 
 from ralph_executor.url_utils import parse_target_repo
 
@@ -611,29 +611,7 @@ def _resolve_log_level(*, toml_value: Any, default: str, source_label: str) -> i
     return cast(int, logging.getLevelName(candidate))
 
 
-def load_config() -> ExecutorConfig:
-    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
-
-    The executor is queue-driven: ``ExecutorConfig`` has no
-    ``repo_path``. ``workspace_root`` is the only configured root; every
-    per-iteration target clone is materialised under
-    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
-    ``target_repo`` frontmatter.
-
-    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
-    empty string means "use claude CLI's OAuth session".
-    """
-    from ralph_executor.user_config import (
-        _warn_stale_ralph_home_in_user_config,
-        user_config_path,
-    )
-
-    _warn_stale_ralph_home_in_user_config()
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    toml_overrides = _load_user_toml_overrides()
-    source_label = str(user_config_path())
-
+def _resolve_queue_repo(toml_overrides: Mapping[str, Any], source_label: str) -> str:
     queue_repo_value = toml_overrides.get("queue_repo")
     if queue_repo_value is None:
         raise ConfigError(
@@ -651,7 +629,15 @@ def load_config() -> ExecutorConfig:
         raise ConfigError(
             f"{source_label}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
         ) from exc
-    queue_repo = queue_repo_value
+    return queue_repo_value
+
+
+class _BranchSettings(NamedTuple):
+    main_branch: str
+    queue_branch: str
+
+
+def _resolve_branches(toml_overrides: Mapping[str, Any], source_label: str) -> _BranchSettings:
     main_branch = _resolve_str(
         name="main_branch",
         env_name="RALPH_MAIN_BRANCH",
@@ -676,6 +662,34 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: queue_branch must not include the 'refs/heads/' "
             f"prefix (got {queue_branch!r})"
         )
+    return _BranchSettings(main_branch=main_branch, queue_branch=queue_branch)
+
+
+def load_config() -> ExecutorConfig:
+    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+
+    The executor is queue-driven: ``ExecutorConfig`` has no
+    ``repo_path``. ``workspace_root`` is the only configured root; every
+    per-iteration target clone is materialised under
+    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
+    ``target_repo`` frontmatter.
+
+    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
+    empty string means "use claude CLI's OAuth session".
+    """
+    from ralph_executor.user_config import (
+        _warn_stale_ralph_home_in_user_config,
+        user_config_path,
+    )
+
+    _warn_stale_ralph_home_in_user_config()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    toml_overrides = _load_user_toml_overrides()
+    source_label = str(user_config_path())
+
+    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
+    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
     max_attempts = _resolve_int(
         name="max_attempts",
         env_name="RALPH_MAX_ATTEMPTS",
