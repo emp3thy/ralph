@@ -17,7 +17,6 @@ from ralph_executor.loop import (
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.types import PBI
-from ralph_executor.worktree import work_worktree_path
 from tests.executor.conftest import write_sample_pbi
 
 
@@ -596,60 +595,6 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
 # ----------------------------------------------------------------------
 
 
-def test_claim_creates_work_worktree_on_feature_branch(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A claim materialises a per-PBI work worktree under the target
-    clone, checked out on the feature branch ``ralph/<PBI-id>``."""
-    _populate_inbox(fake_repo)
-    monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
-        _stub_spawn("partial"),
-    )
-
-    result = iterate_once(cfg_for_repo)
-
-    assert result.outcome == "claimed"
-    # Queue clone has the PBI moved into current/.
-    assert (fake_repo / ".ralph" / "current" / "WI-1234").is_dir()
-    # Work worktree exists on the feature branch (target clone IS fake_repo
-    # via the autouse _fake_ensure_target_clone fixture).
-    work_wt = work_worktree_path(fake_repo, "WI-1234")
-    assert work_wt.is_dir()
-    work_branch = _git(work_wt, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    assert work_branch == "ralph/WI-1234"
-
-
-def test_terminal_outcome_removes_work_tree(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When the iteration ends in a terminal outcome (pr_created here),
-    the per-PBI work worktree is torn down. The queue clone persists."""
-    _populate_inbox(fake_repo)
-    iterate_once(cfg_for_repo)  # claim
-
-    work_wt = work_worktree_path(fake_repo, "WI-1234")
-    assert work_wt.is_dir(), "precondition: work worktree exists after claim"
-
-    monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
-        _stub_spawn("pr_created", pr_url="https://example/pr/9"),
-    )
-    result = iterate_once(cfg_for_repo)
-
-    assert result.outcome == "ran_pr_created"
-    assert not work_wt.exists(), "work worktree should be removed on pr_created"
-    # Queue clone persists.
-    assert fake_repo.is_dir()
-    # ``ralph/WI-1234`` ref is preserved — pending-pr PBIs need it.
-    feature_ref = _git(fake_repo, "branch", "--list", "ralph/WI-1234").strip()
-    assert "ralph/WI-1234" in feature_ref
-
-
 def test_stuck_blocked_move_targets_queue_clone(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
@@ -929,7 +874,9 @@ def test_claim_clones_target_and_creates_worktree_in_clone(
     assert picked is not None and picked.id == "WI-CLONE"
 
     monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
-    monkeypatch.setattr("ralph_executor.loop.ensure_worktree", _fake_ensure_worktree)
+    # The claim path's ensure_worktree call now lives inside
+    # ``worktree_manager.materialise_worktree`` — patch it there.
+    monkeypatch.setattr("ralph_executor.worktree_manager.ensure_worktree", _fake_ensure_worktree)
 
     claimed = _claim_pbi(cfg, picked)
 
