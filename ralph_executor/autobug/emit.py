@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import shutil
@@ -120,10 +121,8 @@ def bump(pbi_id: str, exc: BaseException, ctx: Context) -> None:
         # restore failures so the original exception propagates cleanly
         # (mirrors the ``shutil.rmtree(..., ignore_errors=True)`` used
         # by ``new`` and ``reopen``).
-        try:
+        with contextlib.suppress(OSError):
             bug_path.write_bytes(original_bytes)
-        except OSError:
-            pass
         raise
 
 
