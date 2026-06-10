@@ -32,7 +32,8 @@ Use `ralph-new` whenever a human (BA, PM, triager, dev) wants to file a bug or f
 | `--check-depends-on` | no | Under `--dry-run`, force clone so existence check runs. |
 | `--workspace PATH` | no | Override `workspace_root`. |
 | `--queue-repo URL` | no | Override `queue_repo`. |
-| `--queue-branch BRANCH` | no | Override `queue_branch`. |
+| `--queue-branch BRANCH` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
+| `--instance-id NAME` | no | Operator instance_id used to land on the executor's namespaced queue clone (`queue-<instance-id>/`). Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 
 ## Output
 

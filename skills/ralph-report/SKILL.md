@@ -1,6 +1,6 @@
 ---
 name: ralph-report
-description: Local read-only HTML dashboard of ralph-queue activity. Renders Current / Blocked / Inbox / Pending PR / Done-24h panels + a 24h activity timeline. Starts a local HTTP server on 127.0.0.1, auto-exits after 30 minutes idle. Source: filesystem reads on the operator queue clone at `<workspace_root>/queue/` + `git log` against `ralph-queue`. Sibling of `ralph-status` (one-shot CLI table) — both skills read the SAME tree.
+description: Local read-only HTML dashboard of ralph-queue activity. Renders Current / Blocked / Inbox / Pending PR / Done-24h panels + a 24h activity timeline. Starts a local HTTP server on 127.0.0.1, auto-exits after 30 minutes idle. Source: filesystem reads on the operator queue clone at `<workspace_root>/queue-<instance_id>/` + `git log` against `ralph-queue`. Sibling of `ralph-status` (one-shot CLI table) — both skills read the SAME tree.
 ---
 
 # ralph-report
@@ -61,7 +61,7 @@ overrides matching the TOML knobs.
 
 ## Data sources
 
-- **Snapshot panels (Current / Inbox / Pending PR / Blocked):** filesystem reads of `.ralph/<state>/` on the operator queue clone resolved by `scripts.queue_writer.acquire_queue_clone(workspace_root, queue_repo, queue_branch)`. This is the SAME tree `ralph-status` reads — the two surfaces are guaranteed to agree (modulo ordering / pretty wrapping).
+- **Snapshot panels (Current / Inbox / Pending PR / Blocked):** filesystem reads of `.ralph/<state>/` on the operator queue clone at `<workspace_root>/queue-<instance_id>/`, resolved by `scripts.queue_writer.acquire_queue_clone(workspace_root, queue_repo, queue_branch, instance_id=...)`. This is the SAME tree `ralph-status` reads — the two surfaces are guaranteed to agree (modulo ordering / pretty wrapping).
 - **Done (last 24h) and Activity timeline:** `git log origin/ralph-queue --since=24.hours.ago` against the operator clone, parsed against the executor's deterministic commit-message grammar.
 
 ## What this skill does NOT do

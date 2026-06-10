@@ -44,7 +44,7 @@ foreign-claim case.
 |---|---|---|
 | `--pbi-id <id>` | yes | PBI identifier matching the directory name under `.ralph/current/`. |
 | `--to <state>` | yes | Destination state folder. Must be `inbox` (re-dispatchable, attempts counter reset) or `blocked` (human-triage, attempts preserved). |
-| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
+| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue-<instance_id>/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
 | `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default `ralph-queue`). |
 | `--no-push` | no | Commit the recover locally but do not push. Useful for inspecting the commit before it lands. |
@@ -78,7 +78,7 @@ Prints a JSON summary to stdout on success. Example:
   "from_state": "current",
   "pbi_id": "WI-1234",
   "pushed": true,
-  "queue_clone": "/home/dev/ralph-workspaces/queue",
+  "queue_clone": "/home/dev/ralph-workspaces/queue-ralph-a",
   "recovered_from_instance": "ralph-a",
   "to_state": "inbox"
 }

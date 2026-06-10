@@ -4,7 +4,7 @@ This module reuses ``scripts.pbi_reader.enumerate_state`` for PBI directory
 parsing. It does NOT read the timeline / done-24h commit data — those come
 from ``git_walker.py`` because they are commit-history-derived.
 
-The reader takes the operator queue clone (``<workspace_root>/queue/``)
+The reader takes the operator queue clone (``<workspace_root>/queue-<instance_id>/``)
 directly, the SAME tree ``ralph-status``, ``ralph-cancel``, and
 ``ralph-promote`` read. The previous source-repo worktree lookup and
 ``git show origin/ralph-queue:`` temp-mirror fallback have been removed —

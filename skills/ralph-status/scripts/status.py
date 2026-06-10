@@ -1,7 +1,7 @@
 """``ralph-status`` skill entry point.
 
-Read-only view of the single queue clone at
-``<workspace_root>/queue/``. Walks ``.ralph/<state>/`` for every state
+Read-only view of the operator queue clone at
+``<workspace_root>/queue-<instance_id>/``. Walks ``.ralph/<state>/`` for every state
 folder, parses each PBI's frontmatter via ``scripts.pbi_reader``, and
 renders the rows as a fixed-width table or JSON.
 """

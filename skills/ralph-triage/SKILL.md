@@ -8,7 +8,8 @@ description: Walk the .ralph/blocked/ queue in the queue clone and route a stuck
 ## What this skill does
 
 `ralph-triage` is the on-call / tech-lead surface for the blocked queue
-inside the queue clone (`<workspace_root>/queue/` on `main`). When
+inside the queue clone (`<workspace_root>/queue-<instance_id>/` on
+`cfg.queue_branch`, default: `ralph-queue`). When
 Ralph has marked a PBI blocked (because it self-halted via STUCK.md or
 because the executor's cycle detector tripped on it), the PBI sits in
 `.ralph/blocked/<pbi-id>/`. A human reads the STUCK.md and HISTORY.md
@@ -27,8 +28,8 @@ and chooses one of two paths:
   archive — the record of how hard Ralph tried is part of the audit
   trail.
 
-After the move the skill commits and pushes `main` to the queue
-remote.
+After the move the skill commits and pushes the queue branch
+(`cfg.queue_branch`, default: `ralph-queue`) to the queue remote.
 
 ## When to use it
 
@@ -47,8 +48,9 @@ remote.
 | `--pbi-id <id>` | yes | PBI identifier matching the directory name under `.ralph/blocked/`. |
 | `--to <destination>` | yes | Where to route the PBI. One of `inbox`, `archive`. |
 | `--note <text>` | yes | Operator's reasoning for the decision. Appended verbatim to HISTORY.md. |
-| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
+| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue-<instance_id>/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
+| `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
 | `--no-push` | no | Commit locally but do not push. |
 | `--dry-run` | no | Compute and log without moving, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
 
@@ -71,7 +73,7 @@ Prints a JSON summary to stdout on success. Example for `--to inbox`:
   "new_path": ".ralph/inbox/WI-1234",
   "attempts_reset_to_zero": true,
   "archive_created": false,
-  "queue_clone": "/home/dev/ralph-workspaces/queue",
+  "queue_clone": "/home/dev/ralph-workspaces/queue-<instance-id>",
   "commit_sha": "abcdef0123456789",
   "pushed": true,
   "dry_run": false,
