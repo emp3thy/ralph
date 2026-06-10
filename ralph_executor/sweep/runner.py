@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import sys
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
@@ -19,7 +18,6 @@ from pathlib import Path
 
 from ralph_executor.safety.events import EventLog
 from ralph_executor.subprocess_utils import run_text
-from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
 from ralph_executor.sweep.events import (
@@ -27,6 +25,15 @@ from ralph_executor.sweep.events import (
 )
 from ralph_executor.sweep.events import (
     emit_pr_merged_and_pbi_closed as _emit_pr_merged_and_pbi_closed,
+)
+from ralph_executor.sweep.feedback_emit import (
+    emit_feedback_pbi as _emit_feedback_pbi,
+)
+from ralph_executor.sweep.history import (
+    append_history as _append_history,
+)
+from ralph_executor.sweep.history import (
+    move_with_history as _move_with_history,
 )
 from ralph_executor.sweep.pr_state import AdoSkillError
 from ralph_executor.sweep.target import read_target_info
@@ -429,7 +436,7 @@ def _dispatch(
     qr = ctx.queue_root
     a = decision.action
     if a is Action.MOVE_TO_DONE:
-        _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx)
+        _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx.config.now)
         _emit_pr_merged_and_pbi_closed(
             pbi_id=pbi_dir.name,
             snapshot=snapshot,
@@ -437,19 +444,20 @@ def _dispatch(
             now=ctx.config.now,
         )
     elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
-        _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx)
+        _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx.config.now)
     elif a is Action.MOVE_TO_INBOX_RETRY:
-        _move_with_history(pbi_dir, qr / "inbox" / pbi_dir.name, decision.reason, ctx)
+        _move_with_history(pbi_dir, qr / "inbox" / pbi_dir.name, decision.reason, ctx.config.now)
     elif a is Action.CREATE_FEEDBACK_PBI:
         _emit_feedback_pbi(
             pbi_dir=pbi_dir,
             decision=decision,
             snapshot=snapshot,
             sidecar=sidecar,
-            ctx=ctx,
+            queue_root=ctx.queue_root,
+            now=ctx.config.now,
         )
     elif a is Action.PING_REVIEWER:
-        _append_history(pbi_dir, decision.reason, ctx)
+        _append_history(pbi_dir, decision.reason, ctx.config.now)
     elif a is Action.MERGE_PR:
         _dispatch_merge_pr(
             pbi_dir=pbi_dir,
@@ -461,108 +469,6 @@ def _dispatch(
         return
     else:  # pragma: no cover — defensive
         raise _SweepPbiError(f"unhandled action: {a}")
-
-
-def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> None:
-    # Stage the move FIRST so a failure (EXDEV cross-device, EACCES
-    # permission denied, ENOSPC disk full, …) doesn't leave a spurious
-    # "moved" entry in HISTORY.md that contradicts what's on disk.
-    # Wrap mkdir + move in _SweepPbiError so the per-PBI isolation in
-    # run() catches OSError at every IO step.
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to create {dst.parent}: {exc}") from exc
-    if dst.exists():
-        raise _SweepPbiError(f"destination {dst} already exists")
-    try:
-        shutil.move(str(src), str(dst))
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to move {src} to {dst}: {exc}") from exc
-    # Append history to the NEW location — src no longer exists after
-    # a successful move. Original behaviour wrote to src BEFORE move,
-    # so on success the entry travelled along; preserve that semantic
-    # by writing to dst after the move completes.
-    _append_history(dst, reason, ctx)
-
-
-def _append_history(pbi_dir: Path, reason: str, ctx: SweepContext) -> None:
-    # Wrap IO at the source so EVERY call site (PING_REVIEWER dispatch,
-    # _move_with_history, _emit_feedback_pbi) gets OSError → _SweepPbiError
-    # conversion uniformly. Without this, a disk-full / EACCES /
-    # EROFS error from read_text or write_text escapes run()'s
-    # per-PBI isolation and aborts the remaining sweep.
-    history = pbi_dir / "HISTORY.md"
-    line = f"- {ctx.config.now.isoformat()} sweep: {reason}\n"
-    try:
-        prior = history.read_text(encoding="utf-8") if history.exists() else ""
-        history.write_text(prior + line, encoding="utf-8")
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to append HISTORY.md in {pbi_dir}: {exc}") from exc
-
-
-def _emit_feedback_pbi(
-    *,
-    pbi_dir: Path,
-    decision: Decision,
-    snapshot: PrSnapshot,
-    sidecar: sidecar_state.SweepSidecar,
-    ctx: SweepContext,
-) -> None:
-    next_round = sidecar.last_feedback_round + 1
-    bundle = feedback_module.render(
-        pr=snapshot,
-        originating_pbi_id=pbi_dir.name,
-        round_number=next_round,
-        new_comments=decision.new_comments,
-        original_pbi_summary=_read_original_summary(pbi_dir),
-        generated_at=ctx.config.now,
-    )
-    target_dir = ctx.queue_root / "inbox" / bundle.directory_name
-    if target_dir.exists():
-        raise _SweepPbiError(f"feedback PBI {target_dir} already exists; refusing to overwrite")
-    # Wrap the file IO so EXDEV / EACCES / ENOSPC become _SweepPbiError
-    # rather than escaping run()'s per-PBI isolation. On failure, tear
-    # down any partial target_dir — otherwise the guard above
-    # (`if target_dir.exists()`) blocks every subsequent sweep with
-    # "already exists; refusing to overwrite", AND the sidecar never
-    # advances so next_round computes the same path on every retry,
-    # permanently stranding the PBI in pending-pr/.
-    try:
-        target_dir.mkdir(parents=True)
-        (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
-        (target_dir / "PR-LINK.md").write_text(bundle.pr_link_md, encoding="utf-8")
-        (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
-        (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
-    except OSError as exc:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise _SweepPbiError(f"failed to write feedback PBI {target_dir}: {exc}") from exc
-
-    new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
-    # write_sidecar calls tmp.write_text + tmp.replace; both can raise
-    # OSError (ENOSPC etc.). Wrap so it's caught per-PBI rather than
-    # escaping run(). If the sidecar fails AFTER the feedback dir has
-    # been written, tear down the feedback dir too — otherwise the
-    # next sweep computes the same next_round (sidecar wasn't bumped),
-    # hits target_dir.exists() and raises "already exists" forever,
-    # permanently stranding the PBI. Mirrors the cleanup in the
-    # feedback-dir except block above.
-    try:
-        sidecar_state.write_sidecar(
-            pbi_dir,
-            sidecar_state.SweepSidecar(
-                last_feedback_sweep=ctx.config.now,
-                last_feedback_round=next_round,
-                last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
-                    sidecar.last_seen_comment_ids, new_ids
-                ),
-                last_ci_status=sidecar.last_ci_status,
-            ),
-        )
-    except OSError as exc:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
-    _append_history(pbi_dir, decision.reason, ctx)
 
 
 def _invoke_merge_pr(
@@ -633,7 +539,7 @@ def _dispatch_merge_pr(
             pbi_dir,
             ctx.queue_root / "done" / pbi_dir.name,
             "PR auto-merged by sweep",
-            ctx,
+            ctx.config.now,
         )
         _emit_pr_merged_and_pbi_closed(
             pbi_id=pbi_dir.name,
@@ -653,16 +559,3 @@ def _dispatch_merge_pr(
         )
     else:
         raise _SweepPbiError(f"merge_pr returned unexpected exit {rc}")
-
-
-def _read_original_summary(pbi_dir: Path) -> str:
-    for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
-        path = pbi_dir / candidate
-        if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise _SweepPbiError(f"failed to read {candidate} in {pbi_dir}: {exc}") from exc
-            # First 40 lines; enough for context, bounded for file size.
-            return "\n".join(text.splitlines()[:40])
-    return "(no original PBI body found)"
