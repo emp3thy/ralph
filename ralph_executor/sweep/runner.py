@@ -8,99 +8,49 @@ the PR skill, moving folders, and writing feedback PBIs.
 from __future__ import annotations
 
 import logging
-import os
 import re
-import sys
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from pathlib import Path
 
-from ralph_executor.safety.events import EventLog
-from ralph_executor.subprocess_utils import run_text
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
+from ralph_executor.sweep.actions import dispatch as _dispatch
 from ralph_executor.sweep.events import (
     emit_pr_green_then_red as _emit_pr_green_then_red,
 )
-from ralph_executor.sweep.events import (
-    emit_pr_merged_and_pbi_closed as _emit_pr_merged_and_pbi_closed,
-)
-from ralph_executor.sweep.feedback_emit import (
-    emit_feedback_pbi as _emit_feedback_pbi,
-)
-from ralph_executor.sweep.history import (
-    append_history as _append_history,
-)
-from ralph_executor.sweep.history import (
-    move_with_history as _move_with_history,
-)
 from ralph_executor.sweep.pr_state import AdoSkillError
+from ralph_executor.sweep.target import (
+    per_pbi_subprocess_overrides as _per_pbi_subprocess_overrides,
+)
 from ralph_executor.sweep.target import read_target_info
 from ralph_executor.sweep.types import (
     Action,
     CommentSnapshot,
     Decision,
     PrSnapshot,
+    SweepConfig,
+    SweepContext,
 )
 from ralph_executor.sweep.types import (
     SweepPbiError as _SweepPbiError,
 )
-from ralph_executor.url_utils import TargetRepoInfo
 
 log = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class SweepConfig:
-    """All non-default parameters the sweep needs.
-
-    ``ralph_author_email`` MUST be non-empty for the sweep to run in
-    production; the constructor raises ``ValueError`` if it isn't. Tests
-    that don't care about Ralph-authored filtering should pass a clearly
-    fictitious value (e.g. ``"ralph-bot@example.com"``).
-    """
-
-    ralph_author_email: str
-    max_attempts: int
-    stale_threshold: timedelta
-    now: datetime
-    auto_merge_clean_prs: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.ralph_author_email:
-            raise ValueError("ralph_author_email is required (set RALPH_ADO_AUTHOR_EMAIL)")
-        if self.max_attempts < 1:
-            raise ValueError("max_attempts must be >= 1")
-        if self.stale_threshold.total_seconds() <= 0:
-            raise ValueError("stale_threshold must be a positive timedelta")
-        if self.now.tzinfo is None:
-            raise ValueError("now must be timezone-aware")
-
-
-@dataclass(frozen=True)
-class SweepContext:
-    """I/O context for one sweep invocation.
-
-    The loop driver (Plan 7) constructs this from its own ``LoopContext``
-    and passes it in. The split keeps ``run`` testable in isolation.
-    """
-
-    queue_root: Path  # the ``.ralph/`` directory in the project repo
-    ado_pr_scripts_path: Path  # the staged PR-skill ``scripts/`` directory
-    config: SweepConfig
-    # The GitHub/ADO repo name (e.g. "ralph"), used by reconcile when
-    # invoking lookup_by_branch. Must be passed explicitly because
-    # ``queue_root.parent.name`` is unreliable under worktree mode: there
-    # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
-    # ``.parent.name`` is "queue", not the repo name.
-    repo_name: str = ""
-    # Optional cycle-detector event sink. When provided, the sweep emits
-    # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
-    # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
-    # don't exercise event emission omit it; production wiring
-    # (iteration_safety.run_sweep) always passes one.
-    event_log: EventLog | None = None
+# Explicit re-export surface (mypy ``no_implicit_reexport``): SweepConfig /
+# SweepContext moved to types.py and _per_pbi_subprocess_overrides to
+# target.py, but cli.py, iteration_safety.py, reconcile.py and the tests
+# import them from here.
+__all__ = [
+    "PbiActionRecord",
+    "SweepConfig",
+    "SweepContext",
+    "SweepResult",
+    "_per_pbi_subprocess_overrides",
+    "decide_action",
+    "run",
+]
 
 
 @dataclass(frozen=True)
@@ -365,25 +315,6 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
     )
 
 
-def _per_pbi_subprocess_overrides(
-    target_info: TargetRepoInfo | None,
-    ctx: SweepContext,
-) -> tuple[dict[str, str] | None, str]:
-    """Compute ``(env, repo_name)`` for the sweep's per-PBI subprocess calls.
-
-    When the PBI declares a ``target_repo`` (multi-target rollout):
-      env = parent env overlaid with ``GH_OWNER=<owner>``; repo = ``<name>``.
-    When absent (legacy single-target): env stays ``None`` (subprocess
-    inherits the parent env) and ``repo_name`` falls back to
-    ``ctx.repo_name`` (or ``queue_root.parent.name``, matching the
-    pre-PBI-2 behaviour at the call sites).
-    """
-    if target_info is None:
-        return None, ctx.repo_name or ctx.queue_root.parent.name
-    env = {**os.environ, "GH_OWNER": target_info.owner}
-    return env, target_info.name
-
-
 def _read_pr_id(pbi_dir: Path) -> int:
     pr_link = pbi_dir / "PR-LINK.md"
     if not pr_link.is_file():
@@ -422,140 +353,3 @@ def _read_attempts(pbi_dir: Path) -> int:
                 except ValueError:
                     return 0
     return 0
-
-
-def _dispatch(
-    *,
-    pbi_dir: Path,
-    decision: Decision,
-    snapshot: PrSnapshot,
-    sidecar: sidecar_state.SweepSidecar,
-    ctx: SweepContext,
-    target_info: TargetRepoInfo | None = None,
-) -> None:
-    qr = ctx.queue_root
-    a = decision.action
-    if a is Action.MOVE_TO_DONE:
-        _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx.config.now)
-        _emit_pr_merged_and_pbi_closed(
-            pbi_id=pbi_dir.name,
-            snapshot=snapshot,
-            event_log=ctx.event_log,
-            now=ctx.config.now,
-        )
-    elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
-        _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx.config.now)
-    elif a is Action.MOVE_TO_INBOX_RETRY:
-        _move_with_history(pbi_dir, qr / "inbox" / pbi_dir.name, decision.reason, ctx.config.now)
-    elif a is Action.CREATE_FEEDBACK_PBI:
-        _emit_feedback_pbi(
-            pbi_dir=pbi_dir,
-            decision=decision,
-            snapshot=snapshot,
-            sidecar=sidecar,
-            queue_root=ctx.queue_root,
-            now=ctx.config.now,
-        )
-    elif a is Action.PING_REVIEWER:
-        _append_history(pbi_dir, decision.reason, ctx.config.now)
-    elif a is Action.MERGE_PR:
-        _dispatch_merge_pr(
-            pbi_dir=pbi_dir,
-            snapshot=snapshot,
-            ctx=ctx,
-            target_info=target_info,
-        )
-    elif a is Action.NOOP:
-        return
-    else:  # pragma: no cover — defensive
-        raise _SweepPbiError(f"unhandled action: {a}")
-
-
-def _invoke_merge_pr(
-    *,
-    pr_id: int,
-    ctx: SweepContext,
-    repo_name: str | None = None,
-    env: dict[str, str] | None = None,
-) -> int:
-    """Subprocess-invoke the ``pr-github`` ``merge_pr.py`` skill.
-
-    Returns the raw subprocess exit code (0 = merged, 3 = HTTP error,
-    4 = race / refused-by-host). Exit 2 (argparse / validation) is
-    converted to ``_SweepPbiError`` so the per-PBI guard in ``run`` catches
-    it — exit 2 indicates the caller passed garbage and is never a
-    "retry next sweep" condition. Any other unexpected exit also raises,
-    so the dispatch branch never silently swallows a new exit code added
-    to the skill in the future.
-
-    ``repo_name`` and ``env`` (when provided) override the legacy
-    ``ctx.repo_name`` + inherited-env behaviour with per-PBI values
-    derived from the PBI's ``target_repo``.
-    """
-    script = ctx.ado_pr_scripts_path / "merge_pr.py"
-    if not script.is_file():
-        raise _SweepPbiError(f"merge_pr.py not found at {script}")
-    cmd = [
-        sys.executable,
-        str(script),
-        "--repo",
-        repo_name or ctx.repo_name or ctx.queue_root.parent.name,
-        "--pr-id",
-        str(pr_id),
-    ]
-    result = run_text(
-        cmd,
-        check=False,
-        capture_output=True,
-        env=env,
-    )
-    if result.returncode == 2:
-        raise _SweepPbiError(
-            f"merge_pr.py exited 2 (validation): {result.stderr.strip() or '<no stderr>'}"
-        )
-    return result.returncode
-
-
-def _dispatch_merge_pr(
-    *,
-    pbi_dir: Path,
-    snapshot: PrSnapshot,
-    ctx: SweepContext,
-    target_info: TargetRepoInfo | None = None,
-) -> None:
-    """Run merge_pr.py for this PBI and route its exit code.
-
-    Exit 0 → move PBI to ``done/`` with the marker reason and emit
-    ``PR_MERGED`` + ``PBI_CLOSED``. Exit 4 → log INFO and leave the PBI
-    in ``pending-pr/`` for the next sweep (race / refused-by-host).
-    Exit 3 → log WARNING and leave the PBI in ``pending-pr/`` (transient
-    GitHub error). Anything else → raise ``_SweepPbiError`` so the
-    per-PBI guard records it and continues with the remaining PBIs.
-    """
-    sub_env, sub_repo = _per_pbi_subprocess_overrides(target_info, ctx)
-    rc = _invoke_merge_pr(pr_id=snapshot.pr_id, ctx=ctx, repo_name=sub_repo, env=sub_env)
-    if rc == 0:
-        _move_with_history(
-            pbi_dir,
-            ctx.queue_root / "done" / pbi_dir.name,
-            "PR auto-merged by sweep",
-            ctx.config.now,
-        )
-        _emit_pr_merged_and_pbi_closed(
-            pbi_id=pbi_dir.name,
-            snapshot=snapshot,
-            event_log=ctx.event_log,
-            now=ctx.config.now,
-        )
-    elif rc == 4:
-        log.info(
-            "sweep: merge_pr refused for %s (race / not-ready); retry next iter",
-            pbi_dir.name,
-        )
-    elif rc == 3:
-        log.warning(
-            "sweep: merge_pr GitHub error for %s; retry next iter",
-            pbi_dir.name,
-        )
-    else:
-        raise _SweepPbiError(f"merge_pr returned unexpected exit {rc}")
