@@ -2,7 +2,7 @@
 
 The supervisor skills (`ralph-cancel`, `ralph-promote`, `ralph-triage`)
 all follow the same pattern: acquire the queue clone at
-``<workspace_root>/queue/`` (always on ``main``), mutate one or more PBI
+``<workspace_root>/queue-<instance_id>/`` (always on ``main``), mutate one or more PBI
 directories under ``.ralph/``, commit, optionally push. This module is
 the single source of truth for that pattern so the skills stay
 consistent and the git-related test surface has a single home.

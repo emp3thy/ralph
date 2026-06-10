@@ -148,7 +148,7 @@ _TOML_KNOWN_KEYS = frozenset(
     {
         # Queue repo HTTPS URL. Required — operators set this once via TOML
         # (no env var, no default; the loop crashes without it). The
-        # executor clones it into ``<workspace_root>/queue/`` and reads /
+        # executor clones it into ``<workspace_root>/queue-<instance_id>/`` and reads /
         # writes ``.ralph/`` from that clone.
         "queue_repo",
         # Branch on the queue repo that holds .ralph/ state. Default
@@ -303,7 +303,7 @@ class ExecutorConfig:
 
     # HTTPS URL of the queue repo (e.g. ``https://github.com/emp3thy/ralph-queue``).
     # Required via TOML (or the ``--queue-repo`` CLI flag). The loop clones
-    # this into ``<workspace_root>/queue/`` once and pulls on subsequent
+    # this into ``<workspace_root>/queue-<instance_id>/`` once and pulls on subsequent
     # iterations; every queue mutation pushes back to its ``main`` branch.
     queue_repo: str
     # Branch on queue_repo that holds .ralph/ state. Default "ralph-queue"
@@ -356,7 +356,7 @@ class ExecutorConfig:
     # branch-dance path is gone. The loop runs each PBI inside a per-PBI
     # worktree under ``<target-clone>/.ralph-work/<PBI-id>/`` and
     # reads/writes ``.ralph/`` from the queue clone at
-    # ``<workspace_root>/queue/`` (materialised by ``ensure_queue_clone``).
+    # ``<workspace_root>/queue-<instance_id>/`` (materialised by ``ensure_queue_clone``).
     use_worktrees: bool = DEFAULT_USE_WORKTREES
     # Sweep tuning — promoted from env-only. ``bot_author_email`` is the
     # commit/PR author email ralph uses; sweep skips comments by this
@@ -876,7 +876,7 @@ def _resolve_workspace_settings(
         source_label=source_label,
     )
     # Stage-A single-checkout mode no longer reachable: the queue is now
-    # its own clone at ``<workspace_root>/queue/`` (see ``queue_clone``),
+    # its own clone at ``<workspace_root>/queue-<instance_id>/`` (see ``queue_clone``),
     # so there is no ralph-queue branch to swap to on the primary
     # checkout. Reject the legacy knob outright so an operator who pinned
     # ``use_worktrees = false`` in TOML notices the migration instead of
