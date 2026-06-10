@@ -263,7 +263,7 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     Spawn cwd: Claude runs against the per-PBI work worktree inside the
     target clone (populated by ``_claim_pbi`` and threaded through on
     ``pbi.work_worktree``). The ``pbi_dir`` argument points at the PBI's
-    directory inside the queue clone (``<workspace_root>/queue/.ralph/
+    directory inside the queue clone (``<workspace_root>/queue-<instance_id>/.ralph/
     current/<PBI-ID>/``) so Claude can read PROMPT.md / PBI.md /
     HISTORY.md and write STUCK.md / HISTORY.md without leaving the
     target checkout.
@@ -514,7 +514,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
     Idempotent in the no-work case: if current/ is empty and the inbox
     is empty, the iteration is a no-op and returns ``IterationResult("idle")``.
 
-    ``.ralph/`` lives in the queue clone at ``<workspace_root>/queue/``;
+    ``.ralph/`` lives in the queue clone at ``<workspace_root>/queue-<instance_id>/``;
     callers inspect it via ``_queue_repo_root(cfg)`` (the primary
     checkout is never branch-swapped).
 

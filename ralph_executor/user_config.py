@@ -4,7 +4,7 @@ Lives at ``~/.ralph/config.toml`` and holds *per-machine* knobs:
 
   ``workspace_root``     -- directory under which queue clone and every
                             target clone are materialised
-                            (``<workspace_root>/queue/``,
+                            (``<workspace_root>/queue-<instance_id>/``,
                             ``<workspace_root>/clones/<owner>/<name>/``)
   ``queue_repo``         -- HTTPS URL of the queue repo holding ``.ralph/``
   ``queue_branch``       -- branch on the queue repo (default ``ralph-queue``)

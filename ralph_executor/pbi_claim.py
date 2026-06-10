@@ -143,7 +143,7 @@ def claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          target repo into ``<workspace_root>/clones/<owner>-<name>/``;
          ``TargetUnreachable`` maps to ``ClaimError('target unreachable: …')``.
       2. ``move_inbox_to_current`` operates against the queue clone at
-         ``<workspace_root>/queue/`` (movements._move resolves the path
+         ``<workspace_root>/queue-<instance_id>/`` (movements._move resolves the path
          via ``queue_repo_root``).
       3. Materialise the per-PBI work worktree INSIDE the target clone at
          ``<clone_root>/.ralph-work/<PBI-ID>/`` on ``ralph/<PBI-ID>``,
@@ -175,7 +175,7 @@ def _claim_pbi_worktree(
     """Worktree-mode implementation of ``claim_pbi``.
 
     The primary checkout's branch is never touched. ``.ralph/`` reads
-    and writes go through the queue clone at ``<workspace_root>/queue/``
+    and writes go through the queue clone at ``<workspace_root>/queue-<instance_id>/``
     (materialised earlier by ``queue_git.pull_queue`` → ``ensure_queue_clone``);
     code edits go through the per-PBI work worktree, which lives INSIDE
     the target's clone (``<workspace_root>/clones/<owner>/<name>/.ralph-work/<PBI-ID>/``).

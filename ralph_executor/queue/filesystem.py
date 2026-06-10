@@ -1,7 +1,7 @@
 """Filesystem-backed queue source.
 
 Reads PBI directories from ``.ralph/<state>/`` inside the queue clone at
-``<workspace_root>/queue/``. Parses the YAML frontmatter of the
+``<workspace_root>/queue-<instance_id>/``. Parses the YAML frontmatter of the
 type-appropriate entry file and returns ``PBI`` dataclasses. Sorts the
 inbox by priority lane, then by ``created_at`` within the lane.
 """

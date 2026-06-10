@@ -227,7 +227,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     # ``--repo`` / ``--workspace`` removed from reconcile (T4 of
     # KILL-RALPH-HOME). The reconcile path reads ``.ralph/`` from
-    # ``<workspace_root>/queue/``; the queue-clone root is fixed by
+    # ``<workspace_root>/queue-<instance_id>/``; the queue-clone root is fixed by
     # ``workspace_root`` in ``~/.ralph/config.toml`` and there is no
     # operator-facing knob for overriding the target repo per run.
     reconcile_parser.add_argument(
@@ -373,7 +373,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     Loads the executor config, resolves the PR-skill scripts directory
     for the configured git host, builds a ``SweepContext`` rooted at
-    ``<workspace_root>/queue/.ralph`` and delegates to ``reconcile_all``.
+    ``<workspace_root>/queue-<instance_id>/.ralph`` and delegates to ``reconcile_all``.
     Prints a one-line-per-orphan summary table.
 
     Returns 0 on success, 2 on config or environment errors.
@@ -399,7 +399,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     ctx = SweepContext(
         # Worktree-mode awareness: ``.ralph/`` lives in the queue clone at
-        # ``<workspace_root>/queue/`` (not in any per-target checkout).
+        # ``<workspace_root>/queue-<instance_id>/`` (not in any per-target checkout).
         queue_root=_queue_repo_root(cfg) / ".ralph",
         ado_pr_scripts_path=scripts_path,
         config=SweepConfig(

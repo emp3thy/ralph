@@ -20,6 +20,12 @@ SCRIPT = REPO_ROOT / "skills" / "ralph-new" / "scripts" / "new.py"
 
 TARGET = "https://github.com/owner/svc"
 
+# Operator identity pinned via --instance-id so the queue clone lands at the
+# deterministic namespaced path queue-test-ralph/ regardless of the host's
+# RALPH_INSTANCE_ID / ~/.ralph/config.toml / hostname. Mirrors the convention
+# in tests/skills/test_ralph_promote.py.
+OWN_INSTANCE_ID = "test-ralph"
+
 
 @pytest.fixture(scope="module")
 def new_mod() -> ModuleType:
@@ -50,6 +56,8 @@ def _common_argv(workspace: Path, queue_repo: str) -> list[str]:
         queue_repo,
         "--queue-branch",
         "ralph-queue",
+        "--instance-id",
+        OWN_INSTANCE_ID,
         "--non-interactive",
     ]
 
@@ -202,6 +210,45 @@ def test_full_run_feature_blank_plan_writes_todo_stub(
         encoding="utf-8"
     )
     assert "TODO" in text
+
+
+def test_queue_clone_lands_at_namespaced_path(
+    new_mod: ModuleType,
+    queue_env: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue clone must land at queue-<instance_id>/, never legacy queue/.
+
+    Multi-ralph isolation: ralph-new must thread the operator instance_id
+    into ensure_queue_clone so it shares the executor's namespaced clone
+    path instead of silently falling back to the shared queue/ directory.
+    """
+    workspace, queue_repo = queue_env
+    _set_git_identity(monkeypatch)
+
+    rc = new_mod.main(
+        _common_argv(workspace, queue_repo)
+        + [
+            "--title",
+            "Namespaced clone",
+            "--type",
+            "bug",
+            "--target-repo",
+            TARGET,
+            "--body-file",
+            str(_write_inline(tmp_path, "b.md", "x")),
+            "--reproduce-file",
+            str(_write_inline(tmp_path, "r.md", "x")),
+            "--no-push",
+        ]
+    )
+    assert rc == 0
+
+    namespaced = workspace / f"queue-{OWN_INSTANCE_ID}"
+    assert (namespaced / ".git").is_dir()
+    assert (namespaced / ".ralph" / "inbox" / "NAMESPACED-CLONE").is_dir()
+    assert not (workspace / "queue").exists()
 
 
 # --- depends_on -------------------------------------------------------
@@ -362,7 +409,8 @@ def test_dry_run_no_clone_no_commit(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
-    assert not (workspace / "queue").exists()
+    # No clone at all — neither legacy queue/ nor namespaced queue-<id>/.
+    assert not list(workspace.glob("queue*"))
 
 
 def test_non_interactive_missing_title_exits_2(
@@ -443,7 +491,7 @@ def test_no_push_commits_locally_but_does_not_push(
 
     verify = _verify_clone(tmp_path, queue_repo)
     assert not (verify / ".ralph" / "inbox" / "LOCAL-ONLY").exists()
-    local = workspace / "queue"
+    local = workspace / f"queue-{OWN_INSTANCE_ID}"
     assert (local / ".ralph" / "inbox" / "LOCAL-ONLY").exists()
 
 

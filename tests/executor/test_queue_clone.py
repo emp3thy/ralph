@@ -32,7 +32,7 @@ def _make_bare_remote(tmp_path: Path) -> Path:
 
 
 def _clone_into(dest: Path, remote: Path) -> None:
-    """Helper for legacy-rename tests: clone ``remote`` into ``dest``."""
+    """Helper for legacy-path tests: clone ``remote`` into ``dest``."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "clone", f"file://{remote.as_posix()}", str(dest)],
@@ -147,7 +147,7 @@ def test_ensure_queue_clone_pulls_configured_branch(tmp_path, monkeypatch):
     assert pull_cmd[-2:] == ["origin", "ralph-queue"]
 
 
-# --- Task 6: namespaced path + legacy rename ------------------------------
+# --- Namespaced path + legacy queue/ handling ------------------------------
 
 
 def test_namespaced_path(tmp_path: Path) -> None:
@@ -166,27 +166,40 @@ def test_namespaced_path(tmp_path: Path) -> None:
     assert (dest / ".git").is_dir()
 
 
-def test_legacy_queue_renamed_to_namespaced(tmp_path: Path) -> None:
-    """A pre-existing ``queue/`` is renamed once to ``queue-<instance_id>/``."""
+def test_legacy_queue_dir_raises_with_migration_message(tmp_path: Path) -> None:
+    """A pre-existing legacy ``queue/`` raises loudly with migration instructions."""
     remote = _make_bare_remote(tmp_path)
     workspace = tmp_path / "ws"
     legacy = workspace / "queue"
     _clone_into(legacy, remote)
 
-    dest = ensure_queue_clone(
-        workspace,
-        f"file://{remote.as_posix()}",
-        "main",
-        instance_id="ralph-a",
-    )
+    with pytest.raises(QueueCloneError) as exc:
+        ensure_queue_clone(
+            workspace,
+            f"file://{remote.as_posix()}",
+            "main",
+            instance_id="ralph-a",
+        )
 
-    assert dest == workspace / "queue-ralph-a"
-    assert not legacy.exists()
-    assert (dest / ".git").is_dir()
+    msg = str(exc.value)
+    assert f"legacy queue clone found at {legacy}" in msg
+    assert f"rename it to {workspace / 'queue-ralph-a'}" in msg
+    assert "or delete it to re-clone" in msg
+    # The legacy clone is left untouched — no auto-migration.
+    assert legacy.exists()
+    assert not (workspace / "queue-ralph-a").exists()
+
+
+def test_instance_id_is_required(tmp_path: Path) -> None:
+    """Calling without ``instance_id`` is a TypeError — no legacy fallback."""
+    with pytest.raises(TypeError):
+        ensure_queue_clone(  # type: ignore[call-arg]
+            tmp_path / "ws", "file:///unused", "main"
+        )
 
 
 def test_namespaced_only_is_noop_on_legacy(tmp_path: Path) -> None:
-    """When only the namespaced path exists, no rename happens (refresh-only)."""
+    """When only the namespaced path exists, operation proceeds normally."""
     remote = _make_bare_remote(tmp_path)
     workspace = tmp_path / "ws"
     namespaced = workspace / "queue-ralph-a"
