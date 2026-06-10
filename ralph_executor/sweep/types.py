@@ -17,6 +17,10 @@ CiStatus = Literal["succeeded", "failed", "running", "none", "unknown"]
 ThreadStatus = Literal["active", "pending", "fixed", "closed", "wontFix", "byDesign", "unknown"]
 
 
+class SweepPbiError(RuntimeError):
+    """Raised to skip one PBI without aborting the whole sweep."""
+
+
 @dataclass(frozen=True)
 class CommentSnapshot:
     """One PR comment, as returned by the PR skill's read-threads operation.
