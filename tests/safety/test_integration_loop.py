@@ -1,4 +1,4 @@
-"""End-to-end safety integration test against ``ralph_executor.loop``.
+"""End-to-end safety integration test against ``ralph_executor.iteration``.
 
 This module is self-contained: it builds its own git repo + ExecutorConfig
 rather than importing executor fixtures (which would double-register the
@@ -19,7 +19,7 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import iterate_once
+from ralph_executor.iteration import iterate_once
 from ralph_executor.safety import HaltedError, HaltStatus, check_halt_sentinel
 from ralph_executor.safety.events import EventType, open_log
 from tests.safety.conftest import make_event
@@ -244,7 +244,7 @@ def test_iteration_resumes_once_sentinel_acknowledged(
         f"{Path(cfg.claude_binary).parent}{os.pathsep}{os.environ.get('PATH', '')}",
     )
 
-    from ralph_executor import loop as loop_module
+    from ralph_executor import iteration as loop_module
 
     monkeypatch.setattr(
         loop_module,
@@ -310,7 +310,7 @@ def test_iteration_triggers_halt_when_detector_fires(
     finally:
         log.close()
 
-    from ralph_executor import loop as loop_module
+    from ralph_executor import iteration as loop_module
 
     monkeypatch.setattr(
         loop_module,
@@ -358,7 +358,7 @@ def test_attempts_exceeded_moves_pbi_to_blocked(
         f"{Path(cfg.claude_binary).parent}{os.pathsep}{os.environ.get('PATH', '')}",
     )
 
-    from ralph_executor import loop as loop_module
+    from ralph_executor import iteration as loop_module
 
     monkeypatch.setattr(loop_module, "_check_cycle_detector", lambda cfg, src: False)
     monkeypatch.setattr(

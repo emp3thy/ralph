@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from ralph_executor.loop import _pr_skill_scripts_path
+from ralph_executor.iteration import _pr_skill_scripts_path
 from tests.executor.conftest import _build_minimal_cfg
 
 

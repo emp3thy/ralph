@@ -76,7 +76,7 @@ def run_sweep(
     ``pr_skill_scripts_path`` is the resolver for the PR-skill scripts
     directory. It is an injectable parameter so the loop module can pass
     its own re-exported global — preserving monkeypatches at
-    ``ralph_executor.loop._pr_skill_scripts_path`` — and tests can pass
+    ``ralph_executor.iteration._pr_skill_scripts_path`` — and tests can pass
     a stub directly. When ``None`` it late-binds to this module's
     ``pr_skill_scripts_path`` at call time (a def-time default would
     freeze the original function object and defeat monkeypatching).

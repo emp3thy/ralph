@@ -10,7 +10,7 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import iterate_once
+from ralph_executor.iteration import iterate_once
 from ralph_executor.safety.events import EventType, open_log
 from tests.executor.conftest import _git, write_sample_pbi
 
@@ -65,7 +65,7 @@ def test_persist_iteration_writes_excludes_state_dir(
     state_marker.write_text("local-only", encoding="utf-8")
 
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
@@ -107,7 +107,7 @@ def test_file_touched_event_emitted_on_iteration_commit(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _appending_spawn)
     iterate_once(cfg_for_repo)
 
     now = datetime.now(tz=UTC)
@@ -140,7 +140,7 @@ def test_file_touched_skipped_on_empty_commit(
     iterate_once(cfg_for_repo)  # claim
 
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)

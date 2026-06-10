@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from ralph_executor import autobug, loop
+from ralph_executor import autobug
+from ralph_executor import iteration as loop
 from ralph_executor.config import ExecutorConfig
 
 

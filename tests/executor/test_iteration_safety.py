@@ -9,8 +9,8 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.iteration import iterate_once, run_loop
 from ralph_executor.iteration_safety import run_sweep
-from ralph_executor.loop import iterate_once, run_loop
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.safety.events import EventType, open_log
 from tests.executor.conftest import _git, write_sample_pbi
@@ -62,9 +62,9 @@ def test_run_loop_terminates_when_cycle_detector_trips(
     def _trip(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
         return True
 
-    monkeypatch.setattr("ralph_executor.loop._check_cycle_detector", _trip)
+    monkeypatch.setattr("ralph_executor.iteration._check_cycle_detector", _trip)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     # run_loop raises HaltedError on the first iteration where the
@@ -207,7 +207,7 @@ def test_event_log_lives_in_queue_clone(
     ``<queue-clone>/.ralph/state/events.db`` — that's the file the cycle
     detector reads on subsequent process restarts."""
     _populate_inbox(fake_repo)
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("partial"))
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn("partial"))
 
     iterate_once(cfg_for_repo)
 

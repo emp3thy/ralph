@@ -1,4 +1,4 @@
-"""Tests for ``ralph_executor.loop``."""
+"""Tests for ``ralph_executor.iteration``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import (
+from ralph_executor.iteration import (
     iterate_once,
     run_loop,
 )
@@ -66,7 +66,7 @@ def test_iterate_once_idle_when_no_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     result = iterate_once(cfg_for_repo)
@@ -81,7 +81,7 @@ def test_iterate_once_claims_inbox_pbi_when_current_empty(
 ) -> None:
     _populate_inbox(fake_repo)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     result = iterate_once(cfg_for_repo)
@@ -104,7 +104,7 @@ def test_iterate_once_runs_ralph_when_current_occupied(
     # Two iterations: first claims, second spawns Ralph (returns partial).
     iterate_once(cfg_for_repo)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     result = iterate_once(cfg_for_repo)
@@ -122,7 +122,7 @@ def test_iterate_once_moves_to_pending_pr_when_pr_created(
     _populate_inbox(fake_repo)
     iterate_once(cfg_for_repo)  # claim
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("pr_created", pr_url="https://example/pr/1"),
     )
     result = iterate_once(cfg_for_repo)
@@ -153,7 +153,7 @@ def test_iterate_once_moves_to_blocked_when_stuck(
             duration_seconds=0.0,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stuck_spawn)
     result = iterate_once(cfg_for_repo)
     assert result.outcome == "ran_stuck"
     assert (fake_repo / ".ralph" / "blocked" / "WI-1234").is_dir()
@@ -174,7 +174,7 @@ def test_iterate_once_treats_error_like_partial(
     _populate_inbox(fake_repo)
     iterate_once(cfg_for_repo)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("error"),
     )
     result = iterate_once(cfg_for_repo)
@@ -211,7 +211,7 @@ def test_iterate_once_catches_prompt_compose_error(
     ) -> ClaudeOutcome:
         raise PromptComposeError("prompt_root /fake/queue/prompt is missing or not a directory")
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _raise_compose_error)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _raise_compose_error)
 
     result = iterate_once(cfg_for_repo)
     assert result.outcome == "ran_error"
@@ -243,7 +243,7 @@ def test_iterate_once_recovers_from_push_conflict(
     _populate_inbox(fake_repo)
     iterate_once(cfg_for_repo)  # claim WI-1234 into current/
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
 
@@ -251,7 +251,7 @@ def test_iterate_once_recovers_from_push_conflict(
         raise PushRebaseConflict(("HISTORY.md",))
 
     monkeypatch.setattr(
-        "ralph_executor.loop._persist_iteration_writes",
+        "ralph_executor.iteration._persist_iteration_writes",
         _raise_conflict,
     )
 
@@ -280,7 +280,7 @@ def test_iterate_once_recovers_from_push_conflict_in_run_ralph(
     def _raise_conflict(cfg: ExecutorConfig, pbi: object) -> tuple[ClaudeOutcome, object]:
         raise PushRebaseConflict(("pending-pr/WI-1234/PBI.md",))
 
-    monkeypatch.setattr("ralph_executor.loop._run_ralph", _raise_conflict)
+    monkeypatch.setattr("ralph_executor.iteration._run_ralph", _raise_conflict)
 
     result = iterate_once(cfg_for_repo)
     assert result.outcome == "push_conflict"
@@ -302,7 +302,7 @@ def test_iterate_once_recovers_from_push_conflict_in_claim_pbi(
     def _raise_conflict(cfg: ExecutorConfig, pbi: object) -> object:
         raise PushRebaseConflict(("inbox/WI-1234/PBI.md",))
 
-    monkeypatch.setattr("ralph_executor.loop._claim_pbi", _raise_conflict)
+    monkeypatch.setattr("ralph_executor.iteration._claim_pbi", _raise_conflict)
 
     result = iterate_once(cfg_for_repo)
     assert result.outcome == "push_conflict"
@@ -331,7 +331,7 @@ def test_iterate_once_skips_uncommitted_inbox_dir_then_claims_after_commit(
     cleanly.
     """
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
 
@@ -374,7 +374,7 @@ def test_partial_outcome_does_not_increment_attempts(
     before = read_attempts(pbi_dir)
 
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
@@ -399,7 +399,7 @@ def test_error_outcome_increments_attempts(
     before = read_attempts(pbi_dir)
 
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("error"),
     )
     iterate_once(cfg_for_repo)
@@ -435,7 +435,7 @@ def test_stuck_outcome_increments_attempts(
             duration_seconds=0.0,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stuck_spawn)
     iterate_once(cfg_for_repo)
 
     blocked_dir = fake_repo / ".ralph" / "blocked" / "WI-1234"
@@ -454,9 +454,9 @@ def test_iterate_once_invokes_sweep_stub_when_current_empty(
     def _spy_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
         called.append(True)
 
-    monkeypatch.setattr("ralph_executor.loop._run_sweep", _spy_sweep)
+    monkeypatch.setattr("ralph_executor.iteration._run_sweep", _spy_sweep)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
@@ -475,9 +475,9 @@ def test_iterate_once_invokes_cycle_detector_stub(
         called.append(True)
         return False
 
-    monkeypatch.setattr("ralph_executor.loop._check_cycle_detector", _spy_check)
+    monkeypatch.setattr("ralph_executor.iteration._check_cycle_detector", _spy_check)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
@@ -512,7 +512,7 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
 
     monkeypatch.setattr("ralph_executor.queue_git.ensure_queue_clone", _spy)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     iterate_once(cfg_for_repo)
@@ -560,7 +560,7 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _appending_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _appending_spawn)
 
     head_before_iter = _git(fake_repo, "rev-parse", "HEAD").strip()
     result = iterate_once(cfg_for_repo)
@@ -618,7 +618,7 @@ def test_stuck_blocked_move_targets_queue_clone(
             duration_seconds=0.0,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stuck_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stuck_spawn)
     result = iterate_once(cfg_for_repo)
 
     assert result.outcome == "ran_stuck"
@@ -645,7 +645,7 @@ def test_max_attempts_blocked_move_targets_queue_clone(
     _populate_inbox(fake_repo)
     iterate_once(cfg_for_repo)  # claim
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("error"))
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn("error"))
     iterate_once(cfg_for_repo)  # attempts 0 -> 1 (== limit, allowed)
     result = iterate_once(cfg_for_repo)  # attempts 1 -> 2 (> limit), max-attempts
 
@@ -698,7 +698,7 @@ def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
     """Default (``watch_mode=False``): two idle iterations in a row drain the
     loop. ``run_loop`` exits cleanly after the second idle without
     re-entering ``iterate_once`` a third time."""
-    from ralph_executor.loop import IterationResult
+    from ralph_executor.iteration import IterationResult
 
     calls: list[int] = []
 
@@ -706,7 +706,7 @@ def test_run_loop_exits_after_idle_exit_threshold_consecutive_idles(
         calls.append(len(calls))
         return IterationResult(outcome="idle", pbi_id=None)
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
     results = list(run_loop(cfg_for_repo))
     assert len(results) == 2
     assert all(r.outcome == "idle" for r in results)
@@ -719,14 +719,14 @@ def test_run_loop_watch_mode_does_not_drain_on_idle(
 ) -> None:
     """``watch_mode=True``: idle iterations never exit the loop. Bound the
     test via ``max_iterations`` so it terminates."""
-    from ralph_executor.loop import IterationResult
+    from ralph_executor.iteration import IterationResult
 
     cfg_watch = dataclasses.replace(cfg_for_repo, watch_mode=True)
 
     def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
         return IterationResult(outcome="idle", pbi_id=None)
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
     results = list(run_loop(cfg_watch, max_iterations=3))
     assert len(results) == 3
     assert all(r.outcome == "idle" for r in results)
@@ -739,7 +739,7 @@ def test_run_loop_non_idle_outcome_resets_consecutive_idle_counter(
     """A non-idle outcome (claimed, ran_partial, …) between idle ticks
     resets the consecutive-idle counter so the loop only drains after a
     fresh streak of idles fills the threshold."""
-    from ralph_executor.loop import IterationResult
+    from ralph_executor.iteration import IterationResult
 
     scripted: list[IterationResult] = [
         IterationResult(outcome="idle", pbi_id=None),
@@ -756,7 +756,7 @@ def test_run_loop_non_idle_outcome_resets_consecutive_idle_counter(
     def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
         return next(iterator)
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
     results = list(run_loop(cfg_for_repo))
     assert [r.outcome for r in results] == ["idle", "claimed", "idle", "idle"]
 
@@ -771,7 +771,7 @@ def test_run_loop_drains_against_empty_filesystem_queue(
     two ``idle`` results then returns. Exercises the real ``iterate_once``
     against the on-disk queue rather than a monkeypatched stub."""
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
     results = list(run_loop(cfg_for_repo))
@@ -893,7 +893,7 @@ def test_iterate_once_resume_self_heals_missing_work_worktree(
     _git(fake_repo, "push", "origin", "main")
 
     # Count ensure_worktree invocations — must run on resume, not just claim.
-    from ralph_executor import loop as loop_mod
+    from ralph_executor import iteration as loop_mod
 
     real_ensure = loop_mod.ensure_worktree
     calls: list[dict[str, object]] = []
@@ -904,7 +904,7 @@ def test_iterate_once_resume_self_heals_missing_work_worktree(
 
     monkeypatch.setattr(loop_mod, "ensure_worktree", _spy)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
 
@@ -1000,7 +1000,7 @@ def test_iterate_once_resume_demotes_to_blocked_when_worktree_cannot_be_created(
         )
 
     monkeypatch.setattr("ralph_executor.target_clone.ensure_clone", _fake_ensure_clone)
-    monkeypatch.setattr("ralph_executor.loop.ensure_worktree", _fake_ensure_worktree)
+    monkeypatch.setattr("ralph_executor.iteration.ensure_worktree", _fake_ensure_worktree)
 
     result = iterate_once(cfg_for_repo)
 

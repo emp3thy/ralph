@@ -8,7 +8,7 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import iterate_once
+from ralph_executor.iteration import iterate_once
 from ralph_executor.worktree import work_worktree_path
 from tests.executor.conftest import _git, write_sample_pbi
 
@@ -52,7 +52,7 @@ def test_claim_creates_work_worktree_on_feature_branch(
     clone, checked out on the feature branch ``ralph/<PBI-id>``."""
     _populate_inbox(fake_repo)
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("partial"),
     )
 
@@ -83,7 +83,7 @@ def test_terminal_outcome_removes_work_tree(
     assert work_wt.is_dir(), "precondition: work worktree exists after claim"
 
     monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
+        "ralph_executor.iteration.spawn_claude_p",
         _stub_spawn("pr_created", pr_url="https://example/pr/9"),
     )
     result = iterate_once(cfg_for_repo)

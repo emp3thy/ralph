@@ -11,7 +11,7 @@ import pytest
 from ralph_executor import cli
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.host_select import HostSelectionError
-from ralph_executor.loop import IterationResult
+from ralph_executor.iteration import IterationResult
 
 
 @pytest.fixture(autouse=True)

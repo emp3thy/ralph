@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from ralph_executor.config import ExecutorConfig
-from ralph_executor.loop import iterate_once
+from ralph_executor.iteration import iterate_once
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.types import PBI
 from tests.executor.conftest import _git, write_sample_pbi

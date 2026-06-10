@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ralph_executor import cli, loop
+from ralph_executor import cli
+from ralph_executor import iteration as loop
 from ralph_executor.config import ExecutorConfig
 
 

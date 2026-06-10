@@ -155,9 +155,9 @@ def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
     ``_pr_skill_scripts_path`` global through the resolver seam.
 
     Kept as a real ``def`` (not an aliased import) for two reasons:
-    tests patch ``ralph_executor.loop._run_sweep`` directly
+    tests patch ``ralph_executor.iteration._run_sweep`` directly
     (orchestration seam), and tests patch
-    ``ralph_executor.loop._pr_skill_scripts_path`` expecting the sweep
+    ``ralph_executor.iteration._pr_skill_scripts_path`` expecting the sweep
     to see the stub — the call-time global lookup here is what makes
     that interception work after the function moved modules.
     """
