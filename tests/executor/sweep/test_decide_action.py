@@ -369,9 +369,7 @@ def test_filter_mixed_seen_unseen_returns_only_unseen_in_order() -> None:
     seen = _comment(author=HUMAN_EMAIL, thread_id=72, comment_id=804)
     last = _comment(author=HUMAN_EMAIL, thread_id=72, comment_id=805)
     pr = _snapshot(
-        threads=(
-            _thread(thread_id=72, status="active", comments=(first, seen, last)),
-        ),
+        threads=(_thread(thread_id=72, status="active", comments=(first, seen, last)),),
     )
     result = _new_active_human_comments(
         pr=pr,
