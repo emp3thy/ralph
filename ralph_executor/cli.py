@@ -395,7 +395,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     from datetime import UTC, datetime, timedelta
 
-    from ralph_executor.loop import _queue_repo_root
+    from ralph_executor.queue_git import queue_repo_root as _queue_repo_root
 
     ctx = SweepContext(
         # Worktree-mode awareness: ``.ralph/`` lives in the queue clone at
