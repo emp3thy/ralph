@@ -1,14 +1,24 @@
-"""Outcome domain for Claude subprocess runs: result dataclass and pure classification."""
+"""Outcome domain for Claude subprocess runs: result dataclass and pure classification.
+
+``classify_outcome`` maps the observable end-state of a ``claude -p`` run
+(stdout/stderr, exit code, a ``STUCK.md`` sentinel on disk, and the PR /
+required-checks state supplied by the caller) onto one of the
+``OutcomeKind`` values the executor loop acts on. Precedence is fixed:
+STUCK.md beats everything, a non-zero exit beats PR state, a passing PR
+yields ``pr_created``, and anything else degrades to ``partial``.
+
+Extracted from ``claude_spawn`` so the classification rules are testable
+without subprocess machinery. This module stays pure (single disk read
+for the sentinel) and leaf-level — it must not import loop, sweep, or
+claude_spawn.
+"""
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-
-log = logging.getLogger(__name__)
 
 OutcomeKind = Literal["pr_created", "stuck", "partial", "error"]
 
