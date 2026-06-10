@@ -684,7 +684,7 @@ def _resolve_runtime_knobs(toml_overrides: Mapping[str, Any], source_label: str)
         default=DEFAULT_LOG_LEVEL,
         source_label=source_label,
     )
-    sleep_seconds = _resolve_float(
+    iteration_sleep_seconds = _resolve_float(
         name="iteration_sleep_seconds",
         env_name="RALPH_ITERATION_SLEEP_SECONDS",
         toml_value=toml_overrides.get("iteration_sleep_seconds"),
@@ -694,7 +694,7 @@ def _resolve_runtime_knobs(toml_overrides: Mapping[str, Any], source_label: str)
     return _RuntimeKnobs(
         max_attempts=max_attempts,
         log_level=log_level,
-        iteration_sleep_seconds=sleep_seconds,
+        iteration_sleep_seconds=iteration_sleep_seconds,
     )
 
 
