@@ -101,6 +101,7 @@ from ralph_executor.safety import (
     AttemptCounter,
     AttemptsExceeded,
     Event,
+    EventLog,
     EventType,
     HaltedError,
     HaltStatus,
@@ -242,31 +243,227 @@ def _move_current_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reaso
     move_current_to_blocked(cfg, pbi)
 
 
-def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationResult]:
-    """Spawn ``claude -p`` against the current PBI and classify the result.
+def _spawn_and_classify(
+    cfg: ExecutorConfig, pbi: PBI, pbi_dir_in_queue: Path, now: datetime
+) -> ClaudeOutcome:
+    """Spawn ``claude -p`` against the PBI and classify the result.
 
-    Multi-step PBI discipline: ``partial`` and ``error`` outcomes leave
-    the PBI in ``current/``; ``pr_created`` promotes to ``pending-pr/``;
-    ``stuck`` triggers ``handle_stuck`` (Layer 1) which moves the PBI to
-    ``blocked/`` and returns a ``StuckOutcome`` carrying a ``pbi.blocked``
-    event the caller appends to the event log.
+    Spawn cwd: Claude runs against the per-PBI work worktree inside the
+    target clone (populated by ``_claim_pbi`` and threaded through on
+    ``pbi.work_worktree``). ``pbi_dir_in_queue`` points at the PBI's
+    directory inside the queue clone (``<workspace_root>/queue-<instance_id>/
+    .ralph/current/<PBI-ID>/``) so Claude can read PROMPT.md / PBI.md /
+    HISTORY.md and write STUCK.md / HISTORY.md without leaving the
+    target checkout.
+
+    ``PromptComposeError`` is converted into a synthetic classified
+    ``error`` outcome (with a HISTORY.md breadcrumb) so the loop
+    survives a missing/malformed prompt tree instead of crashing.
+    """
+    # ``cwd`` falls back to ``pbi.work_worktree`` inside
+    # ``spawn_claude_p`` (populated by ``_claim_pbi`` from the target
+    # clone), so no explicit cwd kwarg is needed here. ``pbi_dir``
+    # points at the PBI's directory inside the queue clone so Claude
+    # can read PROMPT.md / HISTORY.md / PBI.md and write STUCK.md /
+    # HISTORY.md without leaving its target-clone working tree.
+    try:
+        outcome = spawn_claude_p(
+            cfg,
+            pbi,
+            pbi_dir=pbi_dir_in_queue,
+        )
+    except PromptComposeError as exc:
+        # PromptComposeError fires when the queue clone is missing
+        # the prompt/ topic-folder tree (or it's malformed). The
+        # composer's own docstring promises this is surfaced as a
+        # classified ``error`` iteration so the loop survives —
+        # before this catch, the exception propagated unhandled
+        # through ``run_loop`` and felled the whole executor process
+        # on the first PBI claim of a brand-new queue repo. Record
+        # the reason in HISTORY.md and synthesise an error outcome
+        # so the existing attempt-counter / max-attempts machinery
+        # routes the PBI through the normal failure path.
+        log.error("PBI %s prompt-compose failed: %s", pbi.id, exc)
+        _append_compose_error_to_history(pbi_dir_in_queue, exc, now)
+        outcome = ClaudeOutcome(
+            kind="error",
+            pr_url=None,
+            stdout="",
+            stderr=f"prompt-compose error: {exc}",
+            exit_code=1,
+            duration_seconds=0.0,
+        )
+    log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
+    return outcome
+
+
+def _bump_attempts_on_failure(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    outcome: ClaudeOutcome,
+    now: datetime,
+    event_log: EventLog,
+) -> tuple[ClaudeOutcome, IterationResult] | None:
+    """Bump the attempt counter on failure outcomes; block the PBI on overflow.
 
     Increments the attempt counter ONLY when the outcome is ``stuck`` or
     ``error`` (i.e. a genuine failed iteration). ``partial`` outcomes
     represent legitimate multi-step progress and do NOT count against
     the max-attempts budget — otherwise long plans (many sub-tasks
-    spread across iterations) would always hit the wall. If the
-    increment pushes the counter past the configured maximum, the PBI
-    is moved to ``blocked/`` and a synthetic ``error`` outcome is
-    returned to mirror the AttemptsExceeded path.
+    spread across iterations) would always hit the wall.
 
-    Spawn cwd: Claude runs against the per-PBI work worktree inside the
-    target clone (populated by ``_claim_pbi`` and threaded through on
-    ``pbi.work_worktree``). The ``pbi_dir`` argument points at the PBI's
-    directory inside the queue clone (``<workspace_root>/queue-<instance_id>/.ralph/
-    current/<PBI-ID>/``) so Claude can read PROMPT.md / PBI.md /
-    HISTORY.md and write STUCK.md / HISTORY.md without leaving the
-    target checkout.
+    Returns ``None`` when the caller should fall through to the
+    outcome-specific handling (non-failure outcome, or a successful
+    increment — the ``attempt.incremented`` event is appended here). If
+    the increment pushes the counter past the configured maximum, the
+    PBI is moved to ``blocked/`` and a synthetic ``error`` outcome plus
+    the ``ran_stuck`` result are returned for the caller to early-return
+    — mirroring the AttemptsExceeded path.
+    """
+    # --- Plan 9: bump attempt counter ONLY on failure outcomes -------
+    # `partial` outcomes are legitimate multi-step progress and don't
+    # count toward the failure budget. Only stuck / error do.
+    if outcome.kind not in ("stuck", "error"):
+        return None
+    counter = AttemptCounter(pbi_dir=pbi.path)
+    try:
+        new_attempts = counter.increment()
+    except AttemptsExceeded as exc:
+        log.warning(
+            "PBI %s exceeded max failed attempts (%d/%d); moving to blocked/",
+            pbi.id,
+            exc.attempts,
+            exc.limit,
+        )
+        event_log.append(
+            Event(
+                kind=EventType.PBI_BLOCKED,
+                recorded_at=now,
+                pbi_id=pbi.id,
+                payload={"reason": str(exc), "source": "max-attempts"},
+            )
+        )
+        target = _queue_repo_root(cfg) / ".ralph" / "blocked" / pbi.id
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            # shutil.move would silently move pbi.path INSIDE the existing
+            # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
+            # the queue scanner. Mirrors the same guard in
+            # ralph_executor/safety/stuck.py::move_to_blocked.
+            raise FileExistsError(
+                f"cannot move {pbi.path} to {target}: target already exists"
+            ) from exc
+        # Clean up the work worktree BEFORE the move — see the
+        # equivalent comment in ``_handle_pr_created``.
+        _cleanup_work_worktree(cfg, pbi)
+        shutil.move(str(pbi.path), str(target))
+        dummy = ClaudeOutcome(
+            kind="error",
+            pr_url=None,
+            stdout="",
+            stderr=str(exc),
+            exit_code=1,
+            duration_seconds=0.0,
+        )
+        return dummy, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+    event_log.append(
+        Event(
+            kind=EventType.ATTEMPT_INCREMENTED,
+            recorded_at=now,
+            pbi_id=pbi.id,
+            payload={"attempts": new_attempts},
+        )
+    )
+    return None
+
+
+def _handle_pr_created(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    outcome: ClaudeOutcome,
+    now: datetime,
+    event_log: EventLog,
+) -> IterationResult:
+    """Promote a ``pr_created`` PBI from ``current/`` to ``pending-pr/``."""
+    # The diff must run against the TARGET clone (which holds the
+    # feature branch the PR was opened from), NOT ralph's own
+    # checkout. Derive the clone root from ``pbi.target_info``
+    # populated by ``_claim_pbi`` / ``iterate_once``'s resume
+    # path. Defensive empties (symmetric to the resume path's
+    # tolerance for a missing clone): ``target_info=None`` from
+    # malformed frontmatter, or the deterministic clone_root
+    # not on disk (transient fetch failure earlier in the
+    # iteration) — log + surface an empty touched-files list
+    # rather than crash; ``pr_created`` itself is still valid.
+    touched: list[str] = []
+    if pbi.target_info is None:
+        log.warning(
+            "PBI %s pr_created but target_info missing; touched_files=[]",
+            pbi.id,
+        )
+    else:
+        clone_root = cfg.workspace_root / "clones" / pbi.target_info.owner / pbi.target_info.name
+        if not clone_root.is_dir():
+            log.warning(
+                "PBI %s pr_created but target clone %s is missing; touched_files=[]",
+                pbi.id,
+                clone_root,
+            )
+        else:
+            touched = git_ops.diff_names(clone_root, cfg.main_branch, _feature_branch_name(pbi))
+    # Clean up the work worktree BEFORE the queue move — the move
+    # invalidates ``pbi.path`` (used by ``_read_target_repo_from_pbi``
+    # when ``pbi.work_worktree`` was not threaded through).
+    _cleanup_work_worktree(cfg, pbi)
+    move_current_to_pending_pr(
+        cfg,
+        pbi,
+        event_log=event_log,
+        pr_url=outcome.pr_url,
+        touched_files=touched,
+        now=now,
+    )
+    return IterationResult(outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url)
+
+
+def _handle_stuck_outcome(
+    cfg: ExecutorConfig, pbi: PBI, event_log: EventLog
+) -> IterationResult | None:
+    """Handle a ``stuck`` outcome via Plan 9 Layer 1 STUCK.md detection.
+
+    ``handle_stuck`` moves the PBI to ``blocked/`` and returns a
+    ``StuckOutcome`` carrying a ``pbi.blocked`` event that is appended
+    to the event log here. Returns ``None`` when Claude reported stuck
+    but no STUCK.md is present — the caller falls through to ``partial``
+    and the PBI stays in ``current/`` for the next iteration.
+    """
+    # --- Plan 9 Layer 1: STUCK.md detection ----------------------
+    stuck_outcome = handle_stuck(
+        cfg=cfg,
+        pbi=pbi,
+        now=datetime.now(tz=UTC),
+        event_log=event_log,
+    )
+    if stuck_outcome is not None:
+        event_log.append(stuck_outcome.event)
+        log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
+        _cleanup_work_worktree(cfg, pbi)
+        return IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+    return None
+
+
+def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationResult]:
+    """Spawn ``claude -p`` against the current PBI and classify the result.
+
+    Composer over the outcome-phase helpers: ``_spawn_and_classify`` →
+    ``_bump_attempts_on_failure`` (early-returns ``ran_stuck`` on attempt
+    overflow) → ``_handle_pr_created`` → ``_handle_stuck_outcome``
+    (``None`` falls through) → error → partial.
+
+    Multi-step PBI discipline: ``partial`` and ``error`` outcomes leave
+    the PBI in ``current/``; ``pr_created`` promotes to ``pending-pr/``;
+    ``stuck`` triggers ``handle_stuck`` (Layer 1) which moves the PBI to
+    ``blocked/``.
 
     Event emission scope: this function only consumes the classified
     ``ClaudeOutcome`` and emits ``pbi.*`` / ``attempt.incremented`` /
@@ -282,160 +479,19 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     now = datetime.now(tz=UTC)
     event_log = open_log(_queue_repo_root(cfg))
     try:
-        # --- Spawn Claude ------------------------------------------------
-        # ``cwd`` falls back to ``pbi.work_worktree`` inside
-        # ``spawn_claude_p`` (populated by ``_claim_pbi`` from the target
-        # clone), so no explicit cwd kwarg is needed here. ``pbi_dir``
-        # points at the PBI's directory inside the queue clone so Claude
-        # can read PROMPT.md / HISTORY.md / PBI.md and write STUCK.md /
-        # HISTORY.md without leaving its target-clone working tree.
         pbi_dir_in_queue = _queue_repo_root(cfg) / ".ralph" / "current" / pbi.id
-        try:
-            outcome = spawn_claude_p(
-                cfg,
-                pbi,
-                pbi_dir=pbi_dir_in_queue,
-            )
-        except PromptComposeError as exc:
-            # PromptComposeError fires when the queue clone is missing
-            # the prompt/ topic-folder tree (or it's malformed). The
-            # composer's own docstring promises this is surfaced as a
-            # classified ``error`` iteration so the loop survives —
-            # before this catch, the exception propagated unhandled
-            # through ``run_loop`` and felled the whole executor process
-            # on the first PBI claim of a brand-new queue repo. Record
-            # the reason in HISTORY.md and synthesise an error outcome
-            # so the existing attempt-counter / max-attempts machinery
-            # routes the PBI through the normal failure path.
-            log.error("PBI %s prompt-compose failed: %s", pbi.id, exc)
-            _append_compose_error_to_history(pbi_dir_in_queue, exc, now)
-            outcome = ClaudeOutcome(
-                kind="error",
-                pr_url=None,
-                stdout="",
-                stderr=f"prompt-compose error: {exc}",
-                exit_code=1,
-                duration_seconds=0.0,
-            )
-        log.info("PBI %s outcome=%s exit=%d", pbi.id, outcome.kind, outcome.exit_code)
-
-        # --- Plan 9: bump attempt counter ONLY on failure outcomes -------
-        # `partial` outcomes are legitimate multi-step progress and don't
-        # count toward the failure budget. Only stuck / error do.
-        if outcome.kind in ("stuck", "error"):
-            counter = AttemptCounter(pbi_dir=pbi.path)
-            try:
-                new_attempts = counter.increment()
-            except AttemptsExceeded as exc:
-                log.warning(
-                    "PBI %s exceeded max failed attempts (%d/%d); moving to blocked/",
-                    pbi.id,
-                    exc.attempts,
-                    exc.limit,
-                )
-                event_log.append(
-                    Event(
-                        kind=EventType.PBI_BLOCKED,
-                        recorded_at=now,
-                        pbi_id=pbi.id,
-                        payload={"reason": str(exc), "source": "max-attempts"},
-                    )
-                )
-                target = _queue_repo_root(cfg) / ".ralph" / "blocked" / pbi.id
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists():
-                    # shutil.move would silently move pbi.path INSIDE the existing
-                    # target dir, producing .ralph/blocked/<id>/<id>/ — invisible to
-                    # the queue scanner. Mirrors the same guard in
-                    # ralph_executor/safety/stuck.py::move_to_blocked.
-                    raise FileExistsError(
-                        f"cannot move {pbi.path} to {target}: target already exists"
-                    ) from exc
-                # Clean up the work worktree BEFORE the move — see the
-                # equivalent comment in the pr_created path below.
-                _cleanup_work_worktree(cfg, pbi)
-                shutil.move(str(pbi.path), str(target))
-                dummy = ClaudeOutcome(
-                    kind="error",
-                    pr_url=None,
-                    stdout="",
-                    stderr=str(exc),
-                    exit_code=1,
-                    duration_seconds=0.0,
-                )
-                return dummy, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
-            event_log.append(
-                Event(
-                    kind=EventType.ATTEMPT_INCREMENTED,
-                    recorded_at=now,
-                    pbi_id=pbi.id,
-                    payload={"attempts": new_attempts},
-                )
-            )
-
+        outcome = _spawn_and_classify(cfg, pbi, pbi_dir_in_queue, now)
+        attempt_overflow = _bump_attempts_on_failure(cfg, pbi, outcome, now, event_log)
+        if attempt_overflow is not None:
+            return attempt_overflow
         if outcome.kind == "pr_created":
-            # The diff must run against the TARGET clone (which holds the
-            # feature branch the PR was opened from), NOT ralph's own
-            # checkout. Derive the clone root from ``pbi.target_info``
-            # populated by ``_claim_pbi`` / ``iterate_once``'s resume
-            # path. Defensive empties (symmetric to the resume path's
-            # tolerance for a missing clone): ``target_info=None`` from
-            # malformed frontmatter, or the deterministic clone_root
-            # not on disk (transient fetch failure earlier in the
-            # iteration) — log + surface an empty touched-files list
-            # rather than crash; ``pr_created`` itself is still valid.
-            touched: list[str] = []
-            if pbi.target_info is None:
-                log.warning(
-                    "PBI %s pr_created but target_info missing; touched_files=[]",
-                    pbi.id,
-                )
-            else:
-                clone_root = (
-                    cfg.workspace_root / "clones" / pbi.target_info.owner / pbi.target_info.name
-                )
-                if not clone_root.is_dir():
-                    log.warning(
-                        "PBI %s pr_created but target clone %s is missing; touched_files=[]",
-                        pbi.id,
-                        clone_root,
-                    )
-                else:
-                    touched = git_ops.diff_names(
-                        clone_root, cfg.main_branch, _feature_branch_name(pbi)
-                    )
-            # Clean up the work worktree BEFORE the queue move — the move
-            # invalidates ``pbi.path`` (used by ``_read_target_repo_from_pbi``
-            # when ``pbi.work_worktree`` was not threaded through).
-            _cleanup_work_worktree(cfg, pbi)
-            move_current_to_pending_pr(
-                cfg,
-                pbi,
-                event_log=event_log,
-                pr_url=outcome.pr_url,
-                touched_files=touched,
-                now=now,
-            )
-            return outcome, IterationResult(
-                outcome="ran_pr_created", pbi_id=pbi.id, pr_url=outcome.pr_url
-            )
-
+            return outcome, _handle_pr_created(cfg, pbi, outcome, now, event_log)
         if outcome.kind == "stuck":
-            # --- Plan 9 Layer 1: STUCK.md detection ----------------------
-            stuck_outcome = handle_stuck(
-                cfg=cfg,
-                pbi=pbi,
-                now=datetime.now(tz=UTC),
-                event_log=event_log,
-            )
-            if stuck_outcome is not None:
-                event_log.append(stuck_outcome.event)
-                log.info("PBI %s stuck: %s", pbi.id, stuck_outcome.reason)
-                _cleanup_work_worktree(cfg, pbi)
-                return outcome, IterationResult(outcome="ran_stuck", pbi_id=pbi.id)
+            stuck_result = _handle_stuck_outcome(cfg, pbi, event_log)
+            if stuck_result is not None:
+                return outcome, stuck_result
             # Claude reported stuck but no STUCK.md present -- fall through
             # to partial (the PBI stays in current/ for the next iteration).
-
         if outcome.kind == "error":
             return outcome, IterationResult(outcome="ran_error", pbi_id=pbi.id)
         return outcome, IterationResult(outcome="ran_partial", pbi_id=pbi.id)
@@ -508,197 +564,211 @@ def iterate_once(cfg: ExecutorConfig) -> IterationResult:
         raise
 
 
-def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
-    """Run a single iteration of the loop and return the outcome.
+def _resume_current(cfg: ExecutorConfig, current: PBI) -> tuple[PBI, IterationResult | None]:
+    """Rehydrate a resumed PBI's runtime fields and self-heal its worktree.
 
-    Idempotent in the no-work case: if current/ is empty and the inbox
-    is empty, the iteration is a no-op and returns ``IterationResult("idle")``.
+    ``FilesystemQueueSource`` doesn't populate ``target_repo`` /
+    ``target_info`` / ``work_worktree``; this helper re-derives them and
+    self-heals a missing work worktree (a prior claim may have crashed
+    after ``move_inbox_to_current`` but before ``ensure_worktree``).
 
-    ``.ralph/`` lives in the queue clone at ``<workspace_root>/queue-<instance_id>/``;
-    callers inspect it via ``_queue_repo_root(cfg)`` (the primary
-    checkout is never branch-swapped).
-
-    Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
+    Returns ``(pbi, early_result)``: on success ``pbi`` carries the
+    populated runtime fields and ``early_result`` is ``None``. When the
+    self-heal fails (``ensure_worktree`` raises ``GitCommandError``) the
+    PBI is demoted current → blocked and ``early_result`` is the
+    ``claim_failed`` result the iteration must return.
     """
-    # --- Plan 9 Layer 3: refuse to start while sentinel is active --------
-    queue_repo = _queue_repo_root(cfg)
-    status = check_halt_sentinel(queue_repo)
-    if status == HaltStatus.HALTED:
+    # FilesystemQueueSource doesn't populate ``target_repo`` /
+    # ``work_worktree`` on the PBI dataclass (it consumes the on-disk
+    # schema directly without the multi-target runtime fields).
+    # Populate both here so:
+    #   * ``_run_ralph``'s terminal-outcome cleanup can re-derive the
+    #     target clone_root without depending on ``pbi.path`` (which
+    #     the move_*_to_* operations invalidate before cleanup runs);
+    #   * ``spawn_claude_p`` uses the per-PBI work worktree inside the
+    #     target clone as cwd for resumed PBIs. There is no
+    #     process-wide ``repo_path`` to fall back onto after
+    #     KILL-RALPH-HOME; absence of ``pbi.work_worktree`` here
+    #     would raise ``ConfigError`` inside spawn_claude_p, which is
+    #     the correct fail-fast rather than picking a wrong cwd.
+    from dataclasses import replace as _replace
+
+    from ralph_executor.url_utils import parse_target_repo
+
+    try:
+        target_url = _read_target_repo_from_pbi(current)
+    except _ClaimError:
+        target_url = ""
+    # Parse the URL outside the info guard so resumed PBIs get
+    # target_info populated — without it
+    # ``spawn_claude_p``'s ``GH_OWNER`` injection (guarded by
+    # ``pbi.target_info is not None``) silently no-ops for every
+    # iteration after the first, and any ``gh`` / ``pr-github`` call
+    # the spawned Claude makes uses the wrong (or absent) owner.
+    # No ``TargetRepoInfo`` annotation needed — ``None`` plus the
+    # ``parse_target_repo`` return type infer it.
+    info = None
+    if target_url:
+        try:
+            info = parse_target_repo(target_url)
+        except ValueError:
+            # Malformed target_repo on disk shouldn't crash the resume
+            # path — let spawn_claude_p fall back to its env-default
+            # owner, same as legacy behaviour before this PR.
+            info = None
+    work_wt: Path | None = None
+    if info is not None:
+        # ``clone_root`` is fully determined by workspace_root + owner +
+        # name; compute deterministically so a transient fetch failure
+        # (network blip, auth expired, etc.) does NOT leave
+        # ``pbi.work_worktree`` unset — spawn_claude_p raises
+        # ConfigError on an unset worktree (the post-KILL-RALPH-HOME
+        # contract), and we want the resume path to proceed against
+        # the cached deterministic clone instead.
+        clone_root = cfg.workspace_root / "clones" / info.owner / info.name
+        try:
+            from ralph_executor.target_clone import ensure_clone
+
+            clone = ensure_clone(info, workspace_root=cfg.workspace_root)
+            # Honour the returned clone_root rather than the
+            # deterministic compute. Production ensure_clone always
+            # returns the deterministic path — the override matters
+            # only for tests that monkeypatch ensure_clone to alias
+            # the target clone elsewhere (e.g. to the fake queue
+            # clone). Without this, the resume self-heal below skips
+            # itself whenever ensure_clone is stubbed to a divergent
+            # root.
+            clone_root = clone.clone_root
+        except Exception:
+            log.warning(
+                "iterate_once: ensure_clone failed for resumed PBI %s; "
+                "using deterministic clone path (may be stale)",
+                current.id,
+                exc_info=True,
+            )
+        if clone_root.is_dir():
+            _warn_project_toml_in_target_clone(clone_root)
+            work_wt = work_worktree_path(clone_root, current.id)
+            # Self-heal a missing work worktree. ``ensure_worktree``
+            # is idempotent — a no-op when the worktree already
+            # exists on the right branch — so the cost on the happy
+            # path is one ``git worktree list`` probe. The case it
+            # rescues: a prior iteration's claim crashed AFTER
+            # ``move_inbox_to_current`` succeeded but BEFORE
+            # ``ensure_worktree`` finished (e.g. ``origin/<main>``
+            # missing at that moment), leaving the PBI stranded in
+            # ``current/`` with no worktree. Without this call the
+            # resume path would hand a non-existent ``cwd`` to
+            # ``spawn_claude_p`` and the PBI could never recover.
+            #
+            # If ensure_worktree itself fails (still no
+            # ``origin/<main>``), demote the PBI current -> blocked
+            # with the reason in HISTORY.md and skip this iteration
+            # — the loop must not crash on a malformed target.
+            try:
+                ensure_worktree(
+                    clone_root,
+                    worktree_path=work_wt,
+                    branch=_feature_branch_name(current),
+                    create_branch_from=f"origin/{cfg.main_branch}",
+                )
+            except git_ops.GitCommandError as exc:
+                log.warning(
+                    "iterate_once: cannot materialize work worktree for "
+                    "resumed PBI %s (%s); moving to blocked/",
+                    current.id,
+                    exc,
+                )
+                _move_current_to_blocked_with_reason(cfg, current, reason=str(exc))
+                return current, IterationResult(outcome="claim_failed", pbi_id=current.id)
+    current = _replace(
+        current,
+        target_repo=target_url,
+        target_info=info,
+        work_worktree=work_wt,
+    )
+    return current, None
+
+
+def _execute_current(
+    cfg: ExecutorConfig,
+    current: PBI,
+    queue_repo: Path,
+    source: FilesystemQueueSource,
+) -> IterationResult:
+    """Run Ralph on the PBI occupying ``current/`` and persist its writes.
+
+    ``PushRebaseConflict`` from ``_run_ralph``'s terminal-outcome moves
+    or from the persist commit is downgraded to a ``push_conflict``
+    result so the loop retries next round instead of crashing. Raises
+    ``HaltedError`` when the cycle detector trips.
+    """
+    # Current occupied → run Ralph on it (attempt counter + spawn).
+    # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
+    # ``handle_stuck`` on terminal outcomes, both of which call
+    # ``push_with_rebase`` via ``movements._move``. A concurrent
+    # writer on the queue repo's ``main`` can make that push raise
+    # ``PushRebaseConflict`` — without this catch the executor
+    # process would crash, exactly the failure mode this code
+    # path exists to prevent.
+    try:
+        _outcome, result = _run_ralph(cfg, current)
+    except PushRebaseConflict as exc:
+        log.warning(
+            "iterate_once: push conflict during _run_ralph for %s (paths: %s); "
+            "loop will retry next round",
+            current.id,
+            ", ".join(exc.conflict_paths) or "<unknown>",
+        )
+        return IterationResult(outcome="push_conflict", pbi_id=current.id)
+    # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
+    # inside the PBI dir. The move_current_to_* paths handle their
+    # own commits via git mv, but partial/error outcomes leave the
+    # PBI in current/ with dirty files that would otherwise be lost.
+    event_log = open_log(queue_repo)
+    try:
+        _persist_iteration_writes(
+            cfg,
+            current.id,
+            event_log=event_log,
+            now=datetime.now(tz=UTC),
+        )
+    except PushRebaseConflict as exc:
+        # Concurrent writer advanced the queue repo's main in a way
+        # that conflicts with the iteration's persist commit. The
+        # local commit was abandoned (rebase --abort), the on-disk
+        # writes remain in the queue clone, and the next iteration
+        # will re-stage them. Log a WARNING and surface the outcome
+        # so operator dashboards see it — the loop must NOT crash.
+        log.warning(
+            "iterate_once: push conflict on queue main (paths: %s); "
+            "skipping this iteration's persist, loop will retry next round",
+            ", ".join(exc.conflict_paths) or "<unknown>",
+        )
+        return IterationResult(outcome="push_conflict", pbi_id=current.id)
+    finally:
+        event_log.close()
+    if _check_cycle_detector(cfg, source):
+        # META-BUG + sentinel already written by _check_cycle_detector;
+        # raise HaltedError so the caller knows the loop is frozen.
         raise HaltedError(
-            meta_bug_id="(see .ralph/state/halted)",
+            meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
             meta_bug_path=queue_repo / ".ralph" / "blocked",
             sentinel_path=queue_repo / ".ralph" / "state" / "halted",
         )
+    return result
 
-    _pull_queue(cfg)
-    source = FilesystemQueueSource(cfg)
 
-    current = source.current_pbi()
-    if current is not None:
-        # FilesystemQueueSource doesn't populate ``target_repo`` /
-        # ``work_worktree`` on the PBI dataclass (it consumes the on-disk
-        # schema directly without the multi-target runtime fields).
-        # Populate both here so:
-        #   * ``_run_ralph``'s terminal-outcome cleanup can re-derive the
-        #     target clone_root without depending on ``pbi.path`` (which
-        #     the move_*_to_* operations invalidate before cleanup runs);
-        #   * ``spawn_claude_p`` uses the per-PBI work worktree inside the
-        #     target clone as cwd for resumed PBIs. There is no
-        #     process-wide ``repo_path`` to fall back onto after
-        #     KILL-RALPH-HOME; absence of ``pbi.work_worktree`` here
-        #     would raise ``ConfigError`` inside spawn_claude_p, which is
-        #     the correct fail-fast rather than picking a wrong cwd.
-        from dataclasses import replace as _replace
+def _sweep_and_pick(
+    cfg: ExecutorConfig, source: FilesystemQueueSource, queue_repo: Path
+) -> tuple[PBI | None, IterationResult | None]:
+    """Run the sweep and pick the next inbox PBI when ``current/`` is empty.
 
-        from ralph_executor.url_utils import parse_target_repo
-
-        try:
-            target_url = _read_target_repo_from_pbi(current)
-        except _ClaimError:
-            target_url = ""
-        # Parse the URL outside the info guard so resumed PBIs get
-        # target_info populated — without it
-        # ``spawn_claude_p``'s ``GH_OWNER`` injection (guarded by
-        # ``pbi.target_info is not None``) silently no-ops for every
-        # iteration after the first, and any ``gh`` / ``pr-github`` call
-        # the spawned Claude makes uses the wrong (or absent) owner.
-        # No ``TargetRepoInfo`` annotation needed — ``None`` plus the
-        # ``parse_target_repo`` return type infer it.
-        info = None
-        if target_url:
-            try:
-                info = parse_target_repo(target_url)
-            except ValueError:
-                # Malformed target_repo on disk shouldn't crash the resume
-                # path — let spawn_claude_p fall back to its env-default
-                # owner, same as legacy behaviour before this PR.
-                info = None
-        work_wt: Path | None = None
-        if info is not None:
-            # ``clone_root`` is fully determined by workspace_root + owner +
-            # name; compute deterministically so a transient fetch failure
-            # (network blip, auth expired, etc.) does NOT leave
-            # ``pbi.work_worktree`` unset — spawn_claude_p raises
-            # ConfigError on an unset worktree (the post-KILL-RALPH-HOME
-            # contract), and we want the resume path to proceed against
-            # the cached deterministic clone instead.
-            clone_root = cfg.workspace_root / "clones" / info.owner / info.name
-            try:
-                from ralph_executor.target_clone import ensure_clone
-
-                clone = ensure_clone(info, workspace_root=cfg.workspace_root)
-                # Honour the returned clone_root rather than the
-                # deterministic compute. Production ensure_clone always
-                # returns the deterministic path — the override matters
-                # only for tests that monkeypatch ensure_clone to alias
-                # the target clone elsewhere (e.g. to the fake queue
-                # clone). Without this, the resume self-heal below skips
-                # itself whenever ensure_clone is stubbed to a divergent
-                # root.
-                clone_root = clone.clone_root
-            except Exception:
-                log.warning(
-                    "iterate_once: ensure_clone failed for resumed PBI %s; "
-                    "using deterministic clone path (may be stale)",
-                    current.id,
-                    exc_info=True,
-                )
-            if clone_root.is_dir():
-                _warn_project_toml_in_target_clone(clone_root)
-                work_wt = work_worktree_path(clone_root, current.id)
-                # Self-heal a missing work worktree. ``ensure_worktree``
-                # is idempotent — a no-op when the worktree already
-                # exists on the right branch — so the cost on the happy
-                # path is one ``git worktree list`` probe. The case it
-                # rescues: a prior iteration's claim crashed AFTER
-                # ``move_inbox_to_current`` succeeded but BEFORE
-                # ``ensure_worktree`` finished (e.g. ``origin/<main>``
-                # missing at that moment), leaving the PBI stranded in
-                # ``current/`` with no worktree. Without this call the
-                # resume path would hand a non-existent ``cwd`` to
-                # ``spawn_claude_p`` and the PBI could never recover.
-                #
-                # If ensure_worktree itself fails (still no
-                # ``origin/<main>``), demote the PBI current -> blocked
-                # with the reason in HISTORY.md and skip this iteration
-                # — the loop must not crash on a malformed target.
-                try:
-                    ensure_worktree(
-                        clone_root,
-                        worktree_path=work_wt,
-                        branch=_feature_branch_name(current),
-                        create_branch_from=f"origin/{cfg.main_branch}",
-                    )
-                except git_ops.GitCommandError as exc:
-                    log.warning(
-                        "iterate_once: cannot materialize work worktree for "
-                        "resumed PBI %s (%s); moving to blocked/",
-                        current.id,
-                        exc,
-                    )
-                    _move_current_to_blocked_with_reason(cfg, current, reason=str(exc))
-                    return IterationResult(outcome="claim_failed", pbi_id=current.id)
-        current = _replace(
-            current,
-            target_repo=target_url,
-            target_info=info,
-            work_worktree=work_wt,
-        )
-        # Current occupied → run Ralph on it (attempt counter + spawn).
-        # ``_run_ralph`` reaches into ``move_current_to_pending_pr`` /
-        # ``handle_stuck`` on terminal outcomes, both of which call
-        # ``push_with_rebase`` via ``movements._move``. A concurrent
-        # writer on the queue repo's ``main`` can make that push raise
-        # ``PushRebaseConflict`` — without this catch the executor
-        # process would crash, exactly the failure mode this code
-        # path exists to prevent.
-        try:
-            _outcome, result = _run_ralph(cfg, current)
-        except PushRebaseConflict as exc:
-            log.warning(
-                "iterate_once: push conflict during _run_ralph for %s (paths: %s); "
-                "loop will retry next round",
-                current.id,
-                ", ".join(exc.conflict_paths) or "<unknown>",
-            )
-            return IterationResult(outcome="push_conflict", pbi_id=current.id)
-        # Persist any HISTORY.md / STUCK.md / PLAN.md edits Claude wrote
-        # inside the PBI dir. The move_current_to_* paths handle their
-        # own commits via git mv, but partial/error outcomes leave the
-        # PBI in current/ with dirty files that would otherwise be lost.
-        event_log = open_log(_queue_repo_root(cfg))
-        try:
-            _persist_iteration_writes(
-                cfg,
-                current.id,
-                event_log=event_log,
-                now=datetime.now(tz=UTC),
-            )
-        except PushRebaseConflict as exc:
-            # Concurrent writer advanced the queue repo's main in a way
-            # that conflicts with the iteration's persist commit. The
-            # local commit was abandoned (rebase --abort), the on-disk
-            # writes remain in the queue clone, and the next iteration
-            # will re-stage them. Log a WARNING and surface the outcome
-            # so operator dashboards see it — the loop must NOT crash.
-            log.warning(
-                "iterate_once: push conflict on queue main (paths: %s); "
-                "skipping this iteration's persist, loop will retry next round",
-                ", ".join(exc.conflict_paths) or "<unknown>",
-            )
-            return IterationResult(outcome="push_conflict", pbi_id=current.id)
-        finally:
-            event_log.close()
-        if _check_cycle_detector(cfg, source):
-            # META-BUG + sentinel already written by _check_cycle_detector;
-            # raise HaltedError so the caller knows the loop is frozen.
-            raise HaltedError(
-                meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
-                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
-            )
-        return result
-
+    Returns ``(picked, idle_result)``: exactly one of the pair is
+    non-``None``. When the inbox is empty the cycle detector still runs
+    (a globally-tripped cycle raises ``HaltedError``) before the ``idle``
+    result is returned.
+    """
     # Current empty → run the sweep, pick next, claim if any.
     _run_sweep(cfg, source)
 
@@ -709,11 +779,26 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
         if _check_cycle_detector(cfg, source):
             raise HaltedError(
                 meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-                meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
-                sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
+                meta_bug_path=queue_repo / ".ralph" / "blocked",
+                sentinel_path=queue_repo / ".ralph" / "state" / "halted",
             )
-        return IterationResult(outcome="idle", pbi_id=None)
+        return None, IterationResult(outcome="idle", pbi_id=None)
+    return picked, None
 
+
+def _claim_picked(
+    cfg: ExecutorConfig,
+    picked: PBI,
+    queue_repo: Path,
+    source: FilesystemQueueSource,
+) -> IterationResult:
+    """Claim the picked inbox PBI into ``current/``.
+
+    Transient failures (``PushRebaseConflict``, ``UncommittedSource``)
+    are downgraded to retryable results; ``_ClaimError`` demotes the PBI
+    inbox → blocked. Raises ``HaltedError`` when the post-claim cycle
+    detector trips.
+    """
     log.info("claiming PBI %s", picked.id)
     # ``_claim_pbi`` invokes ``move_inbox_to_current`` → ``push_with_rebase``.
     # A concurrent writer on the queue branch can make that push raise
@@ -754,10 +839,46 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
     if _check_cycle_detector(cfg, source):
         raise HaltedError(
             meta_bug_id="(see latest META-cycle-* in .ralph/blocked/)",
-            meta_bug_path=_queue_repo_root(cfg) / ".ralph" / "blocked",
-            sentinel_path=_queue_repo_root(cfg) / ".ralph" / "state" / "halted",
+            meta_bug_path=queue_repo / ".ralph" / "blocked",
+            sentinel_path=queue_repo / ".ralph" / "state" / "halted",
         )
     return IterationResult(outcome="claimed", pbi_id=claimed.id)
+
+
+def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
+    """Run a single iteration of the loop; composer over the phase helpers.
+
+    Halt check → queue pull → (``_resume_current`` → ``_execute_current``)
+    when ``current/`` is occupied, else ``_sweep_and_pick`` →
+    ``_claim_picked``. The no-work case is an idempotent no-op (``"idle"``).
+
+    Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
+    """
+    # --- Plan 9 Layer 3: refuse to start while sentinel is active --------
+    queue_repo = _queue_repo_root(cfg)
+    status = check_halt_sentinel(queue_repo)
+    if status == HaltStatus.HALTED:
+        raise HaltedError(
+            meta_bug_id="(see .ralph/state/halted)",
+            meta_bug_path=queue_repo / ".ralph" / "blocked",
+            sentinel_path=queue_repo / ".ralph" / "state" / "halted",
+        )
+
+    _pull_queue(cfg)
+    source = FilesystemQueueSource(cfg)
+
+    current = source.current_pbi()
+    if current is not None:
+        current, early = _resume_current(cfg, current)
+        if early is not None:
+            return early
+        return _execute_current(cfg, current, queue_repo, source)
+
+    picked, idle = _sweep_and_pick(cfg, source, queue_repo)
+    if picked is None:
+        assert idle is not None  # _sweep_and_pick: exactly one of the pair
+        return idle
+    return _claim_picked(cfg, picked, queue_repo, source)
 
 
 # ----------------------------------------------------------------------
