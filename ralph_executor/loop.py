@@ -271,14 +271,11 @@ def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
     onto after KILL-RALPH-HOME, so the deterministic clone root from
     ``ensure_clone`` is the only honest source.
 
-    No-op in legacy single-checkout mode or when target_repo / ensure_clone
-    are unavailable (defensive). Tolerant of removal failures — an orphan
-    worktree is recoverable (operator can ``git worktree prune``), but
-    raising here would obscure the real terminal outcome the iteration is
-    reporting.
+    Defensive no-op when target_repo / ensure_clone are unavailable.
+    Tolerant of removal failures — an orphan worktree is recoverable
+    (operator can ``git worktree prune``), but raising here would obscure
+    the real terminal outcome the iteration is reporting.
     """
-    if not cfg.use_worktrees:
-        return
     if pbi.work_worktree is not None:
         work_wt = pbi.work_worktree
         # Work worktrees live at <clone-root>/.ralph-work/<pbi-id>/, so
@@ -410,9 +407,7 @@ def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
          forked from the clone's ``origin/<main_branch>`` when the branch
          is new.
 
-    The Stage-A single-checkout legacy branch-dance is gone — the queue
-    is its own clone now, not a branch on the primary checkout, and
-    ``load_config`` rejects ``use_worktrees=False`` outright.
+    The queue is its own clone now, not a branch on the primary checkout.
     """
     from ralph_executor.url_utils import parse_target_repo
 
@@ -765,8 +760,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
 
     ``.ralph/`` lives in the queue clone at ``<workspace_root>/queue/``;
     callers inspect it via ``_queue_repo_root(cfg)`` (the primary
-    checkout is never branch-swapped — that single-checkout model is
-    gone).
+    checkout is never branch-swapped).
 
     Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
     """
@@ -806,8 +800,8 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
             target_url = _read_target_repo_from_pbi(current)
         except _ClaimError:
             target_url = ""
-        # Parse the URL outside the worktree-mode guard so non-worktree
-        # mode resumed PBIs also get target_info populated — without it
+        # Parse the URL outside the info guard so resumed PBIs get
+        # target_info populated — without it
         # ``spawn_claude_p``'s ``GH_OWNER`` injection (guarded by
         # ``pbi.target_info is not None``) silently no-ops for every
         # iteration after the first, and any ``gh`` / ``pr-github`` call
@@ -824,7 +818,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
                 # owner, same as legacy behaviour before this PR.
                 info = None
         work_wt: Path | None = None
-        if cfg.use_worktrees and info is not None:
+        if info is not None:
             # ``clone_root`` is fully determined by workspace_root + owner +
             # name; compute deterministically so a transient fetch failure
             # (network blip, auth expired, etc.) does NOT leave
