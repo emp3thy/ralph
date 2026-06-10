@@ -116,8 +116,14 @@ def bump(pbi_id: str, exc: BaseException, ctx: Context) -> None:
         )
     except BaseException:
         # Restore the tracked BUG.md so the next iteration does not
-        # carry an uncommitted occurrence edit forever.
-        bug_path.write_bytes(original_bytes)
+        # carry an uncommitted occurrence edit forever. Suppress
+        # restore failures so the original exception propagates cleanly
+        # (mirrors the ``shutil.rmtree(..., ignore_errors=True)`` used
+        # by ``new`` and ``reopen``).
+        try:
+            bug_path.write_bytes(original_bytes)
+        except OSError:
+            pass
         raise
 
 

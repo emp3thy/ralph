@@ -209,3 +209,42 @@ def test_emit_bump_restores_bug_md_when_write_fails(
         with pytest.raises(OSError, match="simulated mid-write failure"):
             bump(pbi_id, exc, ctx)
     assert bug_path.read_bytes() == original, "bump must restore BUG.md after a mid-write failure"
+
+
+def test_emit_bump_propagates_original_exception_when_restore_also_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If the restore step itself fails (e.g. permission revoked), the
+    # ORIGINAL commit/push exception must still propagate — restore failures
+    # must not mask it. Mirrors `shutil.rmtree(..., ignore_errors=True)`.
+    ctx = _ctx_for_repo(fake_repo)
+    try:
+        raise RuntimeError("first")
+    except RuntimeError as exc:
+        pbi_id = new(
+            signature="1" * 64,
+            exc=exc,
+            ctx=ctx,
+            trigger_kind="python_crash",
+            severity="critical",
+            target_repo="https://github.com/emp3thy/ralph",
+        )
+    bug_path = fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md"
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("primary commit failure")
+
+    real_write_bytes = Path.write_bytes
+
+    def flaky_write_bytes(self: Path, *a: object, **kw: object) -> int:
+        if self == bug_path:
+            raise OSError("restore failed")
+        return real_write_bytes(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(emit_mod, "_commit_and_push", boom)
+    monkeypatch.setattr(Path, "write_bytes", flaky_write_bytes)
+    try:
+        raise RuntimeError("second")
+    except RuntimeError as exc:
+        with pytest.raises(RuntimeError, match="primary commit failure"):
+            bump(pbi_id, exc, ctx)
