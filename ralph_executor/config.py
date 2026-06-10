@@ -756,7 +756,9 @@ def load_config() -> ExecutorConfig:
 
     queue_repo = _resolve_queue_repo(toml_overrides, source_label)
     main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
-    max_attempts, log_level, sleep_seconds = _resolve_runtime_knobs(toml_overrides, source_label)
+    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
+        toml_overrides, source_label
+    )
     claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
     git_host = _resolve_str(
         name="git_host",
@@ -1015,7 +1017,7 @@ def load_config() -> ExecutorConfig:
         main_branch=main_branch,
         max_attempts=max_attempts,
         log_level=log_level,
-        iteration_sleep_seconds=sleep_seconds,
+        iteration_sleep_seconds=iteration_sleep_seconds,
         claude_binary=claude_binary,
         claude_permission_mode=claude_permission_mode,
         anthropic_api_key=anthropic_key,
