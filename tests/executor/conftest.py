@@ -247,7 +247,7 @@ def cfg_for_repo(
         # the bare remote, so unit tests in this suite stay on ``main``
         # for the queue branch. The production default is ``ralph-queue``
         # — exercised end-to-end by
-        # ``test_loop_integration.test_loop_persists_to_ralph_queue_branch_by_default``
+        # ``test_iteration_integration.test_loop_persists_to_ralph_queue_branch_by_default``
         # which builds its own dual-branch bare. Flipping the fixture
         # globally is mechanically too disruptive (it cascades into
         # ~50 tests across executor/loop, movements, claude_spawn,

@@ -117,7 +117,7 @@ def _init_repo(tmp_path: Path) -> tuple[Path, ExecutorConfig]:
         # NOTE: the bare remote seeded above only carries ``main``, so this
         # fixture stays on ``main`` for the queue branch. The production
         # default is ``ralph-queue`` — exercised by
-        # ``tests/executor/test_loop_integration.py``, which builds a
+        # ``tests/executor/test_iteration_integration.py``, which builds a
         # dual-branch bare. See the matching comment in
         # ``tests/executor/conftest.py``.
         queue_branch="main",
