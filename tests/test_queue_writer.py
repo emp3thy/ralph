@@ -18,14 +18,19 @@ import pytest
 
 import scripts.queue_writer as qw
 from scripts.queue_writer import (
+    ENTRY_FILE_BY_TYPE,
+    ENTRY_FILES,
     QueueWriterError,
     acquire_queue_clone,
     append_history,
     commit_paths,
     ensure_git_repo,
     find_pbi_directory,
+    now_iso,
     push,
     read_frontmatter,
+    resolve_entry_file,
+    run_git,
     write_frontmatter,
 )
 
@@ -472,6 +477,39 @@ def test_acquire_queue_clone_forwards_branch(tmp_path, monkeypatch):
         instance_id="ralph-a",
     )
     assert captured["queue_branch"] == "ralph-queue"
+
+
+def test_entry_file_constants() -> None:
+    assert ENTRY_FILE_BY_TYPE == {
+        "feature": "PBI.md",
+        "bug": "BUG.md",
+        "pr-feedback": "FEEDBACK.md",
+    }
+    assert ENTRY_FILES == ("PBI.md", "BUG.md", "FEEDBACK.md")
+
+
+def test_resolve_entry_file_finds_each_type(tmp_path: Path) -> None:
+    for name in ("PBI.md", "BUG.md", "FEEDBACK.md"):
+        d = tmp_path / name.lower().replace(".md", "")
+        d.mkdir()
+        (d / name).write_text("x", encoding="utf-8")
+        assert resolve_entry_file(d).name == name
+
+
+def test_resolve_entry_file_missing_raises(tmp_path: Path) -> None:
+    with pytest.raises(QueueWriterError, match="no entry file"):
+        resolve_entry_file(tmp_path)
+
+
+def test_now_iso_shape() -> None:
+    val = now_iso()
+    assert val.endswith("+00:00") and "T" in val and "." not in val
+
+
+def test_run_git_success_and_failure(git_repo: Path) -> None:
+    assert "true" in run_git(git_repo, "rev-parse", "--is-inside-work-tree")
+    with pytest.raises(QueueWriterError, match="git nonsense-cmd failed"):
+        run_git(git_repo, "nonsense-cmd")
 
 
 def test_append_history_creates_or_extends_history_md(tmp_path: Path) -> None:
