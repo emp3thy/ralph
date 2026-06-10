@@ -170,3 +170,42 @@ def test_emit_bump_restores_bug_md_when_commit_fails(
         with pytest.raises(RuntimeError, match="simulated commit_and_push failure"):
             bump(pbi_id, exc, ctx)
     assert bug_path.read_bytes() == original, "bump must restore BUG.md on failure"
+
+
+def test_emit_bump_restores_bug_md_when_write_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bump file edit itself can fail mid-write (disk full, permissions
+    # revoked). Restore must still kick in — the partial-write would otherwise
+    # leave a corrupt tracked file in the worktree.
+    ctx = _ctx_for_repo(fake_repo)
+    try:
+        raise RuntimeError("first")
+    except RuntimeError as exc:
+        pbi_id = new(
+            signature="0" * 64,
+            exc=exc,
+            ctx=ctx,
+            trigger_kind="python_crash",
+            severity="critical",
+            target_repo="https://github.com/emp3thy/ralph",
+        )
+    bug_path = fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md"
+    original = bug_path.read_bytes()
+
+    real_write_text = Path.write_text
+
+    def flaky_write_text(self: Path, *a: object, **kw: object) -> int:
+        if self == bug_path:
+            # Simulate a truncate-then-fail: clobber, then raise.
+            self.write_bytes(b"")
+            raise OSError("simulated mid-write failure")
+        return real_write_text(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+    try:
+        raise RuntimeError("second")
+    except RuntimeError as exc:
+        with pytest.raises(OSError, match="simulated mid-write failure"):
+            bump(pbi_id, exc, ctx)
+    assert bug_path.read_bytes() == original, "bump must restore BUG.md after a mid-write failure"

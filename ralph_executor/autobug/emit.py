@@ -105,8 +105,10 @@ def bump(pbi_id: str, exc: BaseException, ctx: Context) -> None:
     text = _set_last_seen(text, ctx)
     trace_n = _read_occurrences(text)
     text += f"\n\n## Trace {trace_n}\n\n```\n{_format_traceback(exc)}\n```\n"
-    bug_path.write_text(text, encoding="utf-8")
     try:
+        # write_text lives INSIDE the try so a mid-write failure (disk
+        # full, permission revoked) is also covered by the restore path.
+        bug_path.write_text(text, encoding="utf-8")
         _commit_and_push(
             ctx,
             f"chore(ralph-queue): bump {pbi_id} (occurrence {trace_n})",
