@@ -323,7 +323,6 @@ def _tee_stream(
 
 
 def _resolve_spawn_paths(
-    cfg: ExecutorConfig,
     pbi: PBI,
     cwd: Path | None,
     pbi_dir: Path | None,
@@ -451,7 +450,7 @@ def spawn_claude_p(
     block interpreter shutdown indefinitely on a pipe read that nobody
     can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
-    effective_cwd, effective_pbi_dir = _resolve_spawn_paths(cfg, pbi, cwd, pbi_dir)
+    effective_cwd, effective_pbi_dir = _resolve_spawn_paths(pbi, cwd, pbi_dir)
     argv = _build_argv(cfg, pbi_dir=effective_pbi_dir, pbi=pbi)
     env = _build_subprocess_env(cfg, pbi, effective_pbi_dir)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
