@@ -109,6 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--instance-id",
         dest="instance_id",
         default=None,
+        metavar="NAME",
         help=(
             "Operator instance_id used to land on the executor's namespaced "
             "queue clone (queue-<instance-id>/). Resolution order: "
