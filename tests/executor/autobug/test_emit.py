@@ -1,6 +1,9 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from ralph_executor.autobug import emit as emit_mod
 from ralph_executor.autobug.emit import bump, new, reopen
 from ralph_executor.autobug.types import Context
 
@@ -82,3 +85,166 @@ def test_emit_reopen_creates_new_pbi_with_regression_of(fake_repo: Path) -> None
     assert new_pbi_id != "autobug-cccccc-001"
     bug_text = (fake_repo / ".ralph" / "inbox" / new_pbi_id / "BUG.md").read_text(encoding="utf-8")
     assert "regression_of: autobug-cccccc-001" in bug_text
+
+
+def test_emit_new_rolls_back_pbi_dir_when_commit_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without atomic emit, a commit/push failure strands the PBI dir on disk
+    # and the iterate_once loop spins forever on UncommittedSource.
+    ctx = _ctx_for_repo(fake_repo)
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("simulated commit_and_push failure")
+
+    monkeypatch.setattr(emit_mod, "_commit_and_push", boom)
+    try:
+        raise RuntimeError("emit-new boom")
+    except RuntimeError as exc:
+        with pytest.raises(RuntimeError, match="simulated commit_and_push failure"):
+            new(
+                signature="d" * 64,
+                exc=exc,
+                ctx=ctx,
+                trigger_kind="python_crash",
+                severity="critical",
+                target_repo="https://github.com/emp3thy/ralph",
+            )
+    inbox = fake_repo / ".ralph" / "inbox"
+    leftover = [child for child in inbox.iterdir() if child.name.startswith("autobug-dddddd-")]
+    assert leftover == [], f"orphaned inbox dirs: {leftover}"
+
+
+def test_emit_reopen_rolls_back_pbi_dir_when_commit_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _ctx_for_repo(fake_repo)
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("simulated commit_and_push failure")
+
+    monkeypatch.setattr(emit_mod, "_commit_and_push", boom)
+    try:
+        raise RuntimeError("regression boom")
+    except RuntimeError as exc:
+        with pytest.raises(RuntimeError, match="simulated commit_and_push failure"):
+            reopen(
+                existing_pbi_id="autobug-eeeeee-001",
+                exc=exc,
+                signature="e" * 64,
+                ctx=ctx,
+                trigger_kind="python_crash",
+                severity="critical",
+                target_repo="https://github.com/emp3thy/ralph",
+            )
+    inbox = fake_repo / ".ralph" / "inbox"
+    leftover = [child for child in inbox.iterdir() if child.name.startswith("autobug-eeeeee-")]
+    assert leftover == [], f"orphaned regression dirs: {leftover}"
+
+
+def test_emit_bump_restores_bug_md_when_commit_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _ctx_for_repo(fake_repo)
+    try:
+        raise RuntimeError("first")
+    except RuntimeError as exc:
+        pbi_id = new(
+            signature="f" * 64,
+            exc=exc,
+            ctx=ctx,
+            trigger_kind="python_crash",
+            severity="critical",
+            target_repo="https://github.com/emp3thy/ralph",
+        )
+    bug_path = fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md"
+    original = bug_path.read_bytes()
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("simulated commit_and_push failure")
+
+    monkeypatch.setattr(emit_mod, "_commit_and_push", boom)
+    try:
+        raise RuntimeError("second")
+    except RuntimeError as exc:
+        with pytest.raises(RuntimeError, match="simulated commit_and_push failure"):
+            bump(pbi_id, exc, ctx)
+    assert bug_path.read_bytes() == original, "bump must restore BUG.md on failure"
+
+
+def test_emit_bump_restores_bug_md_when_write_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bump file edit itself can fail mid-write (disk full, permissions
+    # revoked). Restore must still kick in — the partial-write would otherwise
+    # leave a corrupt tracked file in the worktree.
+    ctx = _ctx_for_repo(fake_repo)
+    try:
+        raise RuntimeError("first")
+    except RuntimeError as exc:
+        pbi_id = new(
+            signature="0" * 64,
+            exc=exc,
+            ctx=ctx,
+            trigger_kind="python_crash",
+            severity="critical",
+            target_repo="https://github.com/emp3thy/ralph",
+        )
+    bug_path = fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md"
+    original = bug_path.read_bytes()
+
+    real_write_text = Path.write_text
+
+    def flaky_write_text(self: Path, *a: object, **kw: object) -> int:
+        if self == bug_path:
+            # Simulate a truncate-then-fail: clobber, then raise.
+            self.write_bytes(b"")
+            raise OSError("simulated mid-write failure")
+        return real_write_text(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+    try:
+        raise RuntimeError("second")
+    except RuntimeError as exc:
+        with pytest.raises(OSError, match="simulated mid-write failure"):
+            bump(pbi_id, exc, ctx)
+    assert bug_path.read_bytes() == original, "bump must restore BUG.md after a mid-write failure"
+
+
+def test_emit_bump_propagates_original_exception_when_restore_also_fails(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If the restore step itself fails (e.g. permission revoked), the
+    # ORIGINAL commit/push exception must still propagate — restore failures
+    # must not mask it. Mirrors `shutil.rmtree(..., ignore_errors=True)`.
+    ctx = _ctx_for_repo(fake_repo)
+    try:
+        raise RuntimeError("first")
+    except RuntimeError as exc:
+        pbi_id = new(
+            signature="1" * 64,
+            exc=exc,
+            ctx=ctx,
+            trigger_kind="python_crash",
+            severity="critical",
+            target_repo="https://github.com/emp3thy/ralph",
+        )
+    bug_path = fake_repo / ".ralph" / "inbox" / pbi_id / "BUG.md"
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("primary commit failure")
+
+    real_write_bytes = Path.write_bytes
+
+    def flaky_write_bytes(self: Path, *a: object, **kw: object) -> int:
+        if self == bug_path:
+            raise OSError("restore failed")
+        return real_write_bytes(self, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(emit_mod, "_commit_and_push", boom)
+    monkeypatch.setattr(Path, "write_bytes", flaky_write_bytes)
+    try:
+        raise RuntimeError("second")
+    except RuntimeError as exc:
+        with pytest.raises(RuntimeError, match="primary commit failure"):
+            bump(pbi_id, exc, ctx)
