@@ -322,6 +322,96 @@ def _tee_stream(
         err_slot.append(exc)
 
 
+def _resolve_spawn_paths(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    cwd: Path | None,
+    pbi_dir: Path | None,
+) -> tuple[Path, Path]:
+    """Resolve and validate the subprocess cwd and PBI directory.
+
+    ``cwd`` overrides the subprocess working directory; falls back to
+    ``pbi.work_worktree`` and raises ``ConfigError`` when neither is
+    available. ``pbi_dir`` overrides the on-disk PBI directory; defaults
+    to ``pbi.path``. Both are validated as existing directories so a
+    misconfigured worktree fails fast. Returns
+    ``(effective_cwd, effective_pbi_dir)``.
+    """
+    effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
+    if cwd is not None:
+        effective_cwd = Path(cwd)
+    elif pbi.work_worktree is not None:
+        effective_cwd = pbi.work_worktree
+    else:
+        raise ConfigError(
+            f"spawn_claude_p: PBI {pbi.id} has no work_worktree set and no "
+            "cwd override was supplied. The per-PBI worktree must be "
+            "materialised by _claim_pbi or recovered by the resume path "
+            "in iterate_once before Claude can be spawned."
+        )
+    if not effective_pbi_dir.is_dir():
+        raise FileNotFoundError(
+            f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
+        )
+    if not effective_cwd.is_dir():
+        raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
+    return effective_cwd, effective_pbi_dir
+
+
+def _build_subprocess_env(
+    cfg: ExecutorConfig,
+    pbi: PBI,
+    effective_pbi_dir: Path,
+) -> dict[str, str]:
+    """Build the child-process environment for the spawned Claude.
+
+    Copies ``os.environ`` and wires ``RALPH_PBI_DIR``,
+    ``ANTHROPIC_API_KEY``, ``BASH_MAX_TIMEOUT_MS``, ``GH_OWNER``,
+    ``BETTER_MEMORY_PROJECT`` and ``RALPH_AUTOBUG_DEPTH`` as documented
+    inline. Mutations are scoped to the returned dict — ralph's parent
+    env stays untouched.
+    """
+    env = os.environ.copy()
+    env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
+    # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
+    # Empty string breaks claude CLI's OAuth fallback — leave it absent
+    # so the claude CLI picks up its own OAuth session.
+    if cfg.anthropic_api_key:
+        env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
+    # Subprocess-scoped bridge for the Claude Code per-bash-tool ceiling.
+    # Claude Code's own default is 600_000 (10 min); ralph's default is
+    # 900_000 (15 min), overridable per repo via TOML and per shell via
+    # env. Setting on ``env`` (not os.environ) keeps the override scoped
+    # to this child — ralph's parent env stays untouched.
+    env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
+    # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
+    # ``gh`` invocation that reads GH_OWNER) writes to the target repo
+    # owner from ``pbi.target_repo``, not whatever owner the operator
+    # configured for ralph itself. None in legacy single-target mode.
+    if pbi.target_info is not None:
+        env["GH_OWNER"] = pbi.target_info.owner
+        # Per-PBI better-memory project scope so the subagent's observations
+        # land in the target repo's project rather than the cwd-derived
+        # worktree path. Requires BETTER_MEMORY_PROJECT support in
+        # better-memory's project resolver (see better-memory PR
+        # memory-project-env-override).
+        env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
+    else:
+        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
+        # inherited from ralph's parent env so the subagent's
+        # observations don't leak into whatever project name the
+        # operator happens to have set for ralph itself.
+        env.pop("BETTER_MEMORY_PROJECT", None)
+    # Autobug recursion guard: when the spawned Claude is itself iterating
+    # on an autobug PBI, mark the child env so any further crash inside
+    # that subprocess is suppressed by ``fuses.recursion_check`` (which
+    # reads ``RALPH_AUTOBUG_DEPTH``). Prevents an autobug loop emitting
+    # a second autobug for the same signature.
+    if _pbi_frontmatter_has_signature(pbi):
+        env["RALPH_AUTOBUG_DEPTH"] = "1"
+    return env
+
+
 def spawn_claude_p(
     cfg: ExecutorConfig,
     pbi: PBI,
@@ -361,63 +451,9 @@ def spawn_claude_p(
     block interpreter shutdown indefinitely on a pipe read that nobody
     can fulfil. ``daemon=True`` is set as a belt-and-braces guard.
     """
-    effective_pbi_dir = Path(pbi_dir) if pbi_dir is not None else pbi.path
-    if cwd is not None:
-        effective_cwd = Path(cwd)
-    elif pbi.work_worktree is not None:
-        effective_cwd = pbi.work_worktree
-    else:
-        raise ConfigError(
-            f"spawn_claude_p: PBI {pbi.id} has no work_worktree set and no "
-            "cwd override was supplied. The per-PBI worktree must be "
-            "materialised by _claim_pbi or recovered by the resume path "
-            "in iterate_once before Claude can be spawned."
-        )
-    if not effective_pbi_dir.is_dir():
-        raise FileNotFoundError(
-            f"RALPH_PBI_DIR target {effective_pbi_dir} is not an existing directory"
-        )
-    if not effective_cwd.is_dir():
-        raise FileNotFoundError(f"claude cwd {effective_cwd} is not an existing directory")
+    effective_cwd, effective_pbi_dir = _resolve_spawn_paths(cfg, pbi, cwd, pbi_dir)
     argv = _build_argv(cfg, pbi_dir=effective_pbi_dir, pbi=pbi)
-    env = os.environ.copy()
-    env["RALPH_PBI_DIR"] = str(effective_pbi_dir)
-    # Only propagate ANTHROPIC_API_KEY when cfg actually carries one.
-    # Empty string breaks claude CLI's OAuth fallback — leave it absent
-    # so the claude CLI picks up its own OAuth session.
-    if cfg.anthropic_api_key:
-        env.setdefault("ANTHROPIC_API_KEY", cfg.anthropic_api_key)
-    # Subprocess-scoped bridge for the Claude Code per-bash-tool ceiling.
-    # Claude Code's own default is 600_000 (10 min); ralph's default is
-    # 900_000 (15 min), overridable per repo via TOML and per shell via
-    # env. Setting on ``env`` (not os.environ) keeps the override scoped
-    # to this child — ralph's parent env stays untouched.
-    env["BASH_MAX_TIMEOUT_MS"] = str(cfg.bash_max_timeout_ms)
-    # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
-    # ``gh`` invocation that reads GH_OWNER) writes to the target repo
-    # owner from ``pbi.target_repo``, not whatever owner the operator
-    # configured for ralph itself. None in legacy single-target mode.
-    if pbi.target_info is not None:
-        env["GH_OWNER"] = pbi.target_info.owner
-        # Per-PBI better-memory project scope so the subagent's observations
-        # land in the target repo's project rather than the cwd-derived
-        # worktree path. Requires BETTER_MEMORY_PROJECT support in
-        # better-memory's project resolver (see better-memory PR
-        # memory-project-env-override).
-        env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
-    else:
-        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
-        # inherited from ralph's parent env so the subagent's
-        # observations don't leak into whatever project name the
-        # operator happens to have set for ralph itself.
-        env.pop("BETTER_MEMORY_PROJECT", None)
-    # Autobug recursion guard: when the spawned Claude is itself iterating
-    # on an autobug PBI, mark the child env so any further crash inside
-    # that subprocess is suppressed by ``fuses.recursion_check`` (which
-    # reads ``RALPH_AUTOBUG_DEPTH``). Prevents an autobug loop emitting
-    # a second autobug for the same signature.
-    if _pbi_frontmatter_has_signature(pbi):
-        env["RALPH_AUTOBUG_DEPTH"] = "1"
+    env = _build_subprocess_env(cfg, pbi, effective_pbi_dir)
     log.info("spawning %s for PBI %s", argv[0], pbi.id)
     start = time.monotonic()
     # Put the child in its own process group / session so the timeout
