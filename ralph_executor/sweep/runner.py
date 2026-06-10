@@ -35,6 +35,7 @@ from ralph_executor.sweep.types import (
 from ralph_executor.sweep.types import (
     SweepPbiError as _SweepPbiError,
 )
+from ralph_executor.url_utils import TargetRepoInfo
 
 log = logging.getLogger(__name__)
 
@@ -179,33 +180,37 @@ def run(*, ctx: SweepContext) -> SweepResult:
     """Walk pending-pr/ once. Return a structured summary."""
     pending_dir = ctx.queue_root / "pending-pr"
     pbis = _list_pbi_directories(pending_dir)
+    actions, errors = _process_pending_pass(pbis=pbis, ctx=ctx)
+    _reconcile_stale_current_pass(ctx=ctx, errors=errors)
+    return SweepResult(
+        pbis_scanned=len(pbis),
+        actions=tuple(actions),
+        errors=tuple(errors),
+    )
+
+
+def _list_pbi_directories(pending_dir: Path) -> list[Path]:
+    if not pending_dir.is_dir():
+        return []
+    return sorted(p for p in pending_dir.iterdir() if p.is_dir())
+
+
+def _process_pending_pass(
+    *, pbis: list[Path], ctx: SweepContext
+) -> tuple[list[PbiActionRecord], list[str]]:
+    """Walk pending-pr/ entries: reconcile orphans, process PR-linked PBIs.
+
+    One directory-sorted walk handles both arms (orphan reconciliation stays
+    interleaved with PR-linked processing) so the observable ordering of
+    moves, log lines and ``errors`` entries matches the pre-split single
+    loop. The ``_SweepPbiError`` except sits directly around the per-PBI
+    work — one bad PBI never aborts the sweep.
+    """
     actions: list[PbiActionRecord] = []
     errors: list[str] = []
-
-    from ralph_executor.sweep.reconcile import (  # local import avoids cycle
-        ReconcileError,
-        reconcile_orphan,
-    )
-    from ralph_executor.sweep.types import ReconcileAction
-
     for pbi_dir in pbis:
         if not (pbi_dir / "PR-LINK.md").is_file():
-            try:
-                action = reconcile_orphan(pbi_dir, ctx)
-                if action == ReconcileAction.KEEP_API_ERROR:
-                    log.warning(
-                        "sweep: reconcile API error for %s; will retry next iteration",
-                        pbi_dir.name,
-                    )
-                else:
-                    log.info(
-                        "sweep: reconciled %s -> %s",
-                        pbi_dir.name,
-                        action.value,
-                    )
-            except ReconcileError as err:
-                errors.append(f"{pbi_dir.name}: reconcile error: {err}")
-                log.warning("sweep: reconcile failed for %s: %s", pbi_dir.name, err)
+            _reconcile_orphans_pass(pbi_dir=pbi_dir, ctx=ctx, errors=errors)
             continue
 
         try:
@@ -213,11 +218,47 @@ def run(*, ctx: SweepContext) -> SweepResult:
         except _SweepPbiError as err:
             errors.append(f"{pbi_dir.name}: {err}")
             log.warning("sweep error for %s: %s", pbi_dir.name, err)
+    return actions, errors
 
-    # Reconcile stale .ralph/current/ entries (filesystem-only janitor pass).
-    # Runs AFTER the pending-pr loop so an iteration which promotes
-    # pending-pr/<id>/ to done/<id>/ above can also delete the leftover
-    # current/<id>/ shadow in the same pass.
+
+def _reconcile_orphans_pass(*, pbi_dir: Path, ctx: SweepContext, errors: list[str]) -> None:
+    """Reconcile one pending-pr/ entry that has no PR-LINK.md.
+
+    Invoked from inside ``_process_pending_pass``'s walk (not as a separate
+    sweep over the queue) so orphans are handled in the same sorted order
+    as their PR-linked siblings.
+    """
+    from ralph_executor.sweep.reconcile import (  # local import avoids cycle
+        ReconcileError,
+        reconcile_orphan,
+    )
+    from ralph_executor.sweep.types import ReconcileAction
+
+    try:
+        action = reconcile_orphan(pbi_dir, ctx)
+        if action == ReconcileAction.KEEP_API_ERROR:
+            log.warning(
+                "sweep: reconcile API error for %s; will retry next iteration",
+                pbi_dir.name,
+            )
+        else:
+            log.info(
+                "sweep: reconciled %s -> %s",
+                pbi_dir.name,
+                action.value,
+            )
+    except ReconcileError as err:
+        errors.append(f"{pbi_dir.name}: reconcile error: {err}")
+        log.warning("sweep: reconcile failed for %s: %s", pbi_dir.name, err)
+
+
+def _reconcile_stale_current_pass(*, ctx: SweepContext, errors: list[str]) -> None:
+    """Reconcile stale .ralph/current/ entries (filesystem-only janitor pass).
+
+    Runs AFTER the pending-pr loop so an iteration which promotes
+    pending-pr/<id>/ to done/<id>/ in that loop can also delete the
+    leftover current/<id>/ shadow in the same pass.
+    """
     from ralph_executor.sweep.reconcile import reconcile_stale_current_all
     from ralph_executor.sweep.types import CurrentReconcileAction
 
@@ -232,20 +273,43 @@ def run(*, ctx: SweepContext) -> SweepResult:
     for pbi_id, current_err in current_report.errors.items():
         errors.append(f"current/{pbi_id}: reconcile error: {current_err}")
 
-    return SweepResult(
-        pbis_scanned=len(pbis),
-        actions=tuple(actions),
-        errors=tuple(errors),
+
+def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
+    """Pipeline for one PR-linked PBI: fetch state, decide, track CI, dispatch."""
+    pr_id, attempts, sidecar, target_info, snapshot = _fetch_pbi_state(pbi_dir=pbi_dir, ctx=ctx)
+    decision = decide_action(
+        pr=snapshot,
+        attempts=attempts,
+        last_seen_comment_ids=sidecar.last_seen_comment_ids,
+        last_feedback_round=sidecar.last_feedback_round,
+        config=ctx.config,
+    )
+    sidecar = _track_ci_transition(pbi_dir=pbi_dir, snapshot=snapshot, sidecar=sidecar, ctx=ctx)
+    _dispatch(
+        pbi_dir=pbi_dir,
+        decision=decision,
+        snapshot=snapshot,
+        sidecar=sidecar,
+        ctx=ctx,
+        target_info=target_info,
+    )
+    return PbiActionRecord(
+        pbi_id=pbi_dir.name,
+        pr_id=pr_id,
+        action=decision.action,
+        reason=decision.reason,
     )
 
 
-def _list_pbi_directories(pending_dir: Path) -> list[Path]:
-    if not pending_dir.is_dir():
-        return []
-    return sorted(p for p in pending_dir.iterdir() if p.is_dir())
+def _fetch_pbi_state(
+    *, pbi_dir: Path, ctx: SweepContext
+) -> tuple[int, int, sidecar_state.SweepSidecar, TargetRepoInfo | None, PrSnapshot]:
+    """Read the PBI's on-disk state and fetch its live PR snapshot.
 
-
-def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
+    Returns ``(pr_id, attempts, sidecar, target_info, snapshot)``. Raises
+    ``_SweepPbiError`` on unreadable/invalid inputs or PR-skill failure so
+    the caller's per-PBI isolation handles it.
+    """
     pr_id = _read_pr_id(pbi_dir)
     attempts = _read_attempts(pbi_dir)
     sidecar = sidecar_state.load_sidecar(pbi_dir)
@@ -263,14 +327,21 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         )
     except AdoSkillError as err:
         raise _SweepPbiError(f"PR skill failure: {err}") from err
+    return pr_id, attempts, sidecar, target_info, snapshot
 
-    decision = decide_action(
-        pr=snapshot,
-        attempts=attempts,
-        last_seen_comment_ids=sidecar.last_seen_comment_ids,
-        last_feedback_round=sidecar.last_feedback_round,
-        config=ctx.config,
-    )
+
+def _track_ci_transition(
+    *,
+    pbi_dir: Path,
+    snapshot: PrSnapshot,
+    sidecar: sidecar_state.SweepSidecar,
+    ctx: SweepContext,
+) -> sidecar_state.SweepSidecar:
+    """Emit PR_GREEN_THEN_RED and persist terminal CI state into the sidecar.
+
+    Returns the (possibly replaced) sidecar so the caller dispatches with
+    the persisted state.
+    """
     # Plan 19b Task 3: detect succeeded → failed CI transition and persist
     # the current terminal CI state into the sidecar before dispatch.
     # Persisting only "succeeded" / "failed" (NOT "running" / "none" /
@@ -299,20 +370,7 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
             sidecar_state.write_sidecar(pbi_dir, sidecar)
         except OSError as exc:
             raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
-    _dispatch(
-        pbi_dir=pbi_dir,
-        decision=decision,
-        snapshot=snapshot,
-        sidecar=sidecar,
-        ctx=ctx,
-        target_info=target_info,
-    )
-    return PbiActionRecord(
-        pbi_id=pbi_dir.name,
-        pr_id=pr_id,
-        action=decision.action,
-        reason=decision.reason,
-    )
+    return sidecar
 
 
 def _read_pr_id(pbi_dir: Path) -> int:
