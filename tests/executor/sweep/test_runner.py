@@ -808,7 +808,7 @@ def test_auto_merge_race_keeps_pbi_in_pending(
     )
     register_merge_pr_exit(monkeypatch, 5200, 4)
 
-    with caplog.at_level("INFO", logger="ralph_executor.sweep.runner"):
+    with caplog.at_level("INFO", logger="ralph_executor.sweep.actions"):
         result = run(ctx=_ctx_with_auto_merge(queue_root, fake_ado_pr_skill))
 
     assert pbi.exists()
@@ -838,7 +838,7 @@ def test_auto_merge_github_error_keeps_pbi_in_pending(
     )
     register_merge_pr_exit(monkeypatch, 5300, 3)
 
-    with caplog.at_level("WARNING", logger="ralph_executor.sweep.runner"):
+    with caplog.at_level("WARNING", logger="ralph_executor.sweep.actions"):
         result = run(ctx=_ctx_with_auto_merge(queue_root, fake_ado_pr_skill))
 
     assert pbi.exists()

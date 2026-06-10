@@ -8,88 +8,50 @@ the PR skill, moving folders, and writing feedback PBIs.
 from __future__ import annotations
 
 import logging
-import os
 import re
-import shutil
-import sys
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from pathlib import Path
 
-from ralph_executor.safety.events import (
-    Event,
-    EventLog,
-    EventType,
-    signature_from_text,
-)
-from ralph_executor.subprocess_utils import run_text
-from ralph_executor.sweep import feedback_pbi as feedback_module
 from ralph_executor.sweep import pr_state
 from ralph_executor.sweep import state as sidecar_state
+from ralph_executor.sweep.actions import dispatch as _dispatch
+from ralph_executor.sweep.events import (
+    emit_pr_green_then_red as _emit_pr_green_then_red,
+)
 from ralph_executor.sweep.pr_state import AdoSkillError
+from ralph_executor.sweep.target import (
+    per_pbi_subprocess_overrides as _per_pbi_subprocess_overrides,
+)
 from ralph_executor.sweep.target import read_target_info
 from ralph_executor.sweep.types import (
     Action,
     CommentSnapshot,
     Decision,
     PrSnapshot,
+    SweepConfig,
+    SweepContext,
+)
+from ralph_executor.sweep.types import (
+    SweepPbiError as _SweepPbiError,
 )
 from ralph_executor.url_utils import TargetRepoInfo
 
 log = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class SweepConfig:
-    """All non-default parameters the sweep needs.
-
-    ``ralph_author_email`` MUST be non-empty for the sweep to run in
-    production; the constructor raises ``ValueError`` if it isn't. Tests
-    that don't care about Ralph-authored filtering should pass a clearly
-    fictitious value (e.g. ``"ralph-bot@example.com"``).
-    """
-
-    ralph_author_email: str
-    max_attempts: int
-    stale_threshold: timedelta
-    now: datetime
-    auto_merge_clean_prs: bool = False
-
-    def __post_init__(self) -> None:
-        if not self.ralph_author_email:
-            raise ValueError("ralph_author_email is required (set RALPH_ADO_AUTHOR_EMAIL)")
-        if self.max_attempts < 1:
-            raise ValueError("max_attempts must be >= 1")
-        if self.stale_threshold.total_seconds() <= 0:
-            raise ValueError("stale_threshold must be a positive timedelta")
-        if self.now.tzinfo is None:
-            raise ValueError("now must be timezone-aware")
-
-
-@dataclass(frozen=True)
-class SweepContext:
-    """I/O context for one sweep invocation.
-
-    The loop driver (Plan 7) constructs this from its own ``LoopContext``
-    and passes it in. The split keeps ``run`` testable in isolation.
-    """
-
-    queue_root: Path  # the ``.ralph/`` directory in the project repo
-    ado_pr_scripts_path: Path  # the staged PR-skill ``scripts/`` directory
-    config: SweepConfig
-    # The GitHub/ADO repo name (e.g. "ralph"), used by reconcile when
-    # invoking lookup_by_branch. Must be passed explicitly because
-    # ``queue_root.parent.name`` is unreliable under worktree mode: there
-    # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
-    # ``.parent.name`` is "queue", not the repo name.
-    repo_name: str = ""
-    # Optional cycle-detector event sink. When provided, the sweep emits
-    # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
-    # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
-    # don't exercise event emission omit it; production wiring
-    # (iteration_safety.run_sweep) always passes one.
-    event_log: EventLog | None = None
+# Explicit re-export surface (mypy ``no_implicit_reexport``): SweepConfig /
+# SweepContext moved to types.py and _per_pbi_subprocess_overrides to
+# target.py, but cli.py, iteration_safety.py, reconcile.py and the tests
+# import them from here.
+__all__ = [
+    "PbiActionRecord",
+    "SweepConfig",
+    "SweepContext",
+    "SweepResult",
+    "_per_pbi_subprocess_overrides",
+    "decide_action",
+    "run",
+]
 
 
 @dataclass(frozen=True)
@@ -214,41 +176,41 @@ def _new_active_human_comments(
 _PR_ID_RE = re.compile(r"!?(\d+)")
 
 
-class _SweepPbiError(RuntimeError):
-    """Raised to skip one PBI without aborting the whole sweep."""
-
-
 def run(*, ctx: SweepContext) -> SweepResult:
     """Walk pending-pr/ once. Return a structured summary."""
     pending_dir = ctx.queue_root / "pending-pr"
     pbis = _list_pbi_directories(pending_dir)
+    actions, errors = _process_pending_pass(pbis=pbis, ctx=ctx)
+    _reconcile_stale_current_pass(ctx=ctx, errors=errors)
+    return SweepResult(
+        pbis_scanned=len(pbis),
+        actions=tuple(actions),
+        errors=tuple(errors),
+    )
+
+
+def _list_pbi_directories(pending_dir: Path) -> list[Path]:
+    if not pending_dir.is_dir():
+        return []
+    return sorted(p for p in pending_dir.iterdir() if p.is_dir())
+
+
+def _process_pending_pass(
+    *, pbis: list[Path], ctx: SweepContext
+) -> tuple[list[PbiActionRecord], list[str]]:
+    """Walk pending-pr/ entries: reconcile orphans, process PR-linked PBIs.
+
+    One directory-sorted walk handles both arms (orphan reconciliation stays
+    interleaved with PR-linked processing) so the observable ordering of
+    moves, log lines and ``errors`` entries matches the pre-split single
+    loop. The ``_SweepPbiError`` except sits directly around the per-PBI
+    work — one bad PBI never aborts the sweep.
+    """
     actions: list[PbiActionRecord] = []
     errors: list[str] = []
-
-    from ralph_executor.sweep.reconcile import (  # local import avoids cycle
-        ReconcileError,
-        reconcile_orphan,
-    )
-    from ralph_executor.sweep.types import ReconcileAction
-
     for pbi_dir in pbis:
         if not (pbi_dir / "PR-LINK.md").is_file():
-            try:
-                action = reconcile_orphan(pbi_dir, ctx)
-                if action == ReconcileAction.KEEP_API_ERROR:
-                    log.warning(
-                        "sweep: reconcile API error for %s; will retry next iteration",
-                        pbi_dir.name,
-                    )
-                else:
-                    log.info(
-                        "sweep: reconciled %s -> %s",
-                        pbi_dir.name,
-                        action.value,
-                    )
-            except ReconcileError as err:
-                errors.append(f"{pbi_dir.name}: reconcile error: {err}")
-                log.warning("sweep: reconcile failed for %s: %s", pbi_dir.name, err)
+            _reconcile_orphans_pass(pbi_dir=pbi_dir, ctx=ctx, errors=errors)
             continue
 
         try:
@@ -256,11 +218,47 @@ def run(*, ctx: SweepContext) -> SweepResult:
         except _SweepPbiError as err:
             errors.append(f"{pbi_dir.name}: {err}")
             log.warning("sweep error for %s: %s", pbi_dir.name, err)
+    return actions, errors
 
-    # Reconcile stale .ralph/current/ entries (filesystem-only janitor pass).
-    # Runs AFTER the pending-pr loop so an iteration which promotes
-    # pending-pr/<id>/ to done/<id>/ above can also delete the leftover
-    # current/<id>/ shadow in the same pass.
+
+def _reconcile_orphans_pass(*, pbi_dir: Path, ctx: SweepContext, errors: list[str]) -> None:
+    """Reconcile one pending-pr/ entry that has no PR-LINK.md.
+
+    Invoked from inside ``_process_pending_pass``'s walk (not as a separate
+    sweep over the queue) so orphans are handled in the same sorted order
+    as their PR-linked siblings.
+    """
+    from ralph_executor.sweep.reconcile import (  # local import avoids cycle
+        ReconcileError,
+        reconcile_orphan,
+    )
+    from ralph_executor.sweep.types import ReconcileAction
+
+    try:
+        action = reconcile_orphan(pbi_dir, ctx)
+        if action == ReconcileAction.KEEP_API_ERROR:
+            log.warning(
+                "sweep: reconcile API error for %s; will retry next iteration",
+                pbi_dir.name,
+            )
+        else:
+            log.info(
+                "sweep: reconciled %s -> %s",
+                pbi_dir.name,
+                action.value,
+            )
+    except ReconcileError as err:
+        errors.append(f"{pbi_dir.name}: reconcile error: {err}")
+        log.warning("sweep: reconcile failed for %s: %s", pbi_dir.name, err)
+
+
+def _reconcile_stale_current_pass(*, ctx: SweepContext, errors: list[str]) -> None:
+    """Reconcile stale .ralph/current/ entries (filesystem-only janitor pass).
+
+    Runs AFTER the pending-pr loop so an iteration which promotes
+    pending-pr/<id>/ to done/<id>/ in that loop can also delete the
+    leftover current/<id>/ shadow in the same pass.
+    """
     from ralph_executor.sweep.reconcile import reconcile_stale_current_all
     from ralph_executor.sweep.types import CurrentReconcileAction
 
@@ -275,20 +273,43 @@ def run(*, ctx: SweepContext) -> SweepResult:
     for pbi_id, current_err in current_report.errors.items():
         errors.append(f"current/{pbi_id}: reconcile error: {current_err}")
 
-    return SweepResult(
-        pbis_scanned=len(pbis),
-        actions=tuple(actions),
-        errors=tuple(errors),
+
+def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
+    """Pipeline for one PR-linked PBI: fetch state, decide, track CI, dispatch."""
+    pr_id, attempts, sidecar, target_info, snapshot = _fetch_pbi_state(pbi_dir=pbi_dir, ctx=ctx)
+    decision = decide_action(
+        pr=snapshot,
+        attempts=attempts,
+        last_seen_comment_ids=sidecar.last_seen_comment_ids,
+        last_feedback_round=sidecar.last_feedback_round,
+        config=ctx.config,
+    )
+    sidecar = _track_ci_transition(pbi_dir=pbi_dir, snapshot=snapshot, sidecar=sidecar, ctx=ctx)
+    _dispatch(
+        pbi_dir=pbi_dir,
+        decision=decision,
+        snapshot=snapshot,
+        sidecar=sidecar,
+        ctx=ctx,
+        target_info=target_info,
+    )
+    return PbiActionRecord(
+        pbi_id=pbi_dir.name,
+        pr_id=pr_id,
+        action=decision.action,
+        reason=decision.reason,
     )
 
 
-def _list_pbi_directories(pending_dir: Path) -> list[Path]:
-    if not pending_dir.is_dir():
-        return []
-    return sorted(p for p in pending_dir.iterdir() if p.is_dir())
+def _fetch_pbi_state(
+    *, pbi_dir: Path, ctx: SweepContext
+) -> tuple[int, int, sidecar_state.SweepSidecar, TargetRepoInfo | None, PrSnapshot]:
+    """Read the PBI's on-disk state and fetch its live PR snapshot.
 
-
-def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
+    Returns ``(pr_id, attempts, sidecar, target_info, snapshot)``. Raises
+    ``_SweepPbiError`` on unreadable/invalid inputs or PR-skill failure so
+    the caller's per-PBI isolation handles it.
+    """
     pr_id = _read_pr_id(pbi_dir)
     attempts = _read_attempts(pbi_dir)
     sidecar = sidecar_state.load_sidecar(pbi_dir)
@@ -306,14 +327,21 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
         )
     except AdoSkillError as err:
         raise _SweepPbiError(f"PR skill failure: {err}") from err
+    return pr_id, attempts, sidecar, target_info, snapshot
 
-    decision = decide_action(
-        pr=snapshot,
-        attempts=attempts,
-        last_seen_comment_ids=sidecar.last_seen_comment_ids,
-        last_feedback_round=sidecar.last_feedback_round,
-        config=ctx.config,
-    )
+
+def _track_ci_transition(
+    *,
+    pbi_dir: Path,
+    snapshot: PrSnapshot,
+    sidecar: sidecar_state.SweepSidecar,
+    ctx: SweepContext,
+) -> sidecar_state.SweepSidecar:
+    """Emit PR_GREEN_THEN_RED and persist terminal CI state into the sidecar.
+
+    Returns the (possibly replaced) sidecar so the caller dispatches with
+    the persisted state.
+    """
     # Plan 19b Task 3: detect succeeded → failed CI transition and persist
     # the current terminal CI state into the sidecar before dispatch.
     # Persisting only "succeeded" / "failed" (NOT "running" / "none" /
@@ -322,7 +350,12 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
     # The pre-dispatch write means the updated sidecar travels with any
     # subsequent move (MOVE_TO_INBOX_RETRY etc.).
     if sidecar.last_ci_status == "succeeded" and snapshot.ci_status == "failed":
-        _emit_pr_green_then_red(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
+        _emit_pr_green_then_red(
+            pbi_id=pbi_dir.name,
+            snapshot=snapshot,
+            event_log=ctx.event_log,
+            now=ctx.config.now,
+        )
     if (
         snapshot.ci_status in {"succeeded", "failed"}
         and snapshot.ci_status != sidecar.last_ci_status
@@ -337,39 +370,7 @@ def _process_pbi(*, pbi_dir: Path, ctx: SweepContext) -> PbiActionRecord:
             sidecar_state.write_sidecar(pbi_dir, sidecar)
         except OSError as exc:
             raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
-    _dispatch(
-        pbi_dir=pbi_dir,
-        decision=decision,
-        snapshot=snapshot,
-        sidecar=sidecar,
-        ctx=ctx,
-        target_info=target_info,
-    )
-    return PbiActionRecord(
-        pbi_id=pbi_dir.name,
-        pr_id=pr_id,
-        action=decision.action,
-        reason=decision.reason,
-    )
-
-
-def _per_pbi_subprocess_overrides(
-    target_info: TargetRepoInfo | None,
-    ctx: SweepContext,
-) -> tuple[dict[str, str] | None, str]:
-    """Compute ``(env, repo_name)`` for the sweep's per-PBI subprocess calls.
-
-    When the PBI declares a ``target_repo`` (multi-target rollout):
-      env = parent env overlaid with ``GH_OWNER=<owner>``; repo = ``<name>``.
-    When absent (legacy single-target): env stays ``None`` (subprocess
-    inherits the parent env) and ``repo_name`` falls back to
-    ``ctx.repo_name`` (or ``queue_root.parent.name``, matching the
-    pre-PBI-2 behaviour at the call sites).
-    """
-    if target_info is None:
-        return None, ctx.repo_name or ctx.queue_root.parent.name
-    env = {**os.environ, "GH_OWNER": target_info.owner}
-    return env, target_info.name
+    return sidecar
 
 
 def _read_pr_id(pbi_dir: Path) -> int:
@@ -410,348 +411,3 @@ def _read_attempts(pbi_dir: Path) -> int:
                 except ValueError:
                     return 0
     return 0
-
-
-def _dispatch(
-    *,
-    pbi_dir: Path,
-    decision: Decision,
-    snapshot: PrSnapshot,
-    sidecar: sidecar_state.SweepSidecar,
-    ctx: SweepContext,
-    target_info: TargetRepoInfo | None = None,
-) -> None:
-    qr = ctx.queue_root
-    a = decision.action
-    if a is Action.MOVE_TO_DONE:
-        _move_with_history(pbi_dir, qr / "done" / pbi_dir.name, decision.reason, ctx)
-        _emit_pr_merged_and_pbi_closed(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
-    elif a in (Action.MOVE_TO_BLOCKED_ABANDONED, Action.MOVE_TO_BLOCKED_MAX_ATTEMPTS):
-        _move_with_history(pbi_dir, qr / "blocked" / pbi_dir.name, decision.reason, ctx)
-    elif a is Action.MOVE_TO_INBOX_RETRY:
-        _move_with_history(pbi_dir, qr / "inbox" / pbi_dir.name, decision.reason, ctx)
-    elif a is Action.CREATE_FEEDBACK_PBI:
-        _emit_feedback_pbi(
-            pbi_dir=pbi_dir,
-            decision=decision,
-            snapshot=snapshot,
-            sidecar=sidecar,
-            ctx=ctx,
-        )
-    elif a is Action.PING_REVIEWER:
-        _append_history(pbi_dir, decision.reason, ctx)
-    elif a is Action.MERGE_PR:
-        _dispatch_merge_pr(
-            pbi_dir=pbi_dir,
-            snapshot=snapshot,
-            ctx=ctx,
-            target_info=target_info,
-        )
-    elif a is Action.NOOP:
-        return
-    else:  # pragma: no cover — defensive
-        raise _SweepPbiError(f"unhandled action: {a}")
-
-
-def _move_with_history(src: Path, dst: Path, reason: str, ctx: SweepContext) -> None:
-    # Stage the move FIRST so a failure (EXDEV cross-device, EACCES
-    # permission denied, ENOSPC disk full, …) doesn't leave a spurious
-    # "moved" entry in HISTORY.md that contradicts what's on disk.
-    # Wrap mkdir + move in _SweepPbiError so the per-PBI isolation in
-    # run() catches OSError at every IO step.
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to create {dst.parent}: {exc}") from exc
-    if dst.exists():
-        raise _SweepPbiError(f"destination {dst} already exists")
-    try:
-        shutil.move(str(src), str(dst))
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to move {src} to {dst}: {exc}") from exc
-    # Append history to the NEW location — src no longer exists after
-    # a successful move. Original behaviour wrote to src BEFORE move,
-    # so on success the entry travelled along; preserve that semantic
-    # by writing to dst after the move completes.
-    _append_history(dst, reason, ctx)
-
-
-def _append_history(pbi_dir: Path, reason: str, ctx: SweepContext) -> None:
-    # Wrap IO at the source so EVERY call site (PING_REVIEWER dispatch,
-    # _move_with_history, _emit_feedback_pbi) gets OSError → _SweepPbiError
-    # conversion uniformly. Without this, a disk-full / EACCES /
-    # EROFS error from read_text or write_text escapes run()'s
-    # per-PBI isolation and aborts the remaining sweep.
-    history = pbi_dir / "HISTORY.md"
-    line = f"- {ctx.config.now.isoformat()} sweep: {reason}\n"
-    try:
-        prior = history.read_text(encoding="utf-8") if history.exists() else ""
-        history.write_text(prior + line, encoding="utf-8")
-    except OSError as exc:
-        raise _SweepPbiError(f"failed to append HISTORY.md in {pbi_dir}: {exc}") from exc
-
-
-def _emit_feedback_pbi(
-    *,
-    pbi_dir: Path,
-    decision: Decision,
-    snapshot: PrSnapshot,
-    sidecar: sidecar_state.SweepSidecar,
-    ctx: SweepContext,
-) -> None:
-    next_round = sidecar.last_feedback_round + 1
-    bundle = feedback_module.render(
-        pr=snapshot,
-        originating_pbi_id=pbi_dir.name,
-        round_number=next_round,
-        new_comments=decision.new_comments,
-        original_pbi_summary=_read_original_summary(pbi_dir),
-        generated_at=ctx.config.now,
-    )
-    target_dir = ctx.queue_root / "inbox" / bundle.directory_name
-    if target_dir.exists():
-        raise _SweepPbiError(f"feedback PBI {target_dir} already exists; refusing to overwrite")
-    # Wrap the file IO so EXDEV / EACCES / ENOSPC become _SweepPbiError
-    # rather than escaping run()'s per-PBI isolation. On failure, tear
-    # down any partial target_dir — otherwise the guard above
-    # (`if target_dir.exists()`) blocks every subsequent sweep with
-    # "already exists; refusing to overwrite", AND the sidecar never
-    # advances so next_round computes the same path on every retry,
-    # permanently stranding the PBI in pending-pr/.
-    try:
-        target_dir.mkdir(parents=True)
-        (target_dir / "FEEDBACK.md").write_text(bundle.feedback_md, encoding="utf-8")
-        (target_dir / "PR-LINK.md").write_text(bundle.pr_link_md, encoding="utf-8")
-        (target_dir / "ORIGINAL.md").write_text(bundle.original_md, encoding="utf-8")
-        (target_dir / "HISTORY.md").write_text(bundle.history_md, encoding="utf-8")
-    except OSError as exc:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise _SweepPbiError(f"failed to write feedback PBI {target_dir}: {exc}") from exc
-
-    new_ids = {f"{c.thread_id}:{c.comment_id}" for c in decision.new_comments}
-    # write_sidecar calls tmp.write_text + tmp.replace; both can raise
-    # OSError (ENOSPC etc.). Wrap so it's caught per-PBI rather than
-    # escaping run(). If the sidecar fails AFTER the feedback dir has
-    # been written, tear down the feedback dir too — otherwise the
-    # next sweep computes the same next_round (sidecar wasn't bumped),
-    # hits target_dir.exists() and raises "already exists" forever,
-    # permanently stranding the PBI. Mirrors the cleanup in the
-    # feedback-dir except block above.
-    try:
-        sidecar_state.write_sidecar(
-            pbi_dir,
-            sidecar_state.SweepSidecar(
-                last_feedback_sweep=ctx.config.now,
-                last_feedback_round=next_round,
-                last_seen_comment_ids=sidecar_state.merge_seen_comment_ids(
-                    sidecar.last_seen_comment_ids, new_ids
-                ),
-                last_ci_status=sidecar.last_ci_status,
-            ),
-        )
-    except OSError as exc:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise _SweepPbiError(f"failed to write sidecar for {pbi_dir}: {exc}") from exc
-    _append_history(pbi_dir, decision.reason, ctx)
-
-
-def _emit_pr_merged_and_pbi_closed(
-    *,
-    pbi_id: str,
-    snapshot: PrSnapshot,
-    ctx: SweepContext,
-) -> None:
-    """Emit PR_MERGED + PBI_CLOSED on a pending-pr → done transition.
-
-    Both events share the same ``signature_from_text(pr_url)`` so the
-    cycle detector's ``signature_recurrence`` and ``regression_cascade``
-    rules can match across pairs. ``files`` is included for payload-shape
-    parity with ``PR_CREATED`` but is left empty: the PR skill's ``show``
-    op does not expose the file list and adding a second REST call per
-    sweep tick was deemed out of scope for v1.
-    """
-    if ctx.event_log is None:
-        return
-    pr_url = snapshot.url
-    signature = signature_from_text(pr_url) if pr_url else ""
-    now = ctx.config.now
-    # The PBI has already been moved to done/ by the caller; if the
-    # event-log write raises (e.g. sqlite3.Error on flush), there is
-    # NO retry path — the PBI is gone from pending-pr/ and won't be
-    # rescanned. Swallow the exception with a WARNING rather than
-    # letting it propagate uncaught past the per-PBI handler (which
-    # only catches _SweepPbiError) and abort the whole sweep. The
-    # cycle detector's regression_cascade rule will be missing this
-    # pair, but that's a softer failure than a sweep-wide abort that
-    # also masks every other PBI's progress.
-    try:
-        ctx.event_log.append(
-            Event(
-                kind=EventType.PR_MERGED,
-                recorded_at=now,
-                pbi_id=pbi_id,
-                payload={
-                    "pr_url": pr_url,
-                    "signature": signature,
-                    "files": [],
-                },
-            )
-        )
-        ctx.event_log.append(
-            Event(
-                kind=EventType.PBI_CLOSED,
-                recorded_at=now,
-                pbi_id=pbi_id,
-                payload={"signature": signature},
-            )
-        )
-    except Exception as exc:
-        log.warning(
-            "sweep: failed to emit PR_MERGED/PBI_CLOSED for %s (PBI already moved "
-            "to done/, no retry path): %s",
-            pbi_id,
-            exc,
-        )
-
-
-def _emit_pr_green_then_red(
-    *,
-    pbi_id: str,
-    snapshot: PrSnapshot,
-    ctx: SweepContext,
-) -> None:
-    """Emit PR_GREEN_THEN_RED on a succeeded → failed CI transition.
-
-    Payload shape matches PR_CREATED / PR_MERGED so the cycle detector's
-    ``regression_cascade`` rule can pair a recent merge with a later
-    regression by signature. ``files`` is empty: the PR skill's ``show``
-    op does not expose the file list and adding a second REST call per
-    sweep tick was deemed out of scope for v1 (same reasoning as
-    ``_emit_pr_merged_and_pbi_closed``).
-    """
-    if ctx.event_log is None:
-        return
-    pr_url = snapshot.url
-    signature = signature_from_text(pr_url) if pr_url else ""
-    # Log-and-continue on event-log failure — same resilience policy as
-    # the rest of the sweep. The PBI has not yet been moved here, so a
-    # missing event only means the cycle detector won't fire its
-    # regression_cascade for this transition; the sweep continues
-    # processing other PBIs and the next tick will re-evaluate state.
-    try:
-        ctx.event_log.append(
-            Event(
-                kind=EventType.PR_GREEN_THEN_RED,
-                recorded_at=ctx.config.now,
-                pbi_id=pbi_id,
-                payload={
-                    "pr_url": pr_url,
-                    "signature": signature,
-                    "files": [],
-                },
-            )
-        )
-    except Exception as exc:
-        log.warning(
-            "sweep: failed to emit PR_GREEN_THEN_RED for %s: %s",
-            pbi_id,
-            exc,
-        )
-
-
-def _invoke_merge_pr(
-    *,
-    pr_id: int,
-    ctx: SweepContext,
-    repo_name: str | None = None,
-    env: dict[str, str] | None = None,
-) -> int:
-    """Subprocess-invoke the ``pr-github`` ``merge_pr.py`` skill.
-
-    Returns the raw subprocess exit code (0 = merged, 3 = HTTP error,
-    4 = race / refused-by-host). Exit 2 (argparse / validation) is
-    converted to ``_SweepPbiError`` so the per-PBI guard in ``run`` catches
-    it — exit 2 indicates the caller passed garbage and is never a
-    "retry next sweep" condition. Any other unexpected exit also raises,
-    so the dispatch branch never silently swallows a new exit code added
-    to the skill in the future.
-
-    ``repo_name`` and ``env`` (when provided) override the legacy
-    ``ctx.repo_name`` + inherited-env behaviour with per-PBI values
-    derived from the PBI's ``target_repo``.
-    """
-    script = ctx.ado_pr_scripts_path / "merge_pr.py"
-    if not script.is_file():
-        raise _SweepPbiError(f"merge_pr.py not found at {script}")
-    cmd = [
-        sys.executable,
-        str(script),
-        "--repo",
-        repo_name or ctx.repo_name or ctx.queue_root.parent.name,
-        "--pr-id",
-        str(pr_id),
-    ]
-    result = run_text(
-        cmd,
-        check=False,
-        capture_output=True,
-        env=env,
-    )
-    if result.returncode == 2:
-        raise _SweepPbiError(
-            f"merge_pr.py exited 2 (validation): {result.stderr.strip() or '<no stderr>'}"
-        )
-    return result.returncode
-
-
-def _dispatch_merge_pr(
-    *,
-    pbi_dir: Path,
-    snapshot: PrSnapshot,
-    ctx: SweepContext,
-    target_info: TargetRepoInfo | None = None,
-) -> None:
-    """Run merge_pr.py for this PBI and route its exit code.
-
-    Exit 0 → move PBI to ``done/`` with the marker reason and emit
-    ``PR_MERGED`` + ``PBI_CLOSED``. Exit 4 → log INFO and leave the PBI
-    in ``pending-pr/`` for the next sweep (race / refused-by-host).
-    Exit 3 → log WARNING and leave the PBI in ``pending-pr/`` (transient
-    GitHub error). Anything else → raise ``_SweepPbiError`` so the
-    per-PBI guard records it and continues with the remaining PBIs.
-    """
-    sub_env, sub_repo = _per_pbi_subprocess_overrides(target_info, ctx)
-    rc = _invoke_merge_pr(pr_id=snapshot.pr_id, ctx=ctx, repo_name=sub_repo, env=sub_env)
-    if rc == 0:
-        _move_with_history(
-            pbi_dir,
-            ctx.queue_root / "done" / pbi_dir.name,
-            "PR auto-merged by sweep",
-            ctx,
-        )
-        _emit_pr_merged_and_pbi_closed(pbi_id=pbi_dir.name, snapshot=snapshot, ctx=ctx)
-    elif rc == 4:
-        log.info(
-            "sweep: merge_pr refused for %s (race / not-ready); retry next iter",
-            pbi_dir.name,
-        )
-    elif rc == 3:
-        log.warning(
-            "sweep: merge_pr GitHub error for %s; retry next iter",
-            pbi_dir.name,
-        )
-    else:
-        raise _SweepPbiError(f"merge_pr returned unexpected exit {rc}")
-
-
-def _read_original_summary(pbi_dir: Path) -> str:
-    for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
-        path = pbi_dir / candidate
-        if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise _SweepPbiError(f"failed to read {candidate} in {pbi_dir}: {exc}") from exc
-            # First 40 lines; enough for context, bounded for file size.
-            return "\n".join(text.splitlines()[:40])
-    return "(no original PBI body found)"

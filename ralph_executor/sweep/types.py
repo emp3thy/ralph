@@ -2,19 +2,83 @@
 
 Nothing in this file performs I/O. Every value is immutable so a Decision
 produced for one PBI can never be confused with another after the fact.
+The runner's ``SweepConfig`` / ``SweepContext`` dataclasses live here (not
+in ``runner.py``) so leaf modules like ``actions.py`` and ``target.py``
+can take a ``SweepContext`` without importing the runner; ``runner.py``
+re-exports both for its established importers (cli, iteration_safety,
+reconcile, tests).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
+
+from ralph_executor.safety.events import EventLog
 
 PrStatus = Literal["active", "completed", "abandoned", "unknown"]
 CiStatus = Literal["succeeded", "failed", "running", "none", "unknown"]
 ThreadStatus = Literal["active", "pending", "fixed", "closed", "wontFix", "byDesign", "unknown"]
+
+
+class SweepPbiError(RuntimeError):
+    """Raised to skip one PBI without aborting the whole sweep."""
+
+
+@dataclass(frozen=True)
+class SweepConfig:
+    """All non-default parameters the sweep needs.
+
+    ``ralph_author_email`` MUST be non-empty for the sweep to run in
+    production; the constructor raises ``ValueError`` if it isn't. Tests
+    that don't care about Ralph-authored filtering should pass a clearly
+    fictitious value (e.g. ``"ralph-bot@example.com"``).
+    """
+
+    ralph_author_email: str
+    max_attempts: int
+    stale_threshold: timedelta
+    now: datetime
+    auto_merge_clean_prs: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.ralph_author_email:
+            raise ValueError("ralph_author_email is required (set RALPH_ADO_AUTHOR_EMAIL)")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+        if self.stale_threshold.total_seconds() <= 0:
+            raise ValueError("stale_threshold must be a positive timedelta")
+        if self.now.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+
+
+@dataclass(frozen=True)
+class SweepContext:
+    """I/O context for one sweep invocation.
+
+    The loop driver (Plan 7) constructs this from its own ``LoopContext``
+    and passes it in. The split keeps ``run`` testable in isolation.
+    """
+
+    queue_root: Path  # the ``.ralph/`` directory in the project repo
+    ado_pr_scripts_path: Path  # the staged PR-skill ``scripts/`` directory
+    config: SweepConfig
+    # The GitHub/ADO repo name (e.g. "ralph"), used by reconcile when
+    # invoking lookup_by_branch. Must be passed explicitly because
+    # ``queue_root.parent.name`` is unreliable under worktree mode: there
+    # ``queue_root`` lives at ``<repo>/.ralph-work/queue/.ralph`` so
+    # ``.parent.name`` is "queue", not the repo name.
+    repo_name: str = ""
+    # Optional cycle-detector event sink. When provided, the sweep emits
+    # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
+    # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
+    # don't exercise event emission omit it; production wiring
+    # (iteration_safety.run_sweep) always passes one.
+    event_log: EventLog | None = None
 
 
 @dataclass(frozen=True)

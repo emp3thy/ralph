@@ -15,13 +15,34 @@ URL raises ``ValueError`` for the caller to map to a skip + log.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
 
+from ralph_executor.sweep.types import SweepContext
 from ralph_executor.url_utils import TargetRepoInfo, parse_target_repo
 
 _ENTRY_FILENAMES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
+
+
+def per_pbi_subprocess_overrides(
+    target_info: TargetRepoInfo | None,
+    ctx: SweepContext,
+) -> tuple[dict[str, str] | None, str]:
+    """Compute ``(env, repo_name)`` for the sweep's per-PBI subprocess calls.
+
+    When the PBI declares a ``target_repo`` (multi-target rollout):
+      env = parent env overlaid with ``GH_OWNER=<owner>``; repo = ``<name>``.
+    When absent (legacy single-target): env stays ``None`` (subprocess
+    inherits the parent env) and ``repo_name`` falls back to
+    ``ctx.repo_name`` (or ``queue_root.parent.name``, matching the
+    pre-PBI-2 behaviour at the call sites).
+    """
+    if target_info is None:
+        return None, ctx.repo_name or ctx.queue_root.parent.name
+    env = {**os.environ, "GH_OWNER": target_info.owner}
+    return env, target_info.name
 
 
 def read_target_info(pbi_dir: Path) -> TargetRepoInfo | None:
