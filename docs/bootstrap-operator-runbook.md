@@ -1,5 +1,7 @@
 # Ralph Bootstrap Operator Runbook
 
+> **HISTORICAL REFERENCE (Stage B era).** Stage B is complete: the operator skills this runbook works around have shipped (`ralph-new` — successor to the planned `ralph-add` — plus `ralph-status`, `ralph-doctor`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-recover`), queue provisioning is `scripts/setup_ralph_queue_github.py`, and the executor is queue-driven — each PBI's `target_repo` frontmatter names the repo; the `RALPH_REPO_PATH` env var no longer exists. Use this document only as the "operate without the tools" fallback described in §8. For current architecture see `docs/runbooks/ralph-architecture.md`.
+
 **Audience:** an LLM (or human) setting up and operating Ralph during the partial-bootstrap phase — Stage B per the orchestrator. The MVR is built (Stage A complete) but most surrounding tooling (`ralph-add`, `ralph-status`, `ralph-doctor`, `ralph-cancel`, `ralph-promote`, `ralph-triage`) hasn't shipped yet. Every operation that those tools will eventually automate has a manual equivalent here.
 
 **You are NOT building Ralph in this runbook** — you're operating it. Building happens via the plans in `docs/superpowers/plans/`.
@@ -65,7 +67,7 @@ export GH_OWNER=your-github-user-or-org
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Required for the executor
-export RALPH_REPO_PATH=/absolute/path/to/your/target/repo
+# (historical) the executor now reads target_repo from each PBI's frontmatter
 export RALPH_QUEUE_BRANCH=ralph-queue
 export RALPH_MAIN_BRANCH=main
 export RALPH_MAX_ATTEMPTS=3
@@ -85,7 +87,7 @@ Until Plan 02 Phase 1 ships, you do this by hand. After Plan 02 Phase 1 ships, r
 **Manual procedure:**
 
 ```bash
-cd $RALPH_REPO_PATH
+cd <path-to-target-repo-clone>
 git fetch
 git checkout -B ralph-queue origin/main   # branch off main
 mkdir -p .ralph/inbox .ralph/current .ralph/pending-pr .ralph/done .ralph/blocked .ralph/archive .ralph/state
@@ -166,7 +168,7 @@ Before running Ralph for real, confirm the MVR works end-to-end with a hand-craf
 ### 3.1 Hand-craft a trivial test PBI
 
 ```bash
-cd $RALPH_REPO_PATH
+cd <path-to-target-repo-clone>
 git checkout ralph-queue
 mkdir -p .ralph/inbox/TEST-001
 ```
@@ -221,7 +223,7 @@ uv run ralph-executor --once
 1. `host_select.py` runs (if Plan 07's amendment has shipped — if not, you staged manually in step 2.5)
 2. Iteration claims `TEST-001` from `inbox/` into `current/`
 3. Spawns `claude -p`
-4. Claude reads PROMPT.md, HISTORY.md, PBI.md, PLAN.md
+4. Claude reads standing-prompt-<pbi.id>.md, HISTORY.md, PBI.md, PLAN.md
 5. Claude does the trivial edit on a fresh feature branch `ralph/TEST-001`
 6. Claude pushes the branch
 7. Claude calls the staged `pr` skill's `create-pr` operation
@@ -263,7 +265,7 @@ Stage B's recommended order is: Plan 04 → Plan 03 → Plan 10 → Plan 11 P1 �
 For each one, you hand-craft a PBI that points Ralph at the plan file. Template:
 
 ```bash
-cd $RALPH_REPO_PATH
+cd <path-to-target-repo-clone>
 git checkout ralph-queue
 git pull
 
@@ -358,7 +360,7 @@ Three useful views in three terminals:
 
 ```bash
 # Quick state snapshot
-cd $RALPH_REPO_PATH
+cd <path-to-target-repo-clone>
 git fetch && git checkout ralph-queue && git pull
 echo "INBOX:"; ls .ralph/inbox/ 2>/dev/null | grep -v gitkeep
 echo "CURRENT:"; ls .ralph/current/ 2>/dev/null | grep -v gitkeep
@@ -376,7 +378,7 @@ gh pr list --repo $GH_OWNER/<repo>
 ### 4.5 Inspecting a single PBI in flight
 
 ```bash
-cd $RALPH_REPO_PATH
+cd <path-to-target-repo-clone>
 git checkout ralph-queue && git pull
 cat .ralph/current/<PBI-id>/PBI.md     # the ask
 cat .ralph/current/<PBI-id>/HISTORY.md # what Ralph has tried
@@ -391,7 +393,7 @@ Before running Ralph for a longer session, sanity-check:
 
 ```bash
 # Required env vars set?
-env | grep -E "RALPH_GIT_HOST|GH_TOKEN|GH_OWNER|ANTHROPIC_API_KEY|RALPH_REPO_PATH"
+env | grep -E "RALPH_GIT_HOST|GH_TOKEN|GH_OWNER|ANTHROPIC_API_KEY"
 
 # Skills staged correctly?
 cat ~/.claude/skills/pr/SKILL.md | grep "^name:"
@@ -406,7 +408,7 @@ curl -sf -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user | grep
 echo "ping" | claude -p --max-turns 1 --append-system-prompt "Respond with one word." 2>&1 | head -1
 
 # Repo writable?
-cd $RALPH_REPO_PATH && git push --dry-run origin ralph-queue
+cd <path-to-target-repo-clone> && git push --dry-run origin ralph-queue
 ```
 
 If all of those succeed, you're good to start.
