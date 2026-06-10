@@ -32,7 +32,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, NamedTuple, cast
 
 from ralph_executor.url_utils import parse_target_repo
 
@@ -611,29 +611,7 @@ def _resolve_log_level(*, toml_value: Any, default: str, source_label: str) -> i
     return cast(int, logging.getLevelName(candidate))
 
 
-def load_config() -> ExecutorConfig:
-    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
-
-    The executor is queue-driven: ``ExecutorConfig`` has no
-    ``repo_path``. ``workspace_root`` is the only configured root; every
-    per-iteration target clone is materialised under
-    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
-    ``target_repo`` frontmatter.
-
-    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
-    empty string means "use claude CLI's OAuth session".
-    """
-    from ralph_executor.user_config import (
-        _warn_stale_ralph_home_in_user_config,
-        user_config_path,
-    )
-
-    _warn_stale_ralph_home_in_user_config()
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    toml_overrides = _load_user_toml_overrides()
-    source_label = str(user_config_path())
-
+def _resolve_queue_repo(toml_overrides: Mapping[str, Any], source_label: str) -> str:
     queue_repo_value = toml_overrides.get("queue_repo")
     if queue_repo_value is None:
         raise ConfigError(
@@ -651,7 +629,15 @@ def load_config() -> ExecutorConfig:
         raise ConfigError(
             f"{source_label}: queue_repo {queue_repo_value!r} is not a valid HTTPS URL: {exc}"
         ) from exc
-    queue_repo = queue_repo_value
+    return queue_repo_value
+
+
+class _BranchSettings(NamedTuple):
+    main_branch: str
+    queue_branch: str
+
+
+def _resolve_branches(toml_overrides: Mapping[str, Any], source_label: str) -> _BranchSettings:
     main_branch = _resolve_str(
         name="main_branch",
         env_name="RALPH_MAIN_BRANCH",
@@ -676,6 +662,16 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: queue_branch must not include the 'refs/heads/' "
             f"prefix (got {queue_branch!r})"
         )
+    return _BranchSettings(main_branch=main_branch, queue_branch=queue_branch)
+
+
+class _RuntimeKnobs(NamedTuple):
+    max_attempts: int
+    log_level: int
+    iteration_sleep_seconds: float
+
+
+def _resolve_runtime_knobs(toml_overrides: Mapping[str, Any], source_label: str) -> _RuntimeKnobs:
     max_attempts = _resolve_int(
         name="max_attempts",
         env_name="RALPH_MAX_ATTEMPTS",
@@ -688,13 +684,28 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_LOG_LEVEL,
         source_label=source_label,
     )
-    sleep_seconds = _resolve_float(
+    iteration_sleep_seconds = _resolve_float(
         name="iteration_sleep_seconds",
         env_name="RALPH_ITERATION_SLEEP_SECONDS",
         toml_value=toml_overrides.get("iteration_sleep_seconds"),
         default=DEFAULT_ITERATION_SLEEP_SECONDS,
         source_label=source_label,
     )
+    return _RuntimeKnobs(
+        max_attempts=max_attempts,
+        log_level=log_level,
+        iteration_sleep_seconds=iteration_sleep_seconds,
+    )
+
+
+class _ClaudeSettings(NamedTuple):
+    claude_binary: str
+    claude_permission_mode: str
+
+
+def _resolve_claude_settings(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _ClaudeSettings:
     claude_binary = _resolve_str(
         name="claude_binary",
         env_name="RALPH_CLAUDE_BINARY",
@@ -714,6 +725,21 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: claude_permission_mode={claude_permission_mode!r} "
             f"not in {sorted(_VALID_CLAUDE_PERMISSION_MODES)}"
         )
+    return _ClaudeSettings(
+        claude_binary=claude_binary,
+        claude_permission_mode=claude_permission_mode,
+    )
+
+
+class _HostSettings(NamedTuple):
+    git_host: str
+    gh_owner: str
+    ado_org_url: str
+    ado_project: str
+    halt_webhook: str
+
+
+def _resolve_host_settings(toml_overrides: Mapping[str, Any], source_label: str) -> _HostSettings:
     git_host = _resolve_str(
         name="git_host",
         env_name="RALPH_GIT_HOST",
@@ -749,6 +775,27 @@ def load_config() -> ExecutorConfig:
         default="",
         source_label=source_label,
     )
+    return _HostSettings(
+        git_host=git_host,
+        gh_owner=gh_owner,
+        ado_org_url=ado_org_url,
+        ado_project=ado_project,
+        halt_webhook=halt_webhook,
+    )
+
+
+class _SweepTuningSettings(NamedTuple):
+    bot_author_email: str
+    stale_days: int
+    bash_max_timeout_ms: int
+    claude_session_timeout_seconds: int
+    pr_check_poll_max_attempts: int
+    pr_check_poll_interval_seconds: float
+
+
+def _resolve_sweep_tuning(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _SweepTuningSettings:
     bot_author_email = _resolve_str(
         name="bot_author_email",
         env_name="RALPH_ADO_AUTHOR_EMAIL",
@@ -802,6 +849,25 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS,
         source_label=source_label,
     )
+    return _SweepTuningSettings(
+        bot_author_email=bot_author_email,
+        stale_days=stale_days,
+        bash_max_timeout_ms=bash_max_timeout_ms,
+        claude_session_timeout_seconds=claude_session_timeout_seconds,
+        pr_check_poll_max_attempts=pr_check_poll_max_attempts,
+        pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
+    )
+
+
+class _WorkspaceSettings(NamedTuple):
+    use_worktrees: bool
+    auto_merge_clean_prs: bool
+    workspace_root: Path
+
+
+def _resolve_workspace_settings(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _WorkspaceSettings:
     use_worktrees = _resolve_bool(
         name="use_worktrees",
         env_name="RALPH_USE_WORKTREES",
@@ -846,6 +912,23 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: workspace_root parent {workspace_root.parent} "
             "does not exist. Create it (or change workspace_root)."
         )
+    return _WorkspaceSettings(
+        use_worktrees=use_worktrees,
+        auto_merge_clean_prs=auto_merge_clean_prs,
+        workspace_root=workspace_root,
+    )
+
+
+class _SweepThresholds(NamedTuple):
+    same_file_min_prs: int
+    same_file_window_hours: float
+    watch_mode: bool
+    idle_exit_threshold: int
+
+
+def _resolve_sweep_thresholds(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _SweepThresholds:
     same_file_min_prs = _resolve_int(
         name="same_file_min_prs",
         env_name="RALPH_SAME_FILE_MIN_PRS",
@@ -887,7 +970,15 @@ def load_config() -> ExecutorConfig:
         raise ConfigError(
             f"{source_label}: idle_exit_threshold must be positive (got {idle_exit_threshold})"
         )
+    return _SweepThresholds(
+        same_file_min_prs=same_file_min_prs,
+        same_file_window_hours=same_file_window_hours,
+        watch_mode=watch_mode,
+        idle_exit_threshold=idle_exit_threshold,
+    )
 
+
+def _resolve_instance_id_setting(toml_overrides: Mapping[str, Any], source_label: str) -> str:
     # Multi-ralph (Scope 1) instance_id. The CLI flag layer plugs in via
     # ``ralph_executor.cli._apply_overrides`` (added in a follow-up task);
     # at the ``load_config`` level we cover env + TOML + hostname so the
@@ -901,13 +992,24 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: instance_id must be a string, "
             f"got {type(toml_instance_id_raw).__name__}"
         )
-    instance_id = resolve_instance_id(
+    return resolve_instance_id(
         cli_value=None,
         env_value=env_instance_id,
         toml_value=toml_instance_id_raw,
         hostname=socket.gethostname(),
     )
 
+
+class _AutobugSettings(NamedTuple):
+    autobug_enabled: bool
+    autobug_rate_max: int
+    autobug_rate_window_minutes: int
+    autobug_dedup_done_window_days: int
+    autobug_severity_python_crash: str
+    autobug_severity_subprocess_crash: str
+
+
+def _resolve_autobug(toml_overrides: Mapping[str, Any], source_label: str) -> _AutobugSettings:
     autobug_enabled = _resolve_bool(
         name="autobug_enabled",
         env_name="RALPH_AUTOBUG_ENABLED",
@@ -964,6 +1066,75 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_AUTOBUG_SEVERITY_SUBPROCESS_CRASH,
         source_label=source_label,
     )
+    return _AutobugSettings(
+        autobug_enabled=autobug_enabled,
+        autobug_rate_max=autobug_rate_max,
+        autobug_rate_window_minutes=autobug_rate_window_minutes,
+        autobug_dedup_done_window_days=autobug_dedup_done_window_days,
+        autobug_severity_python_crash=autobug_severity_python_crash,
+        autobug_severity_subprocess_crash=autobug_severity_subprocess_crash,
+    )
+
+
+def load_config() -> ExecutorConfig:
+    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+
+    The executor is queue-driven: ``ExecutorConfig`` has no
+    ``repo_path``. ``workspace_root`` is the only configured root; every
+    per-iteration target clone is materialised under
+    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
+    ``target_repo`` frontmatter.
+
+    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
+    empty string means "use claude CLI's OAuth session".
+    """
+    from ralph_executor.user_config import (
+        _warn_stale_ralph_home_in_user_config,
+        user_config_path,
+    )
+
+    _warn_stale_ralph_home_in_user_config()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    toml_overrides = _load_user_toml_overrides()
+    source_label = str(user_config_path())
+
+    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
+    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
+    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
+        toml_overrides, source_label
+    )
+    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
+    git_host, gh_owner, ado_org_url, ado_project, halt_webhook = _resolve_host_settings(
+        toml_overrides, source_label
+    )
+    (
+        bot_author_email,
+        stale_days,
+        bash_max_timeout_ms,
+        claude_session_timeout_seconds,
+        pr_check_poll_max_attempts,
+        pr_check_poll_interval_seconds,
+    ) = _resolve_sweep_tuning(toml_overrides, source_label)
+    use_worktrees, auto_merge_clean_prs, workspace_root = _resolve_workspace_settings(
+        toml_overrides, source_label
+    )
+    (
+        same_file_min_prs,
+        same_file_window_hours,
+        watch_mode,
+        idle_exit_threshold,
+    ) = _resolve_sweep_thresholds(toml_overrides, source_label)
+
+    instance_id = _resolve_instance_id_setting(toml_overrides, source_label)
+    (
+        autobug_enabled,
+        autobug_rate_max,
+        autobug_rate_window_minutes,
+        autobug_dedup_done_window_days,
+        autobug_severity_python_crash,
+        autobug_severity_subprocess_crash,
+    ) = _resolve_autobug(toml_overrides, source_label)
 
     return ExecutorConfig(
         queue_repo=queue_repo,
@@ -971,7 +1142,7 @@ def load_config() -> ExecutorConfig:
         main_branch=main_branch,
         max_attempts=max_attempts,
         log_level=log_level,
-        iteration_sleep_seconds=sleep_seconds,
+        iteration_sleep_seconds=iteration_sleep_seconds,
         claude_binary=claude_binary,
         claude_permission_mode=claude_permission_mode,
         anthropic_api_key=anthropic_key,
