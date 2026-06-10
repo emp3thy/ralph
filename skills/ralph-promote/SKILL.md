@@ -1,6 +1,6 @@
 ---
 name: ralph-promote
-description: Move a PBI between state folders in the queue clone. Locates the PBI under `.ralph/<from>/<id>/`, `git mv`s it to `.ralph/<to>/<id>/`, rewrites the entry file's `status` and `updated_at` frontmatter, commits, and pushes `main` to the queue remote. This is the operator's manual override for the executor's automatic state transitions — e.g. nudging an `inbox/` PBI into `current/` so the next iteration claims it.
+description: Move a PBI between state folders in the queue clone. Locates the PBI under `.ralph/<from>/<id>/`, `git mv`s it to `.ralph/<to>/<id>/`, rewrites the entry file's `status` and `updated_at` frontmatter, commits, and pushes the queue branch (`cfg.queue_branch`, default `ralph-queue`) to the queue remote. This is the operator's manual override for the executor's automatic state transitions — e.g. nudging an `inbox/` PBI into `current/` so the next iteration claims it.
 ---
 
 # ralph-promote
@@ -8,10 +8,11 @@ description: Move a PBI between state folders in the queue clone. Locates the PB
 ## What this skill does
 
 `ralph-promote` moves a PBI directory between state folders in the
-queue clone (`<workspace_root>/queue/` on `main`). It updates the
-entry file's `status` and `updated_at` frontmatter to match the new
-state, appends a single line to `HISTORY.md`, commits the move, and
-pushes `main` to `origin`.
+queue clone (`<workspace_root>/queue-<instance_id>/` on
+`cfg.queue_branch`, default: `ralph-queue`). It updates the entry
+file's `status` and `updated_at` frontmatter to match the new state,
+appends a single line to `HISTORY.md`, commits the move, and pushes
+the queue branch to `origin`.
 
 The skill does NOT modify the PBI's body, type, severity, or any other
 field. It is purely a state-folder move.
@@ -36,8 +37,9 @@ field. It is purely a state-folder move.
 | `--pbi-id <id>` | yes | PBI identifier matching the directory name under `.ralph/<from>/`. |
 | `--from <state>` | yes | Source state folder. One of `current`, `inbox`, `pending-pr`, `blocked`, `done`, `archive`. |
 | `--to <state>` | yes | Destination state folder. Must differ from `--from`. |
-| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue/`. |
+| `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue-<instance_id>/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
+| `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
 | `--instance-id <name>` | no | Operator instance_id used by the CLAIM.json ownership guard when moving a PBI out of `current/`. Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--no-push` | no | Commit the move locally but do not push. |
 | `--dry-run` | no | Compute and log without writing, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
@@ -58,7 +60,7 @@ Prints a JSON summary to stdout on success. Example:
   "from_state": "inbox",
   "to_state": "current",
   "entry_file": ".ralph/current/WI-1234/PBI.md",
-  "queue_clone": "/home/dev/ralph-workspaces/queue",
+  "queue_clone": "/home/dev/ralph-workspaces/queue-<instance-id>",
   "commit_sha": "abcdef0123456789",
   "pushed": true,
   "dry_run": false,

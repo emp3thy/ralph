@@ -1,6 +1,6 @@
 ---
 name: ralph-status
-description: Read-only view of the Ralph queue. Reads the single queue clone at <workspace_root>/queue/, walks the .ralph/{inbox,current,pending-pr,done,blocked} state folders, parses each PBI's frontmatter against the canonical schema, and renders a fixed-width table grouped by target_repo. The OWNER column shows which ralph instance claimed each current/<id>/ PBI (from CLAIM.json::instance_id). Supports filtering by --state and --target-repo, plus --json for downstream automation.
+description: Read-only view of the Ralph queue. Reads the operator queue clone at <workspace_root>/queue-<instance_id>/, walks the .ralph/{inbox,current,pending-pr,done,blocked} state folders, parses each PBI's frontmatter against the canonical schema, and renders a fixed-width table grouped by target_repo. The OWNER column shows which ralph instance claimed each current/<id>/ PBI (from CLAIM.json::instance_id). Supports filtering by --state and --target-repo, plus --json for downstream automation.
 
 ---
 
@@ -9,20 +9,23 @@ description: Read-only view of the Ralph queue. Reads the single queue clone at 
 ## What this skill does
 
 The `ralph-status` skill is the BA / PM / triager workboard for Ralph. It
-reads (never writes) the queue state from the **single queue clone** at
-`<workspace_root>/queue/` and renders it as a terminal-friendly table
-grouped by the PBI's `target_repo` field. The data source is the
-`.ralph/` directory on the queue clone's `main` branch — exactly the
+reads (never writes) the queue state from the **operator queue clone** at
+`<workspace_root>/queue-<instance_id>/` and renders it as a
+terminal-friendly table grouped by the PBI's `target_repo` field. The
+data source is the `.ralph/` directory on the queue clone's
+`cfg.queue_branch` branch (default: `ralph-queue`) — exactly the
 same tree `ralph-new`, `ralph-cancel`, `ralph-promote`, and
 `ralph-triage` write to.
 
 For each invocation, the skill:
 
-1. Resolves `workspace_root` and `queue_repo` from
+1. Resolves `workspace_root`, `queue_repo`, and `queue_branch` from
    `~/.ralph/config.toml` (overridable via `--workspace` /
-   `--queue-repo`).
-2. Calls `acquire_queue_clone(workspace_root, queue_repo)` — clone on
-   first call, fast-forward pull on subsequent calls. Always on `main`.
+   `--queue-repo` / `--queue-branch`).
+2. Calls `acquire_queue_clone(workspace_root, queue_repo, queue_branch,
+   instance_id=...)` — clone on first call, fast-forward pull on
+   subsequent calls. Always on `cfg.queue_branch` (default:
+   `ralph-queue`).
 3. Walks the five state folders inside the clone: `inbox/`, `current/`,
    `pending-pr/`, `done/`, `blocked/`.
 4. For each PBI directory, reads its entry file (`PBI.md`, `BUG.md`,
@@ -48,11 +51,13 @@ would expose.
 | `--json` | no | Emit JSON to stdout instead of a fixed-width table. |
 | `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. |
+| `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
+| `--instance-id <name>` | no | Operator instance_id used to land on the executor's namespaced queue clone (`queue-<instance-id>/`). Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 
 ## Configuration
 
-`ralph-status` reads `workspace_root` and `queue_repo` from
-`~/.ralph/config.toml` (populated by `ralph-executor init`). The CLI
+`ralph-status` reads `workspace_root`, `queue_repo`, and `queue_branch`
+from `~/.ralph/config.toml` (populated by `ralph-executor init`). The CLI
 flags above override the TOML values one-by-one. If `queue_repo` is
 neither set in TOML nor passed via `--queue-repo`, the skill exits 2
 with a clear error.
