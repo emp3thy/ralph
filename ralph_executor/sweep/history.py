@@ -15,6 +15,12 @@ from ralph_executor.sweep.types import SweepPbiError
 
 
 def move_with_history(src: Path, dst: Path, reason: str, now: datetime) -> None:
+    """Move a PBI directory and append the reason to HISTORY.md at the destination.
+
+    The move happens before the history write so a failed move never
+    leaves a "moved" entry contradicting what is on disk; every I/O
+    failure is wrapped in :class:`SweepPbiError` for per-PBI isolation.
+    """
     # Stage the move FIRST so a failure (EXDEV cross-device, EACCES
     # permission denied, ENOSPC disk full, …) doesn't leave a spurious
     # "moved" entry in HISTORY.md that contradicts what's on disk.
@@ -38,6 +44,11 @@ def move_with_history(src: Path, dst: Path, reason: str, now: datetime) -> None:
 
 
 def append_history(pbi_dir: Path, reason: str, now: datetime) -> None:
+    """Append a timestamped sweep entry to the PBI's HISTORY.md.
+
+    OSError is converted to :class:`SweepPbiError` here so every call
+    site uniformly stays inside run()'s per-PBI isolation.
+    """
     # Wrap IO at the source so EVERY call site (PING_REVIEWER dispatch,
     # move_with_history, emit_feedback_pbi) gets OSError → SweepPbiError
     # conversion uniformly. Without this, a disk-full / EACCES /

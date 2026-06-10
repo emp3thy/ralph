@@ -29,6 +29,13 @@ def emit_feedback_pbi(
     queue_root: Path,
     now: datetime,
 ) -> None:
+    """Create the round-N feedback PBI in inbox/ and persist the sidecar.
+
+    Two-phase: write the rendered bundle directory, then write the
+    sidecar (round number + seen comment ids). Either failure rolls the
+    bundle directory back so the next sweep can retry cleanly instead
+    of hitting the already-exists guard forever.
+    """
     next_round = sidecar.last_feedback_round + 1
     bundle = feedback_module.render(
         pr=snapshot,
@@ -86,6 +93,11 @@ def emit_feedback_pbi(
 
 
 def read_original_summary(pbi_dir: Path) -> str:
+    """Return the first lines of the PBI's entry file for the feedback bundle.
+
+    Tries PBI.md, BUG.md, FEEDBACK.md in order; falls back to a stub
+    line when none exists. Read failures raise :class:`SweepPbiError`.
+    """
     for candidate in ("PBI.md", "BUG.md", "FEEDBACK.md"):
         path = pbi_dir / candidate
         if path.is_file():
