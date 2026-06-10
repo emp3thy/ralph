@@ -481,9 +481,9 @@ def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationR
     try:
         pbi_dir_in_queue = _queue_repo_root(cfg) / ".ralph" / "current" / pbi.id
         outcome = _spawn_and_classify(cfg, pbi, pbi_dir_in_queue, now)
-        overflowed = _bump_attempts_on_failure(cfg, pbi, outcome, now, event_log)
-        if overflowed is not None:
-            return overflowed
+        attempt_overflow = _bump_attempts_on_failure(cfg, pbi, outcome, now, event_log)
+        if attempt_overflow is not None:
+            return attempt_overflow
         if outcome.kind == "pr_created":
             return outcome, _handle_pr_created(cfg, pbi, outcome, now, event_log)
         if outcome.kind == "stuck":
