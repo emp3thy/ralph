@@ -12,9 +12,74 @@
 
 ---
 
+## Guardrails (from better-memory, cited by id)
+
+1. **Stage specific paths, never `git add -A`** [[0547374e]] — habit guard even though ralph is idle; every commit step in this plan names its paths.
+2. **Bot-watch every PR to merge, no user babysitting** [[29f762c9]] — Task 10 encodes the poll → fix → resolve → squash-merge loop.
+3. **Confidence floor is 92%, full task bodies inline** [[9e1897ff]] — every task below carries a post-mitigation rating ≥92%; no "same as Task N" hand-waves.
+4. **Mitigations must recompute confidence, not decorate it** [[29446bd6]] — the summary table shows pre-lift → post-lift values with the lift named.
+5. **Plan amendments require a confidence-delta audit in the commit diff** [[5d76cff3]] — this v2 commit carries the v1(unrated) → v2 audit in the summary table.
+6. **Per-finding plans must enumerate cross-cutting test files** [[94f87716]] — Task 8 requires a `git grep -l` sweep over `tests/` for every symbol/flag a fix deletes (e.g. `test_supervisor_skills_smoke.py` class of misses).
+7. **Docs/README sweep on every code PR** [[98056ebc]] — Task 8 sizing rule already mandates it; reviewers check it.
+8. **Queue state transitions through the one git-aware helper** [[a5af973e]] — any loop.py/sweep refactor must keep state moves routed through the existing helper, not inline new git calls.
+9. **Windows: never `git worktree remove` from a shell that entered the worktree; create feature branches at task start** [[standards/ralph-runtime.md]] — Task 9 creates `tech-debt/<slug>` before any change; SDD subagents told not to cd into worktrees they later remove.
+10. **`git mv` does not stage content edits; `python -m` for package-relative imports** [[63c4e75a]] [[8cada12c]] — module-split refactors in phase 3 re-stage moved files after edits and invoke package modules with `-m`.
+
+Considered and dismissed: Playwright/text-match reflections (no UI work), ExecutorConfig call-site sweep (no config field changes planned — re-check per finding at Task 8), tempfile fd-leak (no tempfile code in phases 1–2).
+
+## Assumption surface (3 buckets)
+
+### Real concerns — pick a mitigation each (A/B/C)
+
+**RC1 — Scout evidence may be hallucinated** (wrong file:line, misread code). Findings drive PR-sized work; bad evidence wastes a fix cycle.
+- **A:** Accept; synthesis dedup + your approval gate filter it.
+- **B (recommended):** Add a verification step to Task 5: after synthesis, one read-only agent spot-checks every evidence entry of the chosen top5 (open file at line, confirm the note holds); failed entries are corrected or the finding swapped for rank #6. Cost ~5–10k tokens.
+- **C:** Make scouts quote the literal source line in each evidence entry; mechanically verify quotes against files before synthesis. Strongest, most tokens.
+
+**RC2 — loop.py split plan refresh may understate drift** (+236 lines since plan written; more of its 8 tasks may be invalid than expected).
+- **A:** Refresh as planned regardless of how much survives.
+- **B (recommended):** Threshold rule — if >50% of the 8 tasks are invalidated at re-validation, abandon refresh and re-run the loop.py split design from scratch via writing-plans.
+- **C:** Skip the refresh, always replan from scratch.
+
+### Verified safe
+
+- `.tech-debt/` is untracked (`git status` shows `??`) → plain file moves in Task 1 touch no git state.
+- Ralph executor idle (user-confirmed) → no co-run staging or branch hazard.
+- `Explore` agent type is read-only and available → scouts cannot edit the repo.
+- `gh` PR flow works in this repo (PR #70 created, checked, merged through it).
+- Prior scan artifacts exist and were read → carry-over comparison in Task 5 has its input.
+
+### Minor / accepted
+
+- Scan cost ~60–80k tokens (+5–10k if RC1-B).
+- 6 fixed scout categories, same as the 2026-06-01 scan — keeps results comparable.
+- `design.md` format inherited from the prior scan rather than redesigned.
+
+## Confidence summary (v1 unrated → v2 audit; floor 92%)
+
+| Task | Pre-lift | Post-lift | Lift applied |
+| --- | --- | --- | --- |
+| T1 archive | 98% | 98% | — |
+| T2 inventory | 88% | 96% | Script written to file and run by path; kills PowerShell `-c` here-string quoting + argv-length risk [[355faeb8]] |
+| T3 scouts | 85% | 93% | Read-only Explore type; ≥2 verified evidence entries required; malformed → 1 retry → drop + `## Scan gaps` note |
+| T4 persist | 97% | 97% | — |
+| T5 synthesis | 87% | 93% | Prompt persisted for audit; strict JSON schema + 1 retry; RC1 mitigation slots here |
+| T6 render | 96% | 96% | — |
+| T7 gate | 97% | 97% | — |
+| T8 per-finding plan | 80% | 92% | Unknown-finding risk contained by nested writing-plans gates (per-task 92% floor applies to each per-finding plan) + RC2 threshold rule + cross-cutting-test grep sweep |
+| T9 execute | 80% | 92% | SDD dual review per task; suite green at every boundary; behavior-identical constraint; revert-and-replan path |
+| T10 PR/merge | 90% | 95% | Bot-watch loop proven on this repo (PR #70); never force-merge; fix-in-branch rule |
+| T11 close-out | 96% | 96% | — |
+
+No task below 92% post-lift. T8/T9 are meta-tasks: their residual risk lands in the per-finding plans, each of which gets its own confidence gate at write time.
+
+---
+
 ## Phase 1 — Scan
 
 ### Task 1: Archive the 2026-06-01 scan
+
+**Confidence: 98%** — plain file moves on an untracked directory.
 
 **Files:**
 - Move: `.tech-debt/*.json`, `.tech-debt/*.md`, `.tech-debt/*.txt` → `.tech-debt/archive/2026-06-01/`
@@ -35,13 +100,15 @@ Expected: root contains only `archive\`; archive contains `design.md`, `inventor
 
 ### Task 2: Inventory the repo
 
+**Confidence: 96%** (pre-lift 88%) — lifted by writing the script to a file and running it by path, eliminating PowerShell `-c` here-string quoting and argv-length hazards [[355faeb8]].
+
 **Files:**
+- Create: `.tech-debt/inventory_scan.py`
 - Create: `.tech-debt/inventory.json`
 
-- [ ] **Step 1: Run the inventory script**
+- [ ] **Step 1: Write `.tech-debt/inventory_scan.py`** (Write tool) with exactly:
 
-```powershell
-python -c @"
+```python
 import json, os
 ROOT = r'C:\Users\gethi\source\ralph'
 SKIP_DIRS = {'.git', '.tech-debt', '.superpowers', '__pycache__', 'ralph.egg-info', '.pytest_cache', '.mypy_cache', '.ruff_cache', 'node_modules', '.claude'}
@@ -69,14 +136,19 @@ out = {'scan_date': '2026-06-10', 'root': ROOT, 'total_files': files, 'total_loc
 with open(os.path.join(ROOT, '.tech-debt', 'inventory.json'), 'w', encoding='utf-8') as f:
     json.dump(out, f, indent=2)
 print(json.dumps(out, indent=2))
-"@
 ```
 
-- [ ] **Step 2: Verify**
+- [ ] **Step 2: Run it**
+
+Run: `python "C:\Users\gethi\source\ralph\.tech-debt\inventory_scan.py"`
+
+- [ ] **Step 3: Verify**
 
 Expected: JSON printed with `total_files` in the hundreds, `total_loc` six figures, `python` and `markdown` dominant. `.tech-debt/inventory.json` exists.
 
 ### Task 3: Dispatch 6 scouts in parallel
+
+**Confidence: 93%** (pre-lift 85%) — lifted by read-only Explore agent type, the ≥2-verified-evidence rule, and the malformed-output path (1 retry, then drop + `## Scan gaps` note in Task 6).
 
 No files written in this task — scout outputs are collected in-conversation and persisted in Task 4.
 
@@ -120,6 +192,8 @@ Expected per scout: parseable JSON array, 3–8 findings, every finding has the 
 
 ### Task 4: Persist raw findings
 
+**Confidence: 97%** — merge + JSON validation only.
+
 **Files:**
 - Create: `.tech-debt/raw-findings.json`
 
@@ -131,6 +205,8 @@ Run: `python -c "import json; d=json.load(open(r'C:\Users\gethi\source\ralph\.te
 Expected: 18–48 findings, categories ⊆ the 6 dispatched, no exception.
 
 ### Task 5: Synthesize top 5
+
+**Confidence: 93%** (pre-lift 87%) — lifted by persisting the prompt for audit, strict JSON schema with 1 retry, and the RC1 evidence-verification mitigation (if RC1-B/C chosen, it executes as Step 5 of this task).
 
 **Files:**
 - Create: `.tech-debt/synthesis-prompt.txt`
@@ -167,6 +243,8 @@ Run: `python -c "import json; d=json.load(open(r'C:\Users\gethi\source\ralph\.te
 Expected: exactly 5 entries printed, no exception.
 
 ### Task 6: Render design.md and report
+
+**Confidence: 96%** — deterministic rendering from `top5.json` in the prior scan's proven format.
 
 **Files:**
 - Create: `.tech-debt/design.md`
@@ -206,6 +284,8 @@ If any scout was dropped in Task 3, add a `## Scan gaps` section at the bottom n
 
 ### Task 7: Per-finding approval
 
+**Confidence: 97%** — user action plus a regex gate check; no `pending` may survive.
+
 **Files:**
 - Modify: `.tech-debt/design.md` (status markers only)
 
@@ -221,6 +301,8 @@ Expected: no `pending` remains; ≥1 `approved`. Zero `approved` → campaign en
 Run Tasks 8–10 **once per approved finding**, in this order: half-finished/legacy-removal findings first (they shrink god modules), then god-module splits smallest-first, then everything else; doc-drift findings may slot anywhere. Never start a finding before the previous finding's PR is merged.
 
 ### Task 8: Per-finding plan
+
+**Confidence: 92%** (pre-lift 80%) — meta-task over findings unknown until the scan lands. Lifted by: each per-finding plan runs the full writing-plans gate set itself (per-task ratings, 92% floor, guardrail retrieval); RC2 threshold rule for the loop.py refresh; mandatory `git grep -l` cross-cutting-test sweep [[94f87716]].
 
 **Files:**
 - Create: `docs/superpowers/specs/2026-06-10-<slug>-design.md` (large refactors only)
@@ -245,6 +327,8 @@ git add docs/superpowers/ && git commit -m "docs(plan): <slug> — tech-debt fix
 
 ### Task 9: Execute the per-finding plan
 
+**Confidence: 92%** (pre-lift 80%) — refactor risk is per-finding and lands in that finding's own rated plan. Lifted at campaign level by: SDD dual review per task, suite green at every task boundary, behavior-identical constraint, and the revert-and-replan path. Feature branch created at task start per standards.
+
 - [ ] **Step 1: Create the feature branch**
 
 ```bash
@@ -261,6 +345,8 @@ Expected: all green. Not green → fix before any PR.
 - [ ] **Step 4: Record reviewer-flagged non-obvious findings to better-memory** (mandatory CLAUDE.md triggers).
 
 ### Task 10: PR, bot-watch, merge
+
+**Confidence: 95%** (pre-lift 90%) — lifted by: bot-watch loop already proven on this repo (PR #70), fix-in-branch rule, never force-merge.
 
 - [ ] **Step 1: Push and open the PR**
 
@@ -282,6 +368,8 @@ gh pr merge <N> --squash --delete-branch
 ## Wrap-up
 
 ### Task 11: Campaign close-out
+
+**Confidence: 96%** — verification commands against criteria fixed in the spec.
 
 - [ ] **Step 1: Verify success criteria** from the spec: all approved findings `promoted`; `git log main` shows one squash-merge per finding; `python -m pytest` green on fresh main; for god-module findings, line counts hit plan targets (`wc -l` the named files); for doc findings, zero hits for the scrubbed terms (e.g. `grep -r RALPH_REPO_PATH docs/` → empty).
 
