@@ -20,7 +20,7 @@
 - [ ] **Step 1: Insert historical banner** directly under the `# Ralph Bootstrap Operator Runbook` H1:
 
 ```markdown
-> **HISTORICAL REFERENCE (Stage B era).** Stage B is complete: the operator skills this runbook works around (`ralph-new`, `ralph-status`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-recover`) have shipped, queue provisioning is `scripts/setup_ralph_queue_github.py`, and the executor is queue-driven (each PBI's `target_repo` frontmatter names the repo; there is no `RALPH_REPO_PATH`). Use this document only as the "operate without the tools" fallback described in §8. For current architecture see `docs/runbooks/ralph-architecture.md`.
+> **HISTORICAL REFERENCE (Stage B era).** Stage B is complete: the operator skills this runbook works around have shipped (`ralph-new` — successor to the planned `ralph-add` — plus `ralph-status`, `ralph-doctor`, `ralph-cancel`, `ralph-promote`, `ralph-triage`, `ralph-recover`), queue provisioning is `scripts/setup_ralph_queue_github.py`, and the executor is queue-driven (each PBI's `target_repo` frontmatter names the repo; there is no `RALPH_REPO_PATH`). Use this document only as the "operate without the tools" fallback described in §8. For current architecture see `docs/runbooks/ralph-architecture.md`.
 ```
 
 - [ ] **Step 2: Fix the 9 stale references** (line numbers from 2026-06-10 grep):
@@ -32,7 +32,7 @@
 - [ ] **Step 3: Verify zero stale refs remain**
 
 Run: `grep -n "RALPH_REPO_PATH" docs/bootstrap-operator-runbook.md`
-Expected: no matches (the banner does not name the variable except as `RALPH_REPO_PATH` in the "there is no" clause — acceptable; alternatively phrase banner to avoid the literal and expect zero matches). Run: `grep -n "reads PROMPT.md" docs/bootstrap-operator-runbook.md` — no matches.
+Expected: exactly 1 match — the historical banner line (it names the variable in its "no longer exists" clause). Run: `grep -n "reads PROMPT.md" docs/bootstrap-operator-runbook.md` — no matches.
 
 ### Task 2: Suite, commit, PR
 
