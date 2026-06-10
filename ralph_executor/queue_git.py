@@ -4,8 +4,9 @@ Three helpers: resolving the per-instance queue-clone path, refreshing
 the queue clone before an iteration, and persisting any PBI-directory
 edits Claude made during it. All run against the queue clone at
 ``<workspace_root>/queue-<instance_id>/`` (materialised by
-``ensure_queue_clone``); all are pure functions of ``cfg`` (plus a PBI
-id and optional event log for the persist helper).
+``ensure_queue_clone``). ``queue_repo_root`` is a pure path
+computation; ``pull_queue`` and ``persist_iteration_writes`` shell out
+to git and touch the filesystem.
 """
 
 from __future__ import annotations

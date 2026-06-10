@@ -58,6 +58,9 @@ from ralph_executor.queue.movements import (
     move_inbox_to_blocked,
     move_inbox_to_current,
 )
+
+# Re-imported under the old private names so internal callers, cli's
+# deferred import, and loop-level monkeypatches keep working unchanged.
 from ralph_executor.queue_git import (
     persist_iteration_writes as _persist_iteration_writes,
 )
