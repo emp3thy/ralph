@@ -471,7 +471,7 @@ Executor-specific symptoms:
 | `FileNotFoundError: claude` from inside the loop. | Claude CLI not on PATH for the executor process. | Install Claude Code, run `claude --version` in the same shell, or set `claude_binary` to an absolute path. |
 | Loop exits immediately with `queue drained -- exiting after N consecutive idle iterations` and the queue has work. | The queue clone is stale (operator-side push race) or the executor is reading a different `queue_branch` than the operator skills are writing to. | Compare `cfg.queue_branch` (`ralph-executor doctor`) with the skill's resolved branch (`grep RALPH_QUEUE_BRANCH ~/.ralph/config.toml`). |
 | `ConfigError: instance_id '<value>' must match ^[a-z0-9][a-z0-9_-]{0,62}$` | TOML key, env var, CLI flag, or sanitised hostname does not match the regex (uppercase, dots, spaces, leading hyphen, > 63 chars). | Pick a value satisfying the regex (e.g. `ralph-a`). If the default-from-hostname is what is failing, set `instance_id` explicitly in `~/.ralph/config.toml`. |
-| `QueueCloneError: both legacy queue/ and queue-<instance_id>/ exist` | An aborted upgrade left both the legacy single-host clone and the namespaced one in `workspace_root/`. | Remove whichever is stale (typically the legacy `queue/`) and restart the executor. The legacy directory is only ever renamed once on the first startup of the multi-ralph build. |
+| `QueueCloneError: both legacy queue/ and queue-<instance_id>/ exist` | An aborted upgrade left both the legacy single-host clone and the namespaced one in `workspace_root/`. | Remove whichever is stale (typically the legacy `queue/`) and restart the executor. The executor never renames or migrates the legacy directory itself. |
 | `LockfileError: another ralph already running on this workspace: {...}` | Another ralph process is already holding `<workspace>/queue-<instance_id>/.ralph.lock`. The error payload names the holding instance, hostname, and pid. | Stop the other ralph, or give this instance its own `workspace_root` AND its own `instance_id`. The OS releases the lock on process exit, so no manual cleanup is needed once the holder is dead. |
 | `QueueError: malformed claim: ...` from `current_pbi()`. | A `current/<id>/` directory either has no `CLAIM.json` or its `CLAIM.json` will not parse. | Inspect the PBI directory directly. If the claim is legitimately orphaned (owner crashed), use `ralph-recover --pbi-id <id> --to inbox`. |
 | `ralph-cancel: cannot cancel PBI claimed by '<other>'; use ralph-recover` / `ralph-promote: cannot promote PBI claimed by '<other>'; use ralph-recover` (exit 3). | The PBI's `CLAIM.json` names a different instance than the operator. | Confirm the owning instance is actually gone, then run `ralph-recover --pbi-id <id> --to inbox|blocked`. `ralph-cancel` and `ralph-promote` are intentionally non-destructive across instances. |
@@ -567,8 +567,11 @@ intentional refusal, not a silent merge. Recommended steps:
 3. Upgrade (`uv sync` or pull the new container image).
 4. Set `instance_id` in `~/.ralph/config.toml` if you want anything
    other than the sanitised hostname.
-5. Start the new executor. The legacy `queue/` is renamed to
-   `queue-<instance_id>/` on the first iteration.
+5. Rename the legacy clone yourself: `mv queue queue-<instance_id>`
+   inside `workspace_root/` (a plain mv/rename is git-safe). The
+   executor refuses to start while an un-renamed legacy `queue/`
+   exists, with a `QueueCloneError` naming the expected path.
+6. Start the new executor.
 
 ### Cross-host halt is not in Scope 1
 
