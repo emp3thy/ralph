@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from ralph_executor.queue_clone import QueueCloneError, ensure_queue_clone
+from ralph_executor.subprocess_utils import run_text
 
 QUEUE_STATE_FOLDERS: tuple[str, ...] = (
     "current",
@@ -30,6 +31,13 @@ QUEUE_STATE_FOLDERS: tuple[str, ...] = (
 )
 
 RALPH_DIR_NAME = ".ralph"
+
+ENTRY_FILE_BY_TYPE = {
+    "feature": "PBI.md",
+    "bug": "BUG.md",
+    "pr-feedback": "FEEDBACK.md",
+}
+ENTRY_FILES = tuple(ENTRY_FILE_BY_TYPE.values())
 
 
 class QueueWriterError(RuntimeError):
@@ -47,19 +55,27 @@ class QueueWriterError(RuntimeError):
 
 def _run_git(repo: Path, *args: str) -> str:
     try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(repo),
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        result = run_text(["git", *args], cwd=str(repo), check=True, capture_output=True)
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         raise QueueWriterError(f"git {' '.join(args)} failed ({exc.returncode}): {stderr}") from exc
     return result.stdout.strip()
+
+
+run_git = _run_git  # public alias; skills discard the str return when they only need side effects
+
+
+def resolve_entry_file(pbi_dir: Path) -> Path:
+    """Return the type-specific entry file inside ``pbi_dir``.
+
+    Checks ``ENTRY_FILES`` in order (PBI.md, BUG.md, FEEDBACK.md) and
+    returns the first that exists. Raises ``QueueWriterError`` if none do.
+    """
+    for candidate in ENTRY_FILES:
+        path = pbi_dir / candidate
+        if path.is_file():
+            return path
+    raise QueueWriterError(f"no entry file (PBI.md, BUG.md, or FEEDBACK.md) found in {pbi_dir}")
 
 
 def ensure_git_repo(repo: Path) -> None:
@@ -435,7 +451,8 @@ def write_frontmatter(
 # ----------------------------------------------------------------------
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
+    """UTC timestamp in second precision, e.g. ``2026-06-10T12:00:00+00:00``."""
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
@@ -465,7 +482,7 @@ def append_history(
     # being a contiguous run of ``- key: value`` lines).
     entry = (
         "---\n"
-        f"- timestamp: {_now_iso()}\n"
+        f"- timestamp: {now_iso()}\n"
         f"- actor: {flatten_history_field(actor)}\n"
         f"- action: {flatten_history_field(action)}\n"
         f"- detail: {flatten_history_field(detail)}\n"
@@ -490,6 +507,6 @@ def update_frontmatter_fields(
     """
     frontmatter, body = read_frontmatter(entry_file)
     frontmatter.update(updates)
-    frontmatter["updated_at"] = updates.get("updated_at", _now_iso())
+    frontmatter["updated_at"] = updates.get("updated_at", now_iso())
     write_frontmatter(entry_file, frontmatter, body)
     return frontmatter
