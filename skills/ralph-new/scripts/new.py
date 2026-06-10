@@ -36,6 +36,10 @@ from ralph_executor.user_config import (  # noqa: E402
     read_queue_repo,
     read_workspace_root,
 )
+from scripts.queue_writer import (  # noqa: E402
+    QueueWriterError,
+    resolve_instance_id,
+)
 
 
 def _load_sibling(name: str) -> ModuleType:
@@ -101,6 +105,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", type=Path)
     p.add_argument("--queue-repo")
     p.add_argument("--queue-branch")
+    p.add_argument(
+        "--instance-id",
+        dest="instance_id",
+        default=None,
+        help=(
+            "Operator instance_id used to land on the executor's namespaced "
+            "queue clone (queue-<instance-id>/). Resolution order: "
+            "--instance-id flag, RALPH_INSTANCE_ID env, instance_id in "
+            "~/.ralph/config.toml, sanitised hostname."
+        ),
+    )
     return p
 
 
@@ -389,8 +404,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _fail(
             "queue_repo is not configured (set in ~/.ralph/config.toml or pass --queue-repo)"
         )
+    # Resolve instance_id BEFORE the clone so we land on the same
+    # namespaced path the executor uses (queue-<instance_id>/), keeping
+    # multi-ralph instances isolated from each other and from the legacy
+    # shared queue/ directory.
     try:
-        queue_clone = ensure_queue_clone(workspace, queue_repo, queue_branch)
+        operator_instance_id = resolve_instance_id(args.instance_id)
+    except QueueWriterError as exc:
+        return _fail(str(exc))
+    try:
+        queue_clone = ensure_queue_clone(
+            workspace,
+            queue_repo,
+            queue_branch,
+            instance_id=operator_instance_id,
+        )
     except QueueCloneError as exc:
         return _fail(f"queue clone failed: {exc}")
 
