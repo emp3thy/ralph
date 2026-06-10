@@ -169,10 +169,20 @@ def main(argv: list[str] | None = None) -> int:
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
 
+        # Resolve instance_id BEFORE the clone so we land on the same
+        # namespaced path the executor uses (queue-<instance_id>/). The
+        # halt-sentinel file is gitignored, so it is only visible to skills
+        # that clone the executor's path, not the legacy queue/ path.
+        # Resolution also happens before the dry-run branch so dry-run
+        # output reports the real namespaced path; resolve_instance_id is
+        # read-only (flag/env/TOML/hostname), so dry-run stays
+        # side-effect free.
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be move against the would-be clone location.
-            clone = workspace_root / "queue"
+            clone = workspace_root / f"queue-{operator_instance_id}"
             rel_from = f".ralph/{args.from_state}/{args.pbi_id}"
             rel_to = f".ralph/{args.to_state}/{args.pbi_id}"
             print(
@@ -194,12 +204,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
-
-        # Resolve instance_id BEFORE the clone so we land on the same
-        # namespaced path the executor uses (queue-<instance_id>/). The
-        # halt-sentinel file is gitignored, so it is only visible to skills
-        # that clone the executor's path, not the legacy queue/ path.
-        operator_instance_id = resolve_instance_id(args.instance_id)
 
         clone = acquire_queue_clone(
             workspace_root,

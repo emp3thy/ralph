@@ -136,10 +136,16 @@ def main(argv: list[str] | None = None) -> int:
         rel_from = f".ralph/{SOURCE_FOLDER}/{args.pbi_id}"
         rel_to = f".ralph/{args.destination}/{args.pbi_id}"
 
+        # Resolved before the dry-run branch so dry-run output reports the
+        # same namespaced clone path (queue-<instance_id>/) the real call
+        # uses. resolve_instance_id is read-only (flag/env/TOML/hostname),
+        # so dry-run stays side-effect free.
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be move against the would-be clone location.
-            clone = workspace_root / "queue"
+            clone = workspace_root / f"queue-{operator_instance_id}"
             print(
                 f"dry-run: would move {rel_from} -> {rel_to} and commit "
                 f"'chore(queue): triage {args.pbi_id} "
@@ -168,7 +174,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
 
-        operator_instance_id = resolve_instance_id(args.instance_id)
         clone = acquire_queue_clone(
             workspace_root,
             queue_repo,

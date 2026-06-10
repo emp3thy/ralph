@@ -158,11 +158,17 @@ def main(argv: list[str] | None = None) -> int:
         queue_repo = resolve_queue_repo(args.queue_repo)
         queue_branch = resolve_queue_branch(args.queue_branch)
 
+        # Resolved before the dry-run branch so dry-run output reports the
+        # same namespaced clone path (queue-<instance_id>/) the real call
+        # uses. resolve_instance_id is read-only (flag/env/TOML/hostname),
+        # so dry-run stays side-effect free.
+        operator_instance_id = resolve_instance_id(args.instance_id)
+
         if args.dry_run:
             # Dry-run must NOT touch network or filesystem. Report the
             # would-be sentinel path against the would-be clone location
             # without cloning or checking PBI existence.
-            clone = workspace_root / "queue"
+            clone = workspace_root / f"queue-{operator_instance_id}"
             rel_sentinel = (
                 Path(".ralph") / CURRENT_FOLDER / args.pbi_id / CANCEL_FILE_NAME
             ).as_posix()
@@ -182,8 +188,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(asdict(result), indent=2, sort_keys=True))
             return 0
-
-        operator_instance_id = resolve_instance_id(args.instance_id)
 
         clone = acquire_queue_clone(
             workspace_root,

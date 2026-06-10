@@ -462,6 +462,8 @@ def test_triage_dry_run_writes_nothing(
     assert payload["dry_run"] is True
     assert payload["pushed"] is False
     assert payload["commit_sha"] == ""
+    # Dry-run reports the same namespaced clone path the real call uses.
+    assert payload["queue_clone"].endswith("queue-test-ralph")
 
     # Dry-run must NOT clone the queue or push.
     assert not (workspace / "queue-test-ralph").exists()
