@@ -95,13 +95,15 @@ def _pbi_frontmatter_has_signature(pbi: PBI) -> bool:
 
 
 def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone (replica of ``loop._queue_repo_root``).
+    """Filesystem path of the queue clone (replica of ``queue_git.queue_repo_root``).
 
-    Replicated here rather than imported to avoid a ``claude_spawn`` ->
-    ``loop`` circular import (``loop`` already imports ``spawn_claude_p``
-    from this module). The body must stay in sync with
-    ``ralph_executor.loop._queue_repo_root``; that function is the single
-    source of truth for the queue-clone path in non-spawn code paths.
+    Replicated here rather than imported — the helper originally lived in
+    the loop module, where importing it would have created a
+    ``claude_spawn`` -> loop circular import (the loop module, now
+    ``iteration``, imports ``spawn_claude_p`` from this module). The body
+    must stay in sync with ``ralph_executor.queue_git.queue_repo_root``;
+    that function is the single source of truth for the queue-clone path
+    in non-spawn code paths.
     """
     return cfg.queue_clone_path
 

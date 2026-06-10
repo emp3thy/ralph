@@ -37,7 +37,7 @@ distinct pieces.
 
 | Repo / path | Role | Contents |
 |---|---|---|
-| `emp3thy/ralph` | Executor source. Built into the `ralph-executor` Python package and the container image. | `ralph_executor/` (loop, config, sweep, host_select), `skills/` (operator skills + staged `pr-<host>`), `scripts/setup_ralph_queue_github.py`, `Dockerfile`, `pyproject.toml`. |
+| `emp3thy/ralph` | Executor source. Built into the `ralph-executor` Python package and the container image. | `ralph_executor/` (iteration loop — `iteration` plus its `pbi_claim` / `worktree_manager` / `queue_git` / `iteration_safety` siblings — config, sweep, host_select), `skills/` (operator skills + staged `pr-<host>`), `scripts/setup_ralph_queue_github.py`, `Dockerfile`, `pyproject.toml`. |
 | `emp3thy/ralph-queue` | Queue state. Holds the PBI lifecycle on the `ralph-queue` branch. `main` is protected and used only for the README. | `.ralph/inbox/`, `.ralph/current/`, `.ralph/pending-pr/`, `.ralph/blocked/`, `.ralph/archive/`, `.ralph/done/`, plus an optional `.ralph/config.toml` for per-queue knobs. |
 | `~/ralph-workspaces/<env>/` | Per-machine workspace. Created by the executor at runtime; never checked into git. | `queue-<instance_id>/` — clone of `ralph-queue` (always on `cfg.queue_branch`; one directory per instance under multi-ralph — see `ralph-setup.md` §12). `clones/<owner>-<name>/` — one clone per `target_repo` ralph has seen; each holds per-PBI worktrees under `.ralph-work/<PBI-id>/`. |
 

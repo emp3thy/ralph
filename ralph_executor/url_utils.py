@@ -2,7 +2,7 @@
 
 Used by:
 - ralph_executor.target_clone to determine clone destination
-- ralph_executor.loop._claim_pbi to host-check and propagate target identity
+- ralph_executor.pbi_claim.claim_pbi to host-check and propagate target identity
 - ralph_executor.claude_spawn to set GH_OWNER per subprocess
 """
 

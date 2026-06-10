@@ -86,7 +86,7 @@ def move_to_blocked(*, cfg: ExecutorConfig, pbi: PBI, reason: str) -> Path:
     delegates to :func:`queue.movements.move_current_to_blocked` for the
     actual ``git mv`` + frontmatter status rewrite + commit + push.
 
-    Append-before-stage mirrors ``loop._move_to_blocked_with_reason`` so
+    Append-before-stage mirrors ``iteration._move_to_blocked_with_reason`` so
     the reason lands in the same commit as the move rather than as a
     follow-up edit at the new path (which would re-introduce the same
     uncommitted-edit drift the routing through ``move_current_to_blocked``

@@ -87,8 +87,8 @@ class SweepContext:
     # Optional cycle-detector event sink. When provided, the sweep emits
     # PR_MERGED + PBI_CLOSED on pending-pr → done transitions and
     # PR_GREEN_THEN_RED on green→red CI transitions (Plan 19b). Tests that
-    # don't exercise event emission omit it; production wiring (loop.py)
-    # always passes one.
+    # don't exercise event emission omit it; production wiring
+    # (iteration_safety.run_sweep) always passes one.
     event_log: EventLog | None = None
 
 

@@ -18,6 +18,14 @@ Algorithm (matches the spec's "Iteration model"):
         main.
   4. Evaluate cycle-detector rules (Plan 9 Layer 3). If any trip, write
      the META-BUG + sentinel and raise ``HaltedError``.
+
+This module owns orchestration only; the helpers it drives live in four
+sibling modules: ``pbi_claim`` (inbox -> current claim), ``queue_git``
+(queue-clone git operations), ``worktree_manager`` (work-worktree
+lifecycle), and ``iteration_safety`` (sweep + cycle detector). The moved
+helpers are re-imported here under their old private names
+(``_claim_pbi``, ``_pull_queue``, ``_run_sweep``, ...) so internal call
+sites and iteration-level monkeypatch targets keep resolving.
 """
 
 from __future__ import annotations
@@ -691,7 +699,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
             )
         return result
 
-    # Current empty → sweep (Plan 8 stub), pick next, claim if any.
+    # Current empty → run the sweep, pick next, claim if any.
     _run_sweep(cfg, source)
 
     picked = source.pick_next()

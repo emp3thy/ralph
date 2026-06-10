@@ -23,7 +23,7 @@ from ralph_executor.url_utils import TargetRepoInfo
 class TargetUnreachable(RuntimeError):
     """Raised when clone or fetch of a target repo fails.
 
-    Caller (typically ``loop._claim_pbi``) maps to ``_ClaimError`` and
+    Caller (typically ``pbi_claim.claim_pbi``) maps to ``ClaimError`` and
     moves the PBI to ``blocked/`` with the error message in HISTORY.md.
     """
 
