@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -27,26 +25,24 @@ from ralph_executor.queue.claim import (  # noqa: E402
     read_claim,
 )
 from scripts.queue_writer import (  # noqa: E402
+    ENTRY_FILE_BY_TYPE,
     QUEUE_STATE_FOLDERS,
     QueueWriterError,
     acquire_queue_clone,
     append_history,
     commit_paths,
     is_path_in_head,
+    now_iso,
     push,
     read_frontmatter,
+    resolve_entry_file,
     resolve_instance_id,
     resolve_queue_branch,
     resolve_queue_repo,
     resolve_workspace_root,
+    run_git,
     write_frontmatter,
 )
-
-ENTRY_FILE_BY_TYPE = {
-    "feature": "PBI.md",
-    "bug": "BUG.md",
-    "pr-feedback": "FEEDBACK.md",
-}
 
 CURRENT_FOLDER = "current"
 
@@ -139,10 +135,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _now_iso() -> str:
-    return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-
-
 def _enforce_claim_ownership(pbi_dir: Path, operator_instance_id: str) -> None:
     """Refuse to promote out of ``current/`` when CLAIM.json is missing or foreign.
 
@@ -164,30 +156,6 @@ def _enforce_claim_ownership(pbi_dir: Path, operator_instance_id: str) -> None:
         raise _ClaimGuardError(
             f"ralph-promote: cannot promote PBI claimed by {claim.instance_id!r}; use ralph-recover"
         )
-
-
-def _resolve_entry_file(pbi_dir: Path) -> Path:
-    for candidate in ENTRY_FILE_BY_TYPE.values():
-        path = pbi_dir / candidate
-        if path.is_file():
-            return path
-    raise QueueWriterError(f"no entry file (PBI.md, BUG.md, or FEEDBACK.md) found in {pbi_dir}")
-
-
-def _git(repo: Path, *args: str) -> None:
-    try:
-        subprocess.run(
-            ["git", *args],
-            cwd=str(repo),
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        raise QueueWriterError(f"git {' '.join(args)} failed ({exc.returncode}): {stderr}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -285,19 +253,19 @@ def main(argv: list[str] | None = None) -> int:
 
         # Resolve entry file BEFORE the move so we know which one to
         # rewrite post-rename.
-        entry_before = _resolve_entry_file(from_dir)
+        entry_before = resolve_entry_file(from_dir)
         entry_name = entry_before.name
 
         # git mv stages renames for every file inside the PBI dir.
         to_dir.parent.mkdir(parents=True, exist_ok=True)
         rel_from = f".ralph/{args.from_state}/{args.pbi_id}"
         rel_to = f".ralph/{args.to_state}/{args.pbi_id}"
-        _git(clone, "mv", rel_from, rel_to)
+        run_git(clone, "mv", rel_from, rel_to)
 
         entry_after = to_dir / entry_name
         frontmatter, body = read_frontmatter(entry_after)
         frontmatter["status"] = args.to_state
-        frontmatter["updated_at"] = _now_iso()
+        frontmatter["updated_at"] = now_iso()
         write_frontmatter(entry_after, frontmatter, body)
 
         append_history(
