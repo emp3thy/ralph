@@ -665,6 +665,72 @@ def _resolve_branches(toml_overrides: Mapping[str, Any], source_label: str) -> _
     return _BranchSettings(main_branch=main_branch, queue_branch=queue_branch)
 
 
+class _RuntimeKnobs(NamedTuple):
+    max_attempts: int
+    log_level: int
+    iteration_sleep_seconds: float
+
+
+def _resolve_runtime_knobs(toml_overrides: Mapping[str, Any], source_label: str) -> _RuntimeKnobs:
+    max_attempts = _resolve_int(
+        name="max_attempts",
+        env_name="RALPH_MAX_ATTEMPTS",
+        toml_value=toml_overrides.get("max_attempts"),
+        default=DEFAULT_MAX_ATTEMPTS,
+        source_label=source_label,
+    )
+    log_level = _resolve_log_level(
+        toml_value=toml_overrides.get("log_level"),
+        default=DEFAULT_LOG_LEVEL,
+        source_label=source_label,
+    )
+    sleep_seconds = _resolve_float(
+        name="iteration_sleep_seconds",
+        env_name="RALPH_ITERATION_SLEEP_SECONDS",
+        toml_value=toml_overrides.get("iteration_sleep_seconds"),
+        default=DEFAULT_ITERATION_SLEEP_SECONDS,
+        source_label=source_label,
+    )
+    return _RuntimeKnobs(
+        max_attempts=max_attempts,
+        log_level=log_level,
+        iteration_sleep_seconds=sleep_seconds,
+    )
+
+
+class _ClaudeSettings(NamedTuple):
+    claude_binary: str
+    claude_permission_mode: str
+
+
+def _resolve_claude_settings(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _ClaudeSettings:
+    claude_binary = _resolve_str(
+        name="claude_binary",
+        env_name="RALPH_CLAUDE_BINARY",
+        toml_value=toml_overrides.get("claude_binary"),
+        default=DEFAULT_CLAUDE_BINARY,
+        source_label=source_label,
+    )
+    claude_permission_mode = _resolve_str(
+        name="claude_permission_mode",
+        env_name="RALPH_CLAUDE_PERMISSION_MODE",
+        toml_value=toml_overrides.get("claude_permission_mode"),
+        default=DEFAULT_CLAUDE_PERMISSION_MODE,
+        source_label=source_label,
+    )
+    if claude_permission_mode not in _VALID_CLAUDE_PERMISSION_MODES:
+        raise ConfigError(
+            f"{source_label}: claude_permission_mode={claude_permission_mode!r} "
+            f"not in {sorted(_VALID_CLAUDE_PERMISSION_MODES)}"
+        )
+    return _ClaudeSettings(
+        claude_binary=claude_binary,
+        claude_permission_mode=claude_permission_mode,
+    )
+
+
 def load_config() -> ExecutorConfig:
     """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
 
@@ -690,44 +756,8 @@ def load_config() -> ExecutorConfig:
 
     queue_repo = _resolve_queue_repo(toml_overrides, source_label)
     main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
-    max_attempts = _resolve_int(
-        name="max_attempts",
-        env_name="RALPH_MAX_ATTEMPTS",
-        toml_value=toml_overrides.get("max_attempts"),
-        default=DEFAULT_MAX_ATTEMPTS,
-        source_label=source_label,
-    )
-    log_level = _resolve_log_level(
-        toml_value=toml_overrides.get("log_level"),
-        default=DEFAULT_LOG_LEVEL,
-        source_label=source_label,
-    )
-    sleep_seconds = _resolve_float(
-        name="iteration_sleep_seconds",
-        env_name="RALPH_ITERATION_SLEEP_SECONDS",
-        toml_value=toml_overrides.get("iteration_sleep_seconds"),
-        default=DEFAULT_ITERATION_SLEEP_SECONDS,
-        source_label=source_label,
-    )
-    claude_binary = _resolve_str(
-        name="claude_binary",
-        env_name="RALPH_CLAUDE_BINARY",
-        toml_value=toml_overrides.get("claude_binary"),
-        default=DEFAULT_CLAUDE_BINARY,
-        source_label=source_label,
-    )
-    claude_permission_mode = _resolve_str(
-        name="claude_permission_mode",
-        env_name="RALPH_CLAUDE_PERMISSION_MODE",
-        toml_value=toml_overrides.get("claude_permission_mode"),
-        default=DEFAULT_CLAUDE_PERMISSION_MODE,
-        source_label=source_label,
-    )
-    if claude_permission_mode not in _VALID_CLAUDE_PERMISSION_MODES:
-        raise ConfigError(
-            f"{source_label}: claude_permission_mode={claude_permission_mode!r} "
-            f"not in {sorted(_VALID_CLAUDE_PERMISSION_MODES)}"
-        )
+    max_attempts, log_level, sleep_seconds = _resolve_runtime_knobs(toml_overrides, source_label)
+    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
     git_host = _resolve_str(
         name="git_host",
         env_name="RALPH_GIT_HOST",
