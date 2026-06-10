@@ -162,14 +162,19 @@ def _move(
         if commit_subject_override is not None
         else f"{commit_prefix}: move {pbi.id} from {expected_state} to {target_state}"
     )
-    # ``commit_all`` runs ``git add -A`` before committing — so files the
-    # ``extra_files_writer`` callback drops into ``dst`` (e.g. CLAIM.json
-    # in the claim path) are auto-staged into the SAME commit as the
-    # ``git mv`` rename + the ``_rewrite_status`` frontmatter edit. Per
-    # [[63c4e75a]] a brand-new file inside a ``git mv``-d directory is
-    # NOT auto-staged by ``git mv`` itself; ``commit_all``'s ``-A`` flag
-    # is what picks it up.
-    git_ops.commit_all(queue_repo, message)
+    # ``commit_paths(..., [dst])`` stages everything under ``dst`` (the
+    # frontmatter rewrite to the entry file + any new files dropped in by
+    # ``extra_files_writer``, e.g. CLAIM.json in the claim path) and
+    # commits them atomically with the ``git mv`` rename already in the
+    # index. Per [[63c4e75a]] a brand-new file inside a ``git mv``-d
+    # directory is NOT auto-staged by ``git mv`` itself; the explicit
+    # ``git add -A -- dst`` inside ``commit_paths`` is what picks it up.
+    # ``commit_all`` (``git add -A`` over the whole worktree) is unsafe
+    # here on Windows: ralph holds an exclusive ``msvcrt.locking`` lock
+    # on ``.ralph.lock`` at the queue-clone root, ``git add`` cannot
+    # read the locked file, and the move crashes with
+    # ``Permission denied`` (BUG-COMMIT-ALL-RALPH-LOCK-WINDOWS).
+    git_ops.commit_paths(queue_repo, message, [dst])
     # push_with_rebase tolerates concurrent writers (operator commits, a
     # second ralph instance, web commits) racing the queue repo's
     # cfg.queue_branch between this iteration's start and the move's push.

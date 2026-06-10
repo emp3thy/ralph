@@ -122,11 +122,58 @@ def commit_all(repo: Path, message: str) -> str:
     """Stage tracked changes and commit. Returns the new HEAD sha.
 
     If there is nothing to commit, returns the current HEAD sha unchanged.
+
+    WARNING: ``git add -A`` walks the entire worktree. When ralph is
+    running on Windows it holds an exclusive ``msvcrt.locking`` byte-range
+    lock on ``<workspace>/queue-<id>/.ralph.lock``; a sibling ``git add``
+    cannot read the lockfile and aborts with
+    ``error: read error while indexing .ralph.lock: Permission denied``.
+    Production movement / autobug-emit code MUST use :func:`commit_paths`
+    instead, which stages explicit paths and never visits the lockfile.
+    This helper is retained for tests that exercise the bare add-all
+    semantics on a clean fixture repo.
     """
     _run_git(repo, "add", "-A")
     status = _run_git(repo, "status", "--porcelain").stdout.strip()
     if not status:
         return rev_parse_head(repo)
+    _run_git(repo, "commit", "-m", message)
+    return rev_parse_head(repo)
+
+
+def commit_paths(repo: Path, message: str, paths: list[Path]) -> str:
+    """Stage the named paths and commit. Returns the new HEAD sha.
+
+    Each path is staged via ``git add -A -- <relpath>``: ``-A`` so
+    deletions of tracked files inside ``<relpath>`` are captured (matches
+    :func:`add_all_changes`), ``--`` to disambiguate ``<relpath>`` from a
+    ref name. Use this for any commit produced while ralph holds the
+    workspace lockfile (movements, autobug-emit) — see :func:`commit_all`
+    for the lockfile race that the explicit-paths form sidesteps.
+
+    Paths are relative-ised against ``repo``. Passing the same directory
+    that ``git mv`` just renamed-into stages the rename's destination
+    side plus any subsequent in-tree edits / new files atomically.
+
+    If no path produces a staged change, returns the current HEAD sha
+    unchanged (mirrors :func:`commit_all`'s no-op semantics).
+    """
+    for path in paths:
+        _run_git(repo, "add", "-A", "--", str(path.relative_to(repo)))
+    # ``git diff --cached --quiet`` exits 0 (no staged diff), 1 (staged
+    # diff found), >=2 (git itself errored). Same shape as
+    # :func:`commit_index`. ``git status --porcelain`` would also report
+    # untracked files outside ``paths`` and produce false-positive
+    # "something to commit" signals.
+    diff = _run_git(repo, "diff", "--cached", "--quiet", check=False)
+    if diff.returncode == 0:
+        return rev_parse_head(repo)
+    if diff.returncode != 1:
+        raise GitCommandError(
+            ["git", "diff", "--cached", "--quiet"],
+            diff.returncode,
+            diff.stderr,
+        )
     _run_git(repo, "commit", "-m", message)
     return rev_parse_head(repo)
 

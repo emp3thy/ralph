@@ -340,7 +340,7 @@ def _persist_iteration_writes(
     if not pbi_dir.is_dir():
         # PBI was already moved + committed + pushed by handle_stuck or
         # move_current_to_pending_pr — both route through
-        # ``movements._move`` which runs ``git_ops.mv`` + ``commit_all``
+        # ``movements._move`` which runs ``git_ops.mv`` + ``commit_paths``
         # + ``push_with_rebase`` inside the same call. Nothing remains
         # in current/ for this helper to stage.
         return
