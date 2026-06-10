@@ -51,6 +51,7 @@ After the move the skill commits and pushes the queue branch
 | `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. The queue clone lives at `<workspace_root>/queue-<instance_id>/`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. HTTPS URL of the queue repo. |
 | `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
+| `--instance-id <name>` | no | Operator instance_id used to land on the executor's namespaced queue clone (`queue-<instance-id>/`). Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--no-push` | no | Commit locally but do not push. |
 | `--dry-run` | no | Compute and log without moving, committing, or pushing. Prints the JSON summary describing what would have happened. Does NOT clone the queue. |
 

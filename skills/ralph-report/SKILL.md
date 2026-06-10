@@ -30,6 +30,7 @@ happened recently" without re-running `ralph-status` every few minutes.
 | `--workspace <path>` | no | Override `workspace_root` from `~/.ralph/config.toml`. |
 | `--queue-repo <url>` | no | Override `queue_repo` from `~/.ralph/config.toml`. |
 | `--queue-branch <name>` | no | Override `queue_branch` from `~/.ralph/config.toml` (default: `ralph-queue`). |
+| `--instance-id <name>` | no | Operator instance_id used to land on the executor's namespaced queue clone (`queue-<instance-id>/`). Resolution order: `--instance-id` flag, `RALPH_INSTANCE_ID` env, `instance_id` in `~/.ralph/config.toml`, sanitised hostname. |
 | `--port <int>` | no | Bind port. `0` (default) = OS picks. |
 | `--bind <host>` | no | Bind host. Default: `127.0.0.1`. |
 | `--idle-seconds <int>` | no | Auto-exit after N seconds of no requests. Default: 1800. |
