@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -16,7 +16,6 @@ from ralph_executor.loop import (
     run_loop,
 )
 from ralph_executor.queue.filesystem import FilesystemQueueSource
-from ralph_executor.safety.events import EventType, open_log
 from ralph_executor.types import PBI
 from ralph_executor.worktree import work_worktree_path
 from tests.executor.conftest import write_sample_pbi
@@ -530,33 +529,6 @@ def test_iterate_once_refreshes_queue_clone_every_iteration(
     ]
 
 
-def test_run_loop_terminates_when_cycle_detector_trips(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``run_loop`` raises ``HaltedError`` when the cycle detector trips.
-
-    Plan 9 changed the contract: ``_check_cycle_detector`` returning ``True``
-    now causes ``iterate_once`` to raise ``HaltedError`` (after writing the
-    META-BUG + sentinel), which ``run_loop`` re-raises immediately.
-    """
-    from ralph_executor.safety import HaltedError
-
-    def _trip(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
-        return True
-
-    monkeypatch.setattr("ralph_executor.loop._check_cycle_detector", _trip)
-    monkeypatch.setattr(
-        "ralph_executor.loop.spawn_claude_p",
-        _stub_spawn("partial"),
-    )
-    # run_loop raises HaltedError on the first iteration where the
-    # cycle detector trips -- it never returns normally.
-    with pytest.raises(HaltedError):
-        list(run_loop(cfg_for_repo, max_iterations=5))
-
-
 def test_iterate_once_persists_claude_history_writes_on_partial(
     cfg_for_repo: ExecutorConfig,
     fake_repo: Path,
@@ -612,144 +584,6 @@ def test_iterate_once_persists_claude_history_writes_on_partial(
     # Commit message names the PBI.
     last_msg = _git(fake_repo, "log", "-1", "--pretty=%s").strip()
     assert "WI-1234" in last_msg
-
-
-def test_run_sweep_skips_when_bot_author_email_empty(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Without bot_author_email set, sweep must skip with a WARNING that
-    still mentions the legacy env-var name so operators grepping logs see
-    the same anchor."""
-    from dataclasses import replace
-
-    from ralph_executor.loop import _run_sweep
-
-    # Ensure no inherited env can satisfy the sweep — only cfg matters.
-    monkeypatch.delenv("RALPH_ADO_AUTHOR_EMAIL", raising=False)
-
-    cfg = replace(cfg_for_repo, bot_author_email="")
-    source = FilesystemQueueSource(cfg)
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
-        _run_sweep(cfg, source)
-
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any("bot_author_email" in m for m in msgs), msgs
-    assert any("RALPH_ADO_AUTHOR_EMAIL" in m for m in msgs), msgs
-
-
-def test_run_sweep_passes_cfg_values_to_sweep_config(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SweepConfig must be constructed from cfg fields, not from os.environ."""
-    from dataclasses import replace
-
-    from ralph_executor.loop import _run_sweep
-
-    # If _run_sweep regressed to reading env, this poisoned env would
-    # cause SweepConfig to be built with the env value rather than cfg's.
-    monkeypatch.setenv("RALPH_ADO_AUTHOR_EMAIL", "WRONG@example.com")
-    monkeypatch.setenv("RALPH_STALE_DAYS", "999")
-
-    captured: dict[str, object] = {}
-
-    class _SpySweepConfig:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
-
-    monkeypatch.setattr(
-        "ralph_executor.sweep.runner.SweepConfig",
-        _SpySweepConfig,
-    )
-
-    # Stub out the actual sweep run so we don't need a real PR skill on disk.
-    # Must return a SweepResult-shaped object — _run_sweep logs .pbis_scanned /
-    # .actions / .errors after the call.
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(
-        "ralph_executor.sweep.run",
-        lambda ctx: SimpleNamespace(pbis_scanned=0, actions=[], errors=[]),
-    )
-    # Bypass the scripts-path check.
-    monkeypatch.setattr(
-        "ralph_executor.loop._pr_skill_scripts_path",
-        lambda cfg: fake_repo,
-    )
-
-    cfg = replace(
-        cfg_for_repo,
-        bot_author_email="ralph@x.test",
-        stale_days=5,
-        auto_merge_clean_prs=True,
-    )
-    _run_sweep(cfg, FilesystemQueueSource(cfg))
-
-    assert captured["ralph_author_email"] == "ralph@x.test"
-    assert captured["stale_threshold"] == timedelta(days=5)
-    assert captured["max_attempts"] == cfg.max_attempts
-    assert captured["auto_merge_clean_prs"] is True
-
-
-def test_run_sweep_does_not_read_env_for_promoted_knobs(
-    cfg_for_repo: ExecutorConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Catch a regression where someone re-adds os.environ.get for these
-    two names inside _run_sweep."""
-    import ralph_executor.loop as loop_mod
-
-    src = Path(loop_mod.__file__).read_text(encoding="utf-8")
-    assert 'os.environ.get("RALPH_ADO_AUTHOR_EMAIL"' not in src
-    assert 'os.environ.get("RALPH_STALE_DAYS"' not in src
-
-
-def test_run_sweep_queue_root_points_at_queue_clone(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The sweep's ``queue_root`` must point at the queue clone's
-    ``.ralph/`` (where pending-pr/ actually lives). After the queue-repo
-    split there is only one queue path: ``<workspace_root>/queue/.ralph/``.
-    """
-    from dataclasses import replace
-
-    from ralph_executor.loop import _run_sweep
-
-    captured: dict[str, object] = {}
-
-    class _SpySweepContext:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
-
-    monkeypatch.setattr(
-        "ralph_executor.sweep.runner.SweepContext",
-        _SpySweepContext,
-    )
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(
-        "ralph_executor.sweep.run",
-        lambda ctx: SimpleNamespace(pbis_scanned=0, actions=[], errors=[]),
-    )
-    monkeypatch.setattr(
-        "ralph_executor.loop._pr_skill_scripts_path",
-        lambda cfg: fake_repo,
-    )
-
-    cfg = replace(cfg_for_repo, bot_author_email="ralph@x.test")
-    _run_sweep(cfg, FilesystemQueueSource(cfg))
-
-    expected = fake_repo / ".ralph"
-    assert captured["queue_root"] == expected, (
-        f"sweep queue_root must point at the queue clone's .ralph/; "
-        f"got {captured['queue_root']!r}, expected {expected!r}"
-    )
 
 
 # ----------------------------------------------------------------------
@@ -814,31 +648,6 @@ def test_terminal_outcome_removes_work_tree(
     # ``ralph/WI-1234`` ref is preserved — pending-pr PBIs need it.
     feature_ref = _git(fake_repo, "branch", "--list", "ralph/WI-1234").strip()
     assert "ralph/WI-1234" in feature_ref
-
-
-def test_event_log_lives_in_queue_clone(
-    cfg_for_repo: ExecutorConfig,
-    fake_repo: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every ``open_log`` call targets the queue clone. The
-    ``PBI_OPENED`` event from ``move_inbox_to_current`` must land in
-    ``<queue-clone>/.ralph/state/events.db`` — that's the file the cycle
-    detector reads on subsequent process restarts."""
-    _populate_inbox(fake_repo)
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn("partial"))
-
-    iterate_once(cfg_for_repo)
-
-    queue_db = fake_repo / ".ralph" / "state" / "events.db"
-    assert queue_db.is_file(), f"event log must live in the queue clone; expected at {queue_db}"
-    event_log = open_log(fake_repo)
-    try:
-        events = event_log.recent(window=timedelta(hours=1), now=datetime.now(tz=UTC))
-    finally:
-        event_log.close()
-    pbi_opened = [e for e in events if e.kind == EventType.PBI_OPENED]
-    assert pbi_opened, "PBI_OPENED event missing from queue-clone event log"
 
 
 def test_stuck_blocked_move_targets_queue_clone(

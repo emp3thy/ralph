@@ -12,16 +12,12 @@ Algorithm (matches the spec's "Iteration model"):
         * pr_created → move PBI to pending-pr/.
         * stuck      → handle_stuck (Plan 9 Layer 1) → blocked/.
         * partial / error → PBI stays in current/ (multi-step).
-     b. If empty: run the sweep stub (Plan 8 fills in), then pick the
-        highest-priority inbox PBI. If picked, ``git pull main``, claim
-        the PBI into current/, and create the per-PBI feature branch
-        ``ralph/<PBI-ID>`` off main.
+     b. If empty: run the sweep, then pick the highest-priority inbox
+        PBI. If picked, ``git pull main``, claim the PBI into current/,
+        and create the per-PBI feature branch ``ralph/<PBI-ID>`` off
+        main.
   4. Evaluate cycle-detector rules (Plan 9 Layer 3). If any trip, write
      the META-BUG + sentinel and raise ``HaltedError``.
-
-Plan 8 will replace ``_run_sweep`` with the real sweep implementation.
-Both replacements happen via ``monkeypatch`` in tests and via plain
-import overrides in production; the loop itself stays untouched.
 """
 
 from __future__ import annotations
@@ -35,7 +31,7 @@ import socket
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -48,6 +44,16 @@ from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
+
+# Re-imported under the old private names so internal callers, cli's
+# import, and loop-level monkeypatches keep working unchanged.
+from ralph_executor.iteration_safety import (
+    check_cycle_detector as _check_cycle_detector,
+)
+from ralph_executor.iteration_safety import (
+    pr_skill_scripts_path as _pr_skill_scripts_path,
+)
+from ralph_executor.iteration_safety import run_sweep
 from ralph_executor.lockfile import WorkspaceLockfile
 from ralph_executor.prompt_composer import PromptComposeError
 from ralph_executor.queue.filesystem import FilesystemQueueSource
@@ -78,8 +84,6 @@ from ralph_executor.safety import (
     HaltedError,
     HaltStatus,
     check_halt_sentinel,
-    evaluate_all,
-    halt_and_acknowledge,
     handle_stuck,
     open_log,
 )
@@ -89,6 +93,13 @@ from ralph_executor.worktree import (
     remove_worktree,
     work_worktree_path,
 )
+
+# Explicit re-export (mypy strict no_implicit_reexport): cli.py and
+# test_loop_pr_skill_scripts_path.py import this old private name from
+# loop even though the function now lives in iteration_safety.
+__all__ = [
+    "_pr_skill_scripts_path",
+]
 
 log = logging.getLogger(__name__)
 
@@ -116,92 +127,18 @@ class IterationResult:
     pr_url: str | None = None
 
 
-# ----------------------------------------------------------------------
-# Stubs for Plans 8 and 9
-# ----------------------------------------------------------------------
-
-
 def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
-    """Drive one sweep over ``.ralph/pending-pr/`` (Plan 8).
+    """Delegate to ``iteration_safety.run_sweep``, threading this module's
+    ``_pr_skill_scripts_path`` global through the resolver seam.
 
-    Builds a ``SweepContext`` from the executor config and current
-    environment, then delegates to ``ralph_executor.sweep.run``. The
-    ``source`` argument is unused — the sweep reads ``.ralph/pending-pr/``
-    directly from the filesystem so it can stay isolated from the queue
-    abstraction.
-
-    Production-safety: the sweep needs ``cfg.bot_author_email`` (used to
-    skip ralph-authored PR comments so the loop doesn't feed back into
-    itself) and a PR-skill scripts directory matching the configured git
-    host. If either is missing the sweep is skipped with a WARNING — the
-    loop must keep running rather than abort, since pre-Plan-8 deployments
-    and the bulk of the executor test suite don't set the author email.
-    Validation of ``cfg.stale_days`` (must be positive) lives in
-    ``config.load_config``; this function trusts the value.
+    Kept as a real ``def`` (not an aliased import) for two reasons:
+    tests patch ``ralph_executor.loop._run_sweep`` directly
+    (orchestration seam), and tests patch
+    ``ralph_executor.loop._pr_skill_scripts_path`` expecting the sweep
+    to see the stub — the call-time global lookup here is what makes
+    that interception work after the function moved modules.
     """
-    del source  # sweep walks the filesystem directly
-    if not cfg.bot_author_email:
-        log.warning(
-            "sweep: bot_author_email is not set (TOML key 'bot_author_email' "
-            "or env RALPH_ADO_AUTHOR_EMAIL); skipping sweep this iteration"
-        )
-        return
-
-    scripts_path = _pr_skill_scripts_path(cfg)
-    if not scripts_path.is_dir():
-        log.warning(
-            "sweep: PR-skill scripts directory not found at %s; skipping",
-            scripts_path,
-        )
-        return
-
-    from ralph_executor.sweep import run as run_sweep
-    from ralph_executor.sweep.runner import SweepConfig, SweepContext
-
-    sweep_cfg = SweepConfig(
-        ralph_author_email=cfg.bot_author_email,
-        max_attempts=cfg.max_attempts,
-        stale_threshold=timedelta(days=cfg.stale_days),
-        now=datetime.now(tz=UTC),
-        auto_merge_clean_prs=cfg.auto_merge_clean_prs,
-    )
-    # Open the event log so the sweep can emit cycle-detector events
-    # (Plan 19b: PR_MERGED + PBI_CLOSED on pending-pr → done,
-    # PR_GREEN_THEN_RED on green→red CI transitions). Close in a finally
-    # so a sweep-side crash never leaks the SQLite handle.
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        sweep_ctx = SweepContext(
-            # `.ralph/` lives in the queue clone at
-            # ``<workspace_root>/queue/`` — same path every read/write in
-            # this module routes through ``_queue_repo_root``.
-            queue_root=_queue_repo_root(cfg) / ".ralph",
-            ado_pr_scripts_path=scripts_path,
-            config=sweep_cfg,
-            # The queue clone is the single repo the sweep reads/writes
-            # (every PR scanned belongs to a target reachable from the
-            # queue's pending-pr index); label the sweep context with
-            # its directory name — by convention ``queue`` under
-            # ``workspace_root``.
-            repo_name=_queue_repo_root(cfg).name,
-            event_log=event_log,
-        )
-        result = run_sweep(ctx=sweep_ctx)
-    finally:
-        # Wrap close() so a failure here (e.g. sqlite flush error) does
-        # not mask an exception from run_sweep — losing the real cause
-        # makes post-mortem debugging much harder. Log close() failures
-        # at WARNING and let the original (if any) propagate unchanged.
-        try:
-            event_log.close()
-        except Exception as exc:
-            log.warning("sweep: event_log.close() failed: %s", exc)
-    log.info(
-        "sweep: scanned %d PBIs (actions=%d, errors=%d)",
-        result.pbis_scanned,
-        len(result.actions),
-        len(result.errors),
-    )
+    run_sweep(cfg, source, pr_skill_scripts_path=_pr_skill_scripts_path)
 
 
 def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
@@ -229,65 +166,6 @@ def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
             "Move settings to ~/.ralph/config.toml.",
             cfg_file,
         )
-
-
-def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
-    """Return the on-disk scripts directory for the configured PR skill.
-
-    The scripts live in the ralph executor source tree (``skills/pr-github/``
-    or ``skills/ado-pr/``), NOT in any target / queue clone. We resolve
-    relative to the ``ralph_executor`` package location so the lookup is
-    independent of CWD and of any operator-supplied repo path.
-
-    ``cfg.git_host == "github"`` → ``<ralph-src>/skills/pr-github/scripts/``.
-    ``cfg.git_host == "ado"``    → ``<ralph-src>/skills/ado-pr/scripts/``.
-    Empty / unknown host: prefer ``pr-github`` if it exists, else fall
-    back to ``ado-pr`` (existence is verified by the caller).
-    """
-    import ralph_executor
-
-    ralph_src = Path(ralph_executor.__file__).resolve().parent.parent
-    host = (cfg.git_host or "").strip().lower()
-    if host == "github":
-        return ralph_src / "skills" / "pr-github" / "scripts"
-    if host == "ado":
-        return ralph_src / "skills" / "ado-pr" / "scripts"
-    pr_github = ralph_src / "skills" / "pr-github" / "scripts"
-    if pr_github.is_dir():
-        return pr_github
-    return ralph_src / "skills" / "ado-pr" / "scripts"
-
-
-def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
-    """Evaluate all cycle-detector rules against the recent event log.
-
-    Returns ``True`` if any signal tripped (and the loop should halt after
-    this call completes the META-BUG + sentinel write). Returns ``False``
-    when no signals fire.
-
-    The function is kept as a module-level callable so tests can monkeypatch
-    it without dependency-injection (reconciliation #9).
-    """
-    now = datetime.now(tz=UTC)
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        events = event_log.recent(window=timedelta(hours=72), now=now)
-    finally:
-        event_log.close()
-    signals = evaluate_all(events, now, cfg)
-    if not signals:
-        return False
-    log.warning(
-        "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
-        len(signals),
-    )
-    halt_and_acknowledge(
-        repo=_queue_repo_root(cfg),
-        signals=signals,
-        now=now,
-        tripped_by_instance=cfg.instance_id,
-    )
-    return True
 
 
 # ----------------------------------------------------------------------
