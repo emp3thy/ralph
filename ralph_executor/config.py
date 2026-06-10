@@ -731,35 +731,15 @@ def _resolve_claude_settings(
     )
 
 
-def load_config() -> ExecutorConfig:
-    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+class _HostSettings(NamedTuple):
+    git_host: str
+    gh_owner: str
+    ado_org_url: str
+    ado_project: str
+    halt_webhook: str
 
-    The executor is queue-driven: ``ExecutorConfig`` has no
-    ``repo_path``. ``workspace_root`` is the only configured root; every
-    per-iteration target clone is materialised under
-    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
-    ``target_repo`` frontmatter.
 
-    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
-    empty string means "use claude CLI's OAuth session".
-    """
-    from ralph_executor.user_config import (
-        _warn_stale_ralph_home_in_user_config,
-        user_config_path,
-    )
-
-    _warn_stale_ralph_home_in_user_config()
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    toml_overrides = _load_user_toml_overrides()
-    source_label = str(user_config_path())
-
-    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
-    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
-    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
-        toml_overrides, source_label
-    )
-    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
+def _resolve_host_settings(toml_overrides: Mapping[str, Any], source_label: str) -> _HostSettings:
     git_host = _resolve_str(
         name="git_host",
         env_name="RALPH_GIT_HOST",
@@ -794,6 +774,47 @@ def load_config() -> ExecutorConfig:
         toml_value=toml_overrides.get("halt_webhook"),
         default="",
         source_label=source_label,
+    )
+    return _HostSettings(
+        git_host=git_host,
+        gh_owner=gh_owner,
+        ado_org_url=ado_org_url,
+        ado_project=ado_project,
+        halt_webhook=halt_webhook,
+    )
+
+
+def load_config() -> ExecutorConfig:
+    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+
+    The executor is queue-driven: ``ExecutorConfig`` has no
+    ``repo_path``. ``workspace_root`` is the only configured root; every
+    per-iteration target clone is materialised under
+    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
+    ``target_repo`` frontmatter.
+
+    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
+    empty string means "use claude CLI's OAuth session".
+    """
+    from ralph_executor.user_config import (
+        _warn_stale_ralph_home_in_user_config,
+        user_config_path,
+    )
+
+    _warn_stale_ralph_home_in_user_config()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    toml_overrides = _load_user_toml_overrides()
+    source_label = str(user_config_path())
+
+    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
+    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
+    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
+        toml_overrides, source_label
+    )
+    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
+    git_host, gh_owner, ado_org_url, ado_project, halt_webhook = _resolve_host_settings(
+        toml_overrides, source_label
     )
     bot_author_email = _resolve_str(
         name="bot_author_email",
