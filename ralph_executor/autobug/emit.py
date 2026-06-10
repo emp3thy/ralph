@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from ralph_executor import git_ops
@@ -50,34 +51,40 @@ def new(
     pbi_id = f"autobug-{short_sig}-{seq}"
     pbi_dir = ctx.queue_root / ".ralph" / "inbox" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=False)
-    fm = build_frontmatter(
-        pbi_id=pbi_id,
-        signature=signature,
-        trigger_kind=trigger_kind,
-        severity=severity,
-        ctx=ctx,
-        target_repo=target_repo,
-    )
-    bug_body = build_bug_md(exc, ctx)
-    (pbi_dir / "BUG.md").write_text(fm + "\n" + bug_body + "\n", encoding="utf-8")
-    (pbi_dir / "REPRODUCE.md").write_text(
-        build_reproduce_md(
-            pbi_id,
+    try:
+        fm = build_frontmatter(
+            pbi_id=pbi_id,
+            signature=signature,
             trigger_kind=trigger_kind,
-            exc=exc,
-            stderr=stderr,
-            exit_code=exit_code,
+            severity=severity,
             ctx=ctx,
+            target_repo=target_repo,
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
-    _commit_and_push(
-        ctx,
-        f"chore(queue): add {pbi_id} (autobug signature {short_sig})",
-        paths=[pbi_dir],
-    )
+        bug_body = build_bug_md(exc, ctx)
+        (pbi_dir / "BUG.md").write_text(fm + "\n" + bug_body + "\n", encoding="utf-8")
+        (pbi_dir / "REPRODUCE.md").write_text(
+            build_reproduce_md(
+                pbi_id,
+                trigger_kind=trigger_kind,
+                exc=exc,
+                stderr=stderr,
+                exit_code=exit_code,
+                ctx=ctx,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (pbi_dir / "HISTORY.md").write_text("", encoding="utf-8")
+        _commit_and_push(
+            ctx,
+            f"chore(queue): add {pbi_id} (autobug signature {short_sig})",
+            paths=[pbi_dir],
+        )
+    except BaseException:
+        # Atomic emit: a stranded uncommitted inbox dir would deadlock
+        # iterate_once on UncommittedSource forever (see emit module docstring).
+        shutil.rmtree(pbi_dir, ignore_errors=True)
+        raise
     return pbi_id
 
 
@@ -92,17 +99,24 @@ def bump(pbi_id: str, exc: BaseException, ctx: Context) -> None:
     if bug_path is None:
         log.warning("autobug bump: PBI %s not found in any open state", pbi_id)
         return
-    text = bug_path.read_text(encoding="utf-8")
+    original_bytes = bug_path.read_bytes()
+    text = original_bytes.decode("utf-8")
     text = _bump_occurrences(text)
     text = _set_last_seen(text, ctx)
     trace_n = _read_occurrences(text)
     text += f"\n\n## Trace {trace_n}\n\n```\n{_format_traceback(exc)}\n```\n"
     bug_path.write_text(text, encoding="utf-8")
-    _commit_and_push(
-        ctx,
-        f"chore(ralph-queue): bump {pbi_id} (occurrence {trace_n})",
-        paths=[bug_path],
-    )
+    try:
+        _commit_and_push(
+            ctx,
+            f"chore(ralph-queue): bump {pbi_id} (occurrence {trace_n})",
+            paths=[bug_path],
+        )
+    except BaseException:
+        # Restore the tracked BUG.md so the next iteration does not
+        # carry an uncommitted occurrence edit forever.
+        bug_path.write_bytes(original_bytes)
+        raise
 
 
 def reopen(
@@ -130,39 +144,44 @@ def reopen(
     pbi_id = f"autobug-{short_sig}-{seq}"
     pbi_dir = ctx.queue_root / ".ralph" / "inbox" / pbi_id
     pbi_dir.mkdir(parents=True, exist_ok=False)
-    fm = build_frontmatter(
-        pbi_id=pbi_id,
-        signature=signature,
-        trigger_kind=trigger_kind,
-        severity=severity,
-        ctx=ctx,
-        target_repo=target_repo,
-        regression_of=existing_pbi_id,
-    )
-    bug_body = build_bug_md(exc, ctx)
-    (pbi_dir / "BUG.md").write_text(fm + "\n" + bug_body + "\n", encoding="utf-8")
-    (pbi_dir / "REPRODUCE.md").write_text(
-        build_reproduce_md(
-            pbi_id,
+    try:
+        fm = build_frontmatter(
+            pbi_id=pbi_id,
+            signature=signature,
             trigger_kind=trigger_kind,
-            exc=exc,
-            stderr=stderr,
-            exit_code=exit_code,
+            severity=severity,
             ctx=ctx,
+            target_repo=target_repo,
+            regression_of=existing_pbi_id,
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    (pbi_dir / "HISTORY.md").write_text(
-        f"## Regression of {existing_pbi_id}\n\n"
-        f"Re-emerged on {ctx.now.replace(microsecond=0).isoformat()}.\n",
-        encoding="utf-8",
-    )
-    _commit_and_push(
-        ctx,
-        f"chore(queue): reopen {existing_pbi_id} as {pbi_id}",
-        paths=[pbi_dir],
-    )
+        bug_body = build_bug_md(exc, ctx)
+        (pbi_dir / "BUG.md").write_text(fm + "\n" + bug_body + "\n", encoding="utf-8")
+        (pbi_dir / "REPRODUCE.md").write_text(
+            build_reproduce_md(
+                pbi_id,
+                trigger_kind=trigger_kind,
+                exc=exc,
+                stderr=stderr,
+                exit_code=exit_code,
+                ctx=ctx,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (pbi_dir / "HISTORY.md").write_text(
+            f"## Regression of {existing_pbi_id}\n\n"
+            f"Re-emerged on {ctx.now.replace(microsecond=0).isoformat()}.\n",
+            encoding="utf-8",
+        )
+        _commit_and_push(
+            ctx,
+            f"chore(queue): reopen {existing_pbi_id} as {pbi_id}",
+            paths=[pbi_dir],
+        )
+    except BaseException:
+        # Atomic emit — see new() for rationale.
+        shutil.rmtree(pbi_dir, ignore_errors=True)
+        raise
     return pbi_id
 
 
