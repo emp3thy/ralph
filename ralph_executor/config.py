@@ -784,7 +784,7 @@ def _resolve_host_settings(toml_overrides: Mapping[str, Any], source_label: str)
     )
 
 
-class _TimeoutSettings(NamedTuple):
+class _SweepTuningSettings(NamedTuple):
     bot_author_email: str
     stale_days: int
     bash_max_timeout_ms: int
@@ -793,9 +793,9 @@ class _TimeoutSettings(NamedTuple):
     pr_check_poll_interval_seconds: float
 
 
-def _resolve_timeout_settings(
+def _resolve_sweep_tuning(
     toml_overrides: Mapping[str, Any], source_label: str
-) -> _TimeoutSettings:
+) -> _SweepTuningSettings:
     bot_author_email = _resolve_str(
         name="bot_author_email",
         env_name="RALPH_ADO_AUTHOR_EMAIL",
@@ -849,7 +849,7 @@ def _resolve_timeout_settings(
         default=DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS,
         source_label=source_label,
     )
-    return _TimeoutSettings(
+    return _SweepTuningSettings(
         bot_author_email=bot_author_email,
         stale_days=stale_days,
         bash_max_timeout_ms=bash_max_timeout_ms,
@@ -1017,7 +1017,7 @@ def load_config() -> ExecutorConfig:
         claude_session_timeout_seconds,
         pr_check_poll_max_attempts,
         pr_check_poll_interval_seconds,
-    ) = _resolve_timeout_settings(toml_overrides, source_label)
+    ) = _resolve_sweep_tuning(toml_overrides, source_label)
     use_worktrees, auto_merge_clean_prs, workspace_root = _resolve_workspace_settings(
         toml_overrides, source_label
     )
