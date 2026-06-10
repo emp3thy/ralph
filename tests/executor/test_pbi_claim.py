@@ -12,19 +12,7 @@ from ralph_executor.config import ExecutorConfig
 from ralph_executor.loop import iterate_once
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.types import PBI
-from tests.executor.conftest import write_sample_pbi
-
-
-def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args],
-        cwd=str(cwd),
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    ).stdout
+from tests.executor.conftest import _git, write_sample_pbi
 
 
 def _populate_inbox(fake_repo: Path, pbi_id: str = "WI-1234", severity: str = "normal") -> None:
