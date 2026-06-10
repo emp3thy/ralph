@@ -65,7 +65,7 @@ def test_validate_startup_silent_when_autobug_off_and_no_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _minimal_cfg(bot_email="", autobug_enabled=False)
-    # Patch the binding cli.py imported via ``from ralph_executor.loop import
+    # Patch the binding cli.py imported via ``from ralph_executor.iteration import
     # _pr_skill_scripts_path`` — patching loop_mod won't reach the local
     # reference in cli.
     monkeypatch.setattr(cli, "_pr_skill_scripts_path", lambda c: tmp_path / "nonexistent")

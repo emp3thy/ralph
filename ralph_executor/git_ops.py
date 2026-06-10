@@ -350,7 +350,7 @@ def diff_names(repo: Path, base: str, head: str) -> list[str]:
     files main changed after the feature branch was created, polluting
     the cycle-detector ``files`` payload and risking false
     same_file_thrashing trips. For two sequential commit SHAs (the
-    ``_persist_iteration_writes`` call site) the merge-base of a parent
+    ``queue_git.persist_iteration_writes`` call site) the merge-base of a parent
     and its child is the parent itself, so two-dot and three-dot produce
     identical results — the change is safe at both call sites.
 

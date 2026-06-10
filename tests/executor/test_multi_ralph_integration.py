@@ -28,8 +28,8 @@ import pytest
 from ralph_executor.claude_spawn import ClaudeOutcome, OutcomeKind
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
+from ralph_executor.iteration import iterate_once
 from ralph_executor.lockfile import LockfileError, WorkspaceLockfile
-from ralph_executor.loop import iterate_once
 from ralph_executor.queue.claim import Claim, read_claim, write_claim
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import move_inbox_to_current
@@ -276,7 +276,7 @@ def _stub_spawn(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _fake)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _fake)
 
 
 def _read_origin_claim(bare: Path, state: str, pbi_id: str) -> Claim:

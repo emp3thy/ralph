@@ -17,8 +17,8 @@ import pytest
 
 from ralph_executor.claude_spawn import ClaudeOutcome
 from ralph_executor.config import ExecutorConfig
+from ralph_executor.iteration import IterationResult, iterate_once, run_loop
 from ralph_executor.lockfile import LockfileError, WorkspaceLockfile
-from ralph_executor.loop import IterationResult, iterate_once, run_loop
 from ralph_executor.sweep.runner import SweepContext, SweepResult
 from tests.executor.conftest import write_sample_pbi
 
@@ -98,7 +98,7 @@ def test_sweep_runs_when_current_is_empty(
     # `_run_sweep`. Patch the resolved name on the runner module so the lazy
     # `from ralph_executor.sweep import run` picks up the spy.
     monkeypatch.setattr("ralph_executor.sweep.run", _spy_run)
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn())
 
     iterate_once(cfg)
 
@@ -123,7 +123,7 @@ def test_sweep_does_not_run_when_current_has_pbi(
     (fake_repo / "skills" / "pr-github" / "scripts").mkdir(parents=True)
     _populate_inbox_via_git(fake_repo)
     # First iteration claims the PBI into current/.
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn())
     iterate_once(cfg)
     assert (fake_repo / ".ralph" / "current" / "WI-INTEG").is_dir()
 
@@ -154,7 +154,7 @@ def test_sweep_skipped_when_author_email_missing(
         return SweepResult(pbis_scanned=0)
 
     monkeypatch.setattr("ralph_executor.sweep.run", _spy_run)
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn())
 
     iterate_once(cfg)
     assert captured == [], "sweep must skip when cfg.bot_author_email is empty"
@@ -173,7 +173,7 @@ def test_sweep_skipped_when_pr_skill_scripts_dir_missing(
     # dev checkout). Stub it to a deliberately-absent path so the guard
     # fires.
     bogus = tmp_path / "no" / "such" / "scripts"
-    monkeypatch.setattr("ralph_executor.loop._pr_skill_scripts_path", lambda _cfg: bogus)
+    monkeypatch.setattr("ralph_executor.iteration._pr_skill_scripts_path", lambda _cfg: bogus)
 
     captured: list[SweepContext] = []
 
@@ -182,7 +182,7 @@ def test_sweep_skipped_when_pr_skill_scripts_dir_missing(
         return SweepResult(pbis_scanned=0)
 
     monkeypatch.setattr("ralph_executor.sweep.run", _spy_run)
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn())
 
     iterate_once(cfg)
     assert captured == [], "sweep must skip when the PR-skill scripts directory is missing"
@@ -339,7 +339,7 @@ def test_loop_persists_to_ralph_queue_branch_by_default(
 
     # Stub Claude (it isn't spawned on the claim iteration anyway, but
     # keep the path symmetrical with the other tests in this file).
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _stub_spawn())
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _stub_spawn())
 
     # Drive one iteration: empty current → sweep skipped (no
     # bot_author_email) → pick inbox PBI → claim, which calls
@@ -402,7 +402,7 @@ def test_run_loop_acquires_workspace_lockfile_at_startup(
         observed_existed.append((cfg.queue_clone_path / ".ralph.lock").is_file())
         return IterationResult(outcome="idle", pbi_id=None)
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
 
     list(run_loop(cfg_for_repo, max_iterations=1))
 
@@ -428,7 +428,7 @@ def test_run_loop_lockfile_released_on_clean_exit(
     def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
         return IterationResult(outcome="idle", pbi_id=None)
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
 
     list(run_loop(cfg_for_repo, max_iterations=1))
 
@@ -467,7 +467,7 @@ def test_run_loop_refuses_when_workspace_already_locked(
         def _fake_iterate(cfg: ExecutorConfig) -> IterationResult:
             raise AssertionError("iterate_once must NOT be called when lock contended")
 
-        monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+        monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
 
         with pytest.raises(LockfileError, match="another ralph already running"):
             list(run_loop(cfg_for_repo, max_iterations=1))
@@ -490,7 +490,7 @@ def test_run_loop_releases_lockfile_on_halted_error(
             sentinel_path=cfg.queue_clone_path / ".ralph" / "state" / "halted",
         )
 
-    monkeypatch.setattr("ralph_executor.loop.iterate_once", _fake_iterate)
+    monkeypatch.setattr("ralph_executor.iteration.iterate_once", _fake_iterate)
 
     with pytest.raises(HaltedError):
         list(run_loop(cfg_for_repo, max_iterations=1))

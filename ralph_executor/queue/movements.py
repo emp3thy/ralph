@@ -212,7 +212,7 @@ def move_inbox_to_current(
     On ``PushRebaseConflict`` from the claim path's
     ``push_with_rebase``: the local clone is reset to
     ``origin/<queue_branch>`` so the next iteration sees no leftover
-    ``current/<id>/`` and ``_pull_queue``'s ff-only pull succeeds.
+    ``current/<id>/`` and ``queue_git.pull_queue``'s ff-only pull succeeds.
     Without the reset the loser would diverge from origin permanently.
     """
     extra_writer: Callable[[Path], None] | None
@@ -331,8 +331,8 @@ def move_pending_pr_to_done(cfg: ExecutorConfig, pbi: PBI) -> PBI:
 def move_inbox_to_blocked(cfg: ExecutorConfig, pbi: PBI) -> PBI:
     """Demote an unclaimable inbox PBI directly to blocked.
 
-    Used by ``iterate_once`` when ``_claim_pbi`` raises ``_ClaimError``
-    before the PBI has made it into ``current/`` (target_repo missing,
+    Used by ``iterate_once`` when ``pbi_claim.claim_pbi`` raises
+    ``ClaimError`` before the PBI has made it into ``current/`` (target_repo missing,
     parse failure, unsupported host, ``TargetUnreachable``). The PBI
     never holds the single-focus slot, so the move is inbox -> blocked.
     """

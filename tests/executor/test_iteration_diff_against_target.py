@@ -55,7 +55,7 @@ def test_diff_names_uses_target_clone_root(
     """pr_created path must call ``git_ops.diff_names`` against
     ``<workspace_root>/clones/<owner>/<name>/`` — never against
     ``cfg.repo_path``."""
-    from ralph_executor.loop import _run_ralph
+    from ralph_executor.iteration import _run_ralph
 
     info = TargetRepoInfo(host="github.com", owner="acme", name="widget")
     clone_root_expected = cfg_for_repo.workspace_root / "clones" / "acme" / "widget"
@@ -72,7 +72,7 @@ def test_diff_names_uses_target_clone_root(
         seen["head"] = head
         return ["a.py", "b.py"]
 
-    monkeypatch.setattr("ralph_executor.loop.git_ops.diff_names", _fake_diff_names)
+    monkeypatch.setattr("ralph_executor.iteration.git_ops.diff_names", _fake_diff_names)
 
     def _fake_spawn(
         cfg: ExecutorConfig,
@@ -90,7 +90,7 @@ def test_diff_names_uses_target_clone_root(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _fake_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _fake_spawn)
 
     captured_touched: dict[str, list[str]] = {}
 
@@ -105,8 +105,8 @@ def test_diff_names_uses_target_clone_root(
     ) -> None:
         captured_touched["touched"] = list(touched_files)
 
-    monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
+    monkeypatch.setattr("ralph_executor.iteration.move_current_to_pending_pr", _fake_move)
+    monkeypatch.setattr("ralph_executor.iteration._cleanup_work_worktree", lambda cfg, pbi: None)
 
     outcome, result = _run_ralph(cfg_for_repo, pbi)
 
@@ -124,7 +124,7 @@ def test_diff_names_skipped_when_target_info_missing(
 ) -> None:
     """target_info=None (malformed frontmatter on resume) must NOT crash;
     diff_names is not called and touched_files is empty."""
-    from ralph_executor.loop import _run_ralph
+    from ralph_executor.iteration import _run_ralph
 
     pbi_dir = fake_repo / ".ralph" / "current" / "WI-T6-NOTGT"
     pbi = _make_pbi(pbi_dir, target_info=None)
@@ -135,7 +135,7 @@ def test_diff_names_skipped_when_target_info_missing(
         called["diff"] = True
         return []
 
-    monkeypatch.setattr("ralph_executor.loop.git_ops.diff_names", _fake_diff_names)
+    monkeypatch.setattr("ralph_executor.iteration.git_ops.diff_names", _fake_diff_names)
 
     def _fake_spawn(
         cfg: ExecutorConfig,
@@ -153,7 +153,7 @@ def test_diff_names_skipped_when_target_info_missing(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _fake_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _fake_spawn)
 
     captured: dict[str, list[str]] = {}
 
@@ -168,10 +168,10 @@ def test_diff_names_skipped_when_target_info_missing(
     ) -> None:
         captured["touched"] = list(touched_files)
 
-    monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
+    monkeypatch.setattr("ralph_executor.iteration.move_current_to_pending_pr", _fake_move)
+    monkeypatch.setattr("ralph_executor.iteration._cleanup_work_worktree", lambda cfg, pbi: None)
 
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+    with caplog.at_level("WARNING", logger="ralph_executor.iteration"):
         outcome, result = _run_ralph(cfg_for_repo, pbi)
 
     assert outcome.kind == "pr_created"
@@ -191,7 +191,7 @@ def test_diff_names_skipped_when_clone_root_missing(
     (transient fetch failure earlier in the iteration) must NOT crash;
     diff_names is not called and touched_files is empty.
     """
-    from ralph_executor.loop import _run_ralph
+    from ralph_executor.iteration import _run_ralph
 
     info = TargetRepoInfo(host="github.com", owner="nope", name="missing-clone")
     # Deliberately do NOT mkdir ``<ws>/clones/nope/missing-clone``.
@@ -205,7 +205,7 @@ def test_diff_names_skipped_when_clone_root_missing(
         called["diff"] = True
         return []
 
-    monkeypatch.setattr("ralph_executor.loop.git_ops.diff_names", _fake_diff_names)
+    monkeypatch.setattr("ralph_executor.iteration.git_ops.diff_names", _fake_diff_names)
 
     def _fake_spawn(
         cfg: ExecutorConfig,
@@ -223,7 +223,7 @@ def test_diff_names_skipped_when_clone_root_missing(
             duration_seconds=0.01,
         )
 
-    monkeypatch.setattr("ralph_executor.loop.spawn_claude_p", _fake_spawn)
+    monkeypatch.setattr("ralph_executor.iteration.spawn_claude_p", _fake_spawn)
 
     captured: dict[str, list[str]] = {}
 
@@ -238,10 +238,10 @@ def test_diff_names_skipped_when_clone_root_missing(
     ) -> None:
         captured["touched"] = list(touched_files)
 
-    monkeypatch.setattr("ralph_executor.loop.move_current_to_pending_pr", _fake_move)
-    monkeypatch.setattr("ralph_executor.loop._cleanup_work_worktree", lambda cfg, pbi: None)
+    monkeypatch.setattr("ralph_executor.iteration.move_current_to_pending_pr", _fake_move)
+    monkeypatch.setattr("ralph_executor.iteration._cleanup_work_worktree", lambda cfg, pbi: None)
 
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+    with caplog.at_level("WARNING", logger="ralph_executor.iteration"):
         outcome, result = _run_ralph(cfg_for_repo, pbi)
 
     assert outcome.kind == "pr_created"
@@ -265,7 +265,7 @@ def test_sweep_repo_name_is_queue_clone_name(
     Scope 1 multi-ralph: the queue clone is namespaced per-instance so
     the label is ``queue-<instance_id>`` (here ``queue-test-ralph``).
     """
-    from ralph_executor.loop import _run_sweep
+    from ralph_executor.iteration import _run_sweep
     from ralph_executor.queue.filesystem import FilesystemQueueSource
     from ralph_executor.sweep.runner import SweepResult
 

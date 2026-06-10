@@ -40,8 +40,8 @@ def _run_git(
     result object when the operation exceeds the wall-clock budget; it
     raises ``FileNotFoundError`` (an ``OSError`` subclass) when ``git``
     is absent from ``PATH``. Either would escape ``ensure_queue_clone``
-    unwrapped and crash the executor process in the caller (the
-    loop's ``_pull_queue`` only knows ``QueueCloneError``).
+    unwrapped and crash the executor process in the caller
+    (``queue_git.pull_queue`` only knows ``QueueCloneError``).
     """
     argv = ["git", *(["-C", str(repo)] if repo is not None else []), *args]
     try:
@@ -90,9 +90,9 @@ def ensure_queue_clone(
     if instance_id is None:
         # Backwards-compatible path: callers that haven't been threaded
         # with instance_id continue to use the legacy ``queue/`` directory
-        # (no rename, no namespacing). The executor (loop._pull_queue)
-        # always passes ``cfg.instance_id`` so the namespaced path is the
-        # production case.
+        # (no rename, no namespacing). The executor
+        # (queue_git.pull_queue) always passes ``cfg.instance_id`` so the
+        # namespaced path is the production case.
         dest = legacy
     else:
         dest = workspace_root / f"queue-{instance_id}"

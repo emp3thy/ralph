@@ -12,7 +12,7 @@ from ralph_executor.host_select import (
     HostSelectionError,
     prepare_host_environment,
 )
-from ralph_executor.loop import (
+from ralph_executor.iteration import (
     IterationOutcome,
     IterationResult,
     iterate_once,

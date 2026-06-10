@@ -64,7 +64,7 @@ from ralph_executor.host_select import (
     HostSelectionError,
     prepare_host_environment,
 )
-from ralph_executor.loop import _pr_skill_scripts_path, iterate_once, run_loop
+from ralph_executor.iteration import _pr_skill_scripts_path, iterate_once, run_loop
 from ralph_executor.sweep.reconcile import reconcile_all, reconcile_stale_current_all
 from ralph_executor.sweep.runner import SweepConfig, SweepContext
 from ralph_executor.sweep.types import CurrentReconcileReport, ReconcileReport
@@ -395,7 +395,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     from datetime import UTC, datetime, timedelta
 
-    from ralph_executor.loop import _queue_repo_root
+    from ralph_executor.queue_git import queue_repo_root as _queue_repo_root
 
     ctx = SweepContext(
         # Worktree-mode awareness: ``.ralph/`` lives in the queue clone at

@@ -12,16 +12,20 @@ Algorithm (matches the spec's "Iteration model"):
         * pr_created → move PBI to pending-pr/.
         * stuck      → handle_stuck (Plan 9 Layer 1) → blocked/.
         * partial / error → PBI stays in current/ (multi-step).
-     b. If empty: run the sweep stub (Plan 8 fills in), then pick the
-        highest-priority inbox PBI. If picked, ``git pull main``, claim
-        the PBI into current/, and create the per-PBI feature branch
-        ``ralph/<PBI-ID>`` off main.
+     b. If empty: run the sweep, then pick the highest-priority inbox
+        PBI. If picked, ``git pull main``, claim the PBI into current/,
+        and create the per-PBI feature branch ``ralph/<PBI-ID>`` off
+        main.
   4. Evaluate cycle-detector rules (Plan 9 Layer 3). If any trip, write
      the META-BUG + sentinel and raise ``HaltedError``.
 
-Plan 8 will replace ``_run_sweep`` with the real sweep implementation.
-Both replacements happen via ``monkeypatch`` in tests and via plain
-import overrides in production; the loop itself stays untouched.
+This module owns orchestration only; the helpers it drives live in four
+sibling modules: ``pbi_claim`` (inbox -> current claim), ``queue_git``
+(queue-clone git operations), ``worktree_manager`` (work-worktree
+lifecycle), and ``iteration_safety`` (sweep + cycle detector). The moved
+helpers are re-imported here under their old private names
+(``_claim_pbi``, ``_pull_queue``, ``_run_sweep``, ...) so internal call
+sites and iteration-level monkeypatch targets keep resolving.
 """
 
 from __future__ import annotations
@@ -35,20 +39,44 @@ import socket
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
-
-import yaml
-
-if TYPE_CHECKING:
-    from ralph_executor.url_utils import TargetRepoInfo
+from typing import Literal
 
 from ralph_executor import git_ops
 from ralph_executor.claude_spawn import ClaudeOutcome, spawn_claude_p
 from ralph_executor.config import ExecutorConfig
 from ralph_executor.git_ops import PushRebaseConflict
+
+# Re-imported under the old private names so internal callers, cli's
+# import, and loop-level monkeypatches keep working unchanged.
+from ralph_executor.iteration_safety import (
+    check_cycle_detector as _check_cycle_detector,
+)
+from ralph_executor.iteration_safety import (
+    pr_skill_scripts_path as _pr_skill_scripts_path,
+)
+from ralph_executor.iteration_safety import run_sweep
 from ralph_executor.lockfile import WorkspaceLockfile
+
+# Re-imported under the old private names so internal callers, the
+# resume path, except clauses, and loop-level monkeypatch / import
+# paths keep working unchanged.
+from ralph_executor.pbi_claim import (
+    ClaimError,
+)
+from ralph_executor.pbi_claim import (
+    claim_pbi as _claim_pbi,
+)
+from ralph_executor.pbi_claim import (
+    feature_branch_name as _feature_branch_name,
+)
+from ralph_executor.pbi_claim import (
+    read_target_repo_from_pbi as _read_target_repo_from_pbi,
+)
+from ralph_executor.pbi_claim import (
+    warn_project_toml_in_target_clone as _warn_project_toml_in_target_clone,
+)
 from ralph_executor.prompt_composer import PromptComposeError
 from ralph_executor.queue.filesystem import FilesystemQueueSource
 from ralph_executor.queue.movements import (
@@ -56,50 +84,55 @@ from ralph_executor.queue.movements import (
     move_current_to_blocked,
     move_current_to_pending_pr,
     move_inbox_to_blocked,
-    move_inbox_to_current,
 )
-from ralph_executor.queue_clone import ensure_queue_clone
+
+# Re-imported under the old private names so internal callers, cli's
+# deferred import, and loop-level monkeypatches keep working unchanged.
+from ralph_executor.queue_git import (
+    persist_iteration_writes as _persist_iteration_writes,
+)
+from ralph_executor.queue_git import (
+    pull_queue as _pull_queue,
+)
+from ralph_executor.queue_git import (
+    queue_repo_root as _queue_repo_root,
+)
 from ralph_executor.safety import (
     AttemptCounter,
     AttemptsExceeded,
     Event,
-    EventLog,
     EventType,
     HaltedError,
     HaltStatus,
     check_halt_sentinel,
-    evaluate_all,
-    halt_and_acknowledge,
     handle_stuck,
     open_log,
 )
 from ralph_executor.types import PBI
 from ralph_executor.worktree import (
     ensure_worktree,
-    remove_worktree,
     work_worktree_path,
 )
 
+# Re-imported under the old private name so internal callers and
+# loop-level monkeypatches keep working unchanged.
+from ralph_executor.worktree_manager import (
+    cleanup_work_worktree as _cleanup_work_worktree,
+)
+
+# Backward-compat alias so older except clauses / monkeypatch / import
+# paths keep resolving (exception classes alias cleanly).
+_ClaimError = ClaimError
+
+# Explicit re-exports (mypy strict no_implicit_reexport): cli.py and
+# the satellite test files import these old private names from loop
+# even though the functions now live in iteration_safety / pbi_claim.
+__all__ = [
+    "_pr_skill_scripts_path",
+    "_warn_project_toml_in_target_clone",
+]
+
 log = logging.getLogger(__name__)
-
-
-def _queue_repo_root(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone for this instance.
-
-    Scope 1 multi-ralph: the queue clone is namespaced per-instance at
-    ``<workspace_root>/queue-<instance_id>/``. Delegates to
-    :attr:`ExecutorConfig.queue_clone_path` so every module that needs
-    the path agrees with the executor's view.
-
-    The queue repo is cloned by ``ensure_queue_clone`` into this path
-    and owns ``.ralph/`` (events.db, sentinel, blocked/, …). Every
-    operation that reads or writes under ``.ralph/`` — opening the
-    event log, moving PBIs to ``.ralph/blocked/``, handling STUCK.md,
-    checking/writing the halt sentinel — routes through this helper so
-    the side-effects land in the queue clone that gets pushed to
-    ``origin/<queue_branch>`` of ``queue_repo``.
-    """
-    return cfg.queue_clone_path
 
 
 IterationOutcome = Literal[
@@ -125,251 +158,23 @@ class IterationResult:
     pr_url: str | None = None
 
 
-# ----------------------------------------------------------------------
-# Stubs for Plans 8 and 9
-# ----------------------------------------------------------------------
-
-
 def _run_sweep(cfg: ExecutorConfig, source: FilesystemQueueSource) -> None:
-    """Drive one sweep over ``.ralph/pending-pr/`` (Plan 8).
+    """Delegate to ``iteration_safety.run_sweep``, threading this module's
+    ``_pr_skill_scripts_path`` global through the resolver seam.
 
-    Builds a ``SweepContext`` from the executor config and current
-    environment, then delegates to ``ralph_executor.sweep.run``. The
-    ``source`` argument is unused — the sweep reads ``.ralph/pending-pr/``
-    directly from the filesystem so it can stay isolated from the queue
-    abstraction.
-
-    Production-safety: the sweep needs ``cfg.bot_author_email`` (used to
-    skip ralph-authored PR comments so the loop doesn't feed back into
-    itself) and a PR-skill scripts directory matching the configured git
-    host. If either is missing the sweep is skipped with a WARNING — the
-    loop must keep running rather than abort, since pre-Plan-8 deployments
-    and the bulk of the executor test suite don't set the author email.
-    Validation of ``cfg.stale_days`` (must be positive) lives in
-    ``config.load_config``; this function trusts the value.
+    Kept as a real ``def`` (not an aliased import) for two reasons:
+    tests patch ``ralph_executor.iteration._run_sweep`` directly
+    (orchestration seam), and tests patch
+    ``ralph_executor.iteration._pr_skill_scripts_path`` expecting the sweep
+    to see the stub — the call-time global lookup here is what makes
+    that interception work after the function moved modules.
     """
-    del source  # sweep walks the filesystem directly
-    if not cfg.bot_author_email:
-        log.warning(
-            "sweep: bot_author_email is not set (TOML key 'bot_author_email' "
-            "or env RALPH_ADO_AUTHOR_EMAIL); skipping sweep this iteration"
-        )
-        return
-
-    scripts_path = _pr_skill_scripts_path(cfg)
-    if not scripts_path.is_dir():
-        log.warning(
-            "sweep: PR-skill scripts directory not found at %s; skipping",
-            scripts_path,
-        )
-        return
-
-    from ralph_executor.sweep import run as run_sweep
-    from ralph_executor.sweep.runner import SweepConfig, SweepContext
-
-    sweep_cfg = SweepConfig(
-        ralph_author_email=cfg.bot_author_email,
-        max_attempts=cfg.max_attempts,
-        stale_threshold=timedelta(days=cfg.stale_days),
-        now=datetime.now(tz=UTC),
-        auto_merge_clean_prs=cfg.auto_merge_clean_prs,
-    )
-    # Open the event log so the sweep can emit cycle-detector events
-    # (Plan 19b: PR_MERGED + PBI_CLOSED on pending-pr → done,
-    # PR_GREEN_THEN_RED on green→red CI transitions). Close in a finally
-    # so a sweep-side crash never leaks the SQLite handle.
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        sweep_ctx = SweepContext(
-            # `.ralph/` lives in the queue clone at
-            # ``<workspace_root>/queue/`` — same path every read/write in
-            # this module routes through ``_queue_repo_root``.
-            queue_root=_queue_repo_root(cfg) / ".ralph",
-            ado_pr_scripts_path=scripts_path,
-            config=sweep_cfg,
-            # The queue clone is the single repo the sweep reads/writes
-            # (every PR scanned belongs to a target reachable from the
-            # queue's pending-pr index); label the sweep context with
-            # its directory name — by convention ``queue`` under
-            # ``workspace_root``.
-            repo_name=_queue_repo_root(cfg).name,
-            event_log=event_log,
-        )
-        result = run_sweep(ctx=sweep_ctx)
-    finally:
-        # Wrap close() so a failure here (e.g. sqlite flush error) does
-        # not mask an exception from run_sweep — losing the real cause
-        # makes post-mortem debugging much harder. Log close() failures
-        # at WARNING and let the original (if any) propagate unchanged.
-        try:
-            event_log.close()
-        except Exception as exc:
-            log.warning("sweep: event_log.close() failed: %s", exc)
-    log.info(
-        "sweep: scanned %d PBIs (actions=%d, errors=%d)",
-        result.pbis_scanned,
-        len(result.actions),
-        len(result.errors),
-    )
-
-
-def _warn_project_toml_in_target_clone(clone_root: Path) -> None:
-    """Emit a WARNING if ``<clone>/.ralph/config.toml`` exists.
-
-    Called after every successful ``ensure_clone`` so a freshly cloned
-    target gets exactly one WARNING per iteration that touches it. The
-    file is NOT loaded — project TOML is gone after this refactor. The
-    WARNING names the path so the operator can move the settings to
-    ``~/.ralph/config.toml`` and delete the file.
-
-    Detection failure (permission denied, transient I/O error reading
-    the clone) is suppressed at DEBUG so a flaky filesystem never
-    crashes the iteration.
-    """
-    cfg_file = clone_root / ".ralph" / "config.toml"
-    try:
-        present = cfg_file.is_file()
-    except OSError as exc:
-        log.debug("project-TOML check failed for %s: %s", cfg_file, exc)
-        return
-    if present:
-        log.warning(
-            "project TOML at %s is not supported -- ignored. "
-            "Move settings to ~/.ralph/config.toml.",
-            cfg_file,
-        )
-
-
-def _pr_skill_scripts_path(cfg: ExecutorConfig) -> Path:
-    """Return the on-disk scripts directory for the configured PR skill.
-
-    The scripts live in the ralph executor source tree (``skills/pr-github/``
-    or ``skills/ado-pr/``), NOT in any target / queue clone. We resolve
-    relative to the ``ralph_executor`` package location so the lookup is
-    independent of CWD and of any operator-supplied repo path.
-
-    ``cfg.git_host == "github"`` → ``<ralph-src>/skills/pr-github/scripts/``.
-    ``cfg.git_host == "ado"``    → ``<ralph-src>/skills/ado-pr/scripts/``.
-    Empty / unknown host: prefer ``pr-github`` if it exists, else fall
-    back to ``ado-pr`` (existence is verified by the caller).
-    """
-    import ralph_executor
-
-    ralph_src = Path(ralph_executor.__file__).resolve().parent.parent
-    host = (cfg.git_host or "").strip().lower()
-    if host == "github":
-        return ralph_src / "skills" / "pr-github" / "scripts"
-    if host == "ado":
-        return ralph_src / "skills" / "ado-pr" / "scripts"
-    pr_github = ralph_src / "skills" / "pr-github" / "scripts"
-    if pr_github.is_dir():
-        return pr_github
-    return ralph_src / "skills" / "ado-pr" / "scripts"
-
-
-def _check_cycle_detector(cfg: ExecutorConfig, source: FilesystemQueueSource) -> bool:
-    """Evaluate all cycle-detector rules against the recent event log.
-
-    Returns ``True`` if any signal tripped (and the loop should halt after
-    this call completes the META-BUG + sentinel write). Returns ``False``
-    when no signals fire.
-
-    The function is kept as a module-level callable so tests can monkeypatch
-    it without dependency-injection (reconciliation #9).
-    """
-    now = datetime.now(tz=UTC)
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        events = event_log.recent(window=timedelta(hours=72), now=now)
-    finally:
-        event_log.close()
-    signals = evaluate_all(events, now, cfg)
-    if not signals:
-        return False
-    log.warning(
-        "cycle detector tripped (%d signal(s)); writing META-BUG + sentinel",
-        len(signals),
-    )
-    halt_and_acknowledge(
-        repo=_queue_repo_root(cfg),
-        signals=signals,
-        now=now,
-        tripped_by_instance=cfg.instance_id,
-    )
-    return True
+    run_sweep(cfg, source, pr_skill_scripts_path=_pr_skill_scripts_path)
 
 
 # ----------------------------------------------------------------------
 # One iteration
 # ----------------------------------------------------------------------
-
-
-def _persist_iteration_writes(
-    cfg: ExecutorConfig,
-    pbi_id: str,
-    *,
-    event_log: EventLog | None = None,
-    now: datetime | None = None,
-) -> None:
-    """Commit + push any HISTORY.md/STUCK.md/PLAN.md edits Claude wrote
-    inside the current PBI dir during this iteration.
-
-    When the iteration outcome leaves the PBI in current/ (partial /
-    error), nothing else moves the directory, so those edits would sit
-    uncommitted in the working tree and be lost on the next iteration's
-    checkout.
-
-    Stages ONLY the PBI's directory under .ralph/current/<id>/ — not the
-    whole .ralph/ tree — so local-state artefacts (e.g.
-    .ralph/state/events.db) aren't accidentally committed every
-    iteration. No-ops cleanly when the index ends up empty and when the
-    PBI was already moved out of current/ by a sibling code path.
-
-    All git operations run against the queue clone at
-    ``<workspace_root>/queue/`` (materialised by ``_pull_queue`` earlier
-    in the iteration). The clone is its own working tree on ``main``;
-    no branch switching is required.
-
-    Emits ``FILE_TOUCHED`` to ``event_log`` when a new commit lands and
-    the diff is non-empty. The cycle detector reserves the event for
-    future per-iteration rules (no current rule reads it; emit for
-    forward compatibility).
-    """
-    queue_repo = _queue_repo_root(cfg)
-    pbi_dir = queue_repo / ".ralph" / "current" / pbi_id
-    if not pbi_dir.is_dir():
-        # PBI was already moved + committed + pushed by handle_stuck or
-        # move_current_to_pending_pr — both route through
-        # ``movements._move`` which runs ``git_ops.mv`` + ``commit_paths``
-        # + ``push_with_rebase`` inside the same call. Nothing remains
-        # in current/ for this helper to stage.
-        return
-    # Use add_all_changes so deletions of tracked files (e.g. Claude
-    # removing a resolved STUCK.md) are staged too — bare `git add <dir>`
-    # would skip them and leave index + working tree divergent.
-    git_ops.add_all_changes(queue_repo, pbi_dir)
-    head_before = git_ops.rev_parse_head(queue_repo)
-    message = f"chore(queue): persist iteration writes for {pbi_id}"
-    head_after = git_ops.commit_index(queue_repo, message)
-    if head_after != head_before:
-        log.info("persisted iteration writes for %s as %s", pbi_id, head_after[:7])
-        # push_with_rebase rebases the local persist commit onto a raced
-        # origin/main instead of failing the push outright. The
-        # caller (iterate_once) catches PushRebaseConflict and converts
-        # it to a recoverable LoopResult so the loop keeps running.
-        git_ops.push_with_rebase(queue_repo, remote="origin", branch=cfg.queue_branch)
-        if event_log is not None:
-            files = git_ops.diff_names(queue_repo, head_before, head_after)
-            if files:
-                recorded_at = now if now is not None else datetime.now(tz=UTC)
-                event_log.append(
-                    Event(
-                        kind=EventType.FILE_TOUCHED,
-                        recorded_at=recorded_at,
-                        pbi_id=pbi_id,
-                        payload={"files": files},
-                    )
-                )
 
 
 def _append_compose_error_to_history(
@@ -395,169 +200,6 @@ def _append_compose_error_to_history(
     )
     with history.open("a", encoding="utf-8") as handle:
         handle.write(entry)
-
-
-def _pull_queue(cfg: ExecutorConfig) -> None:
-    log.debug(
-        "refreshing queue clone for %s (branch=%s)",
-        cfg.queue_repo,
-        cfg.queue_branch,
-    )
-    ensure_queue_clone(
-        cfg.workspace_root,
-        cfg.queue_repo,
-        cfg.queue_branch,
-        instance_id=cfg.instance_id,
-    )
-
-
-def _feature_branch_name(pbi: PBI) -> str:
-    return f"ralph/{pbi.id}"
-
-
-class _ClaimError(RuntimeError):
-    """Raised when claim fails for a reason warranting blocked/ + HISTORY entry.
-
-    Caught by ``iterate_once``, which moves the PBI to ``blocked/<id>/`` and
-    appends the error message to HISTORY.md. Used by the multi-target claim
-    path (target_repo parse, host check, ensure_clone) where failures are
-    not retryable inside the loop itself.
-    """
-
-
-_ENTRY_FILENAMES: tuple[str, ...] = ("PBI.md", "BUG.md", "FEEDBACK.md")
-
-
-def _read_target_repo_from_pbi(pbi: PBI) -> str:
-    """Read the ``target_repo`` field from the PBI's entry-file frontmatter.
-
-    Probes ``PBI.md``, ``BUG.md``, ``FEEDBACK.md`` in order — matches
-    pbi_reader's entry-file discovery. Raises ``_ClaimError`` when the
-    entry file is missing, the YAML frontmatter cannot be parsed, or the
-    ``target_repo`` field is absent / empty.
-    """
-    entry: Path | None = None
-    for name in _ENTRY_FILENAMES:
-        candidate = pbi.path / name
-        if candidate.is_file():
-            entry = candidate
-            break
-    if entry is None:
-        raise _ClaimError(
-            f"PBI {pbi.id} has no entry file (looked for {', '.join(_ENTRY_FILENAMES)})"
-        )
-
-    text = entry.read_text(encoding="utf-8")
-    if not (text.startswith("---\n") or text.startswith("---\r\n")):
-        raise _ClaimError(f"PBI {pbi.id} entry file {entry.name} has no frontmatter fence")
-    lines = text.splitlines()
-    close_idx = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-    if close_idx is None:
-        raise _ClaimError(f"PBI {pbi.id} entry file {entry.name} has no closing fence")
-    try:
-        frontmatter = yaml.safe_load("\n".join(lines[1:close_idx]))
-    except yaml.YAMLError as exc:
-        raise _ClaimError(f"PBI {pbi.id} YAML parse error: {exc}") from exc
-    if not isinstance(frontmatter, dict):
-        raise _ClaimError(f"PBI {pbi.id} frontmatter is not a mapping")
-    target_repo = frontmatter.get("target_repo")
-    if not target_repo:
-        raise _ClaimError(f"PBI {pbi.id} missing target_repo field")
-    return str(target_repo)
-
-
-def _cleanup_work_worktree(cfg: ExecutorConfig, pbi: PBI) -> None:
-    """Remove the per-PBI work worktree on a terminal iteration outcome.
-
-    Called when the PBI leaves ``current/`` (pr_created → pending-pr,
-    handle_stuck → blocked, max-attempts → blocked). The feature branch
-    ``ralph/<PBI-ID>`` is preserved so pending-pr PBIs keep a branch to
-    point the PR at; only the working directory at
-    ``<clone-root>/.ralph-work/<PBI-id>/`` is torn down.
-
-    Locates the owning git repo via ``ensure_clone`` against the PBI's
-    ``target_repo`` URL — this is idempotent (no clone if already present,
-    just a fetch) and returns the same ``clone_root`` the claim used.
-    Calling ``ensure_clone`` again avoids relying on ``pbi.work_worktree``
-    (which is runtime-only and absent after a queue re-read between
-    iterations); there is no process-wide ``repo_path`` to fall back
-    onto after KILL-RALPH-HOME, so the deterministic clone root from
-    ``ensure_clone`` is the only honest source.
-
-    No-op in legacy single-checkout mode or when target_repo / ensure_clone
-    are unavailable (defensive). Tolerant of removal failures — an orphan
-    worktree is recoverable (operator can ``git worktree prune``), but
-    raising here would obscure the real terminal outcome the iteration is
-    reporting.
-    """
-    if not cfg.use_worktrees:
-        return
-    if pbi.work_worktree is not None:
-        work_wt = pbi.work_worktree
-        # Work worktrees live at <clone-root>/.ralph-work/<pbi-id>/, so
-        # the owning git repo is the worktree's grandparent.
-        owning_repo = work_wt.parent.parent
-    else:
-        # Re-derive clone_root from the PBI's target_repo field
-        # (populated by ``iterate_once`` immediately after the queue
-        # read so it survives the move_*_to_* operations that invalidate
-        # ``pbi.path``). Idempotent in production (fetch-only when clone
-        # already exists); honours the tests' monkeypatched
-        # ``ensure_clone`` so fixture clone_roots match what the claim
-        # used.
-        if not pbi.target_repo:
-            log.warning(
-                "PBI %s missing target_repo on terminal outcome; cannot "
-                "resolve work worktree path — orphan may remain",
-                pbi.id,
-            )
-            return
-        try:
-            from ralph_executor.url_utils import parse_target_repo
-
-            info = parse_target_repo(pbi.target_repo)
-        except ValueError:
-            log.warning(
-                "failed to parse target_repo for PBI %s; orphan work worktree may remain",
-                pbi.id,
-                exc_info=True,
-            )
-            return
-        # Compute owning_repo deterministically (workspace_root + owner +
-        # name) rather than via a fresh ``ensure_clone`` — a transient
-        # fetch failure shouldn't leave the worktree behind, and the path
-        # itself is fully determined by the URL components. Tests
-        # monkeypatch ``ensure_clone`` to return a divergent clone_root
-        # (fake_repo), so honour that override when present by calling
-        # ensure_clone and using its return value if it succeeds.
-        owning_repo = cfg.workspace_root / "clones" / info.owner / info.name
-        try:
-            from ralph_executor.target_clone import ensure_clone
-
-            clone = ensure_clone(info, workspace_root=cfg.workspace_root)
-            owning_repo = clone.clone_root
-        except Exception:
-            log.warning(
-                "ensure_clone failed for PBI %s; using deterministic clone path",
-                pbi.id,
-                exc_info=True,
-            )
-        if not (owning_repo / ".git").exists():
-            log.warning(
-                "owning repo %s has no .git; cannot remove worktree for PBI %s",
-                owning_repo,
-                pbi.id,
-            )
-            return
-        work_wt = work_worktree_path(owning_repo, pbi.id)
-    try:
-        remove_worktree(owning_repo, work_wt)
-    except Exception:
-        log.warning(
-            "failed to remove work worktree at %s; orphan left for manual prune",
-            work_wt,
-            exc_info=True,
-        )
 
 
 def _move_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reason: str) -> None:
@@ -598,110 +240,6 @@ def _move_current_to_blocked_with_reason(cfg: ExecutorConfig, pbi: PBI, *, reaso
     existing = history.read_text(encoding="utf-8") if history.is_file() else ""
     history.write_text(existing + entry, encoding="utf-8")
     move_current_to_blocked(cfg, pbi)
-
-
-def _claim_pbi(cfg: ExecutorConfig, pbi: PBI) -> PBI:
-    """Move PBI into current/ and create the per-PBI feature branch.
-
-    Multi-target prelude:
-      0. ``_read_target_repo_from_pbi`` — read ``target_repo`` from the
-         PBI entry-file frontmatter.
-      0b. ``parse_target_repo`` — split into host/owner/name; ValueError
-          surfaces as ``_ClaimError('invalid target_repo URL: …')``.
-      0c. Host gate — only ``github.com`` is supported on this PBI;
-          other hosts raise ``_ClaimError('unsupported host …')``.
-
-    Claim body (always runs ``_claim_pbi_worktree``):
-      1. ``target_clone.ensure_clone`` — clone-once / fetch-each-iter the
-         target repo into ``<workspace_root>/clones/<owner>-<name>/``;
-         ``TargetUnreachable`` maps to ``_ClaimError('target unreachable: …')``.
-      2. ``move_inbox_to_current`` operates against the queue clone at
-         ``<workspace_root>/queue/`` (movements._move resolves the path
-         via ``_queue_repo_root``).
-      3. Materialise the per-PBI work worktree INSIDE the target clone at
-         ``<clone_root>/.ralph-work/<PBI-ID>/`` on ``ralph/<PBI-ID>``,
-         forked from the clone's ``origin/<main_branch>`` when the branch
-         is new.
-
-    The Stage-A single-checkout legacy branch-dance is gone — the queue
-    is its own clone now, not a branch on the primary checkout, and
-    ``load_config`` rejects ``use_worktrees=False`` outright.
-    """
-    from ralph_executor.url_utils import parse_target_repo
-
-    target_url = _read_target_repo_from_pbi(pbi)
-    try:
-        info = parse_target_repo(target_url)
-    except ValueError as exc:
-        raise _ClaimError(f"invalid target_repo URL: {exc}") from exc
-    if info.host != "github.com":
-        raise _ClaimError(f"unsupported host {info.host!r} (only github.com is supported)")
-
-    return _claim_pbi_worktree(cfg, pbi, target_url=target_url, info=info)
-
-
-def _claim_pbi_worktree(
-    cfg: ExecutorConfig,
-    pbi: PBI,
-    *,
-    target_url: str,
-    info: TargetRepoInfo,
-) -> PBI:
-    """Worktree-mode implementation of ``_claim_pbi``.
-
-    The primary checkout's branch is never touched. ``.ralph/`` reads
-    and writes go through the queue clone at ``<workspace_root>/queue/``
-    (materialised earlier by ``_pull_queue`` → ``ensure_queue_clone``);
-    code edits go through the per-PBI work worktree, which lives INSIDE
-    the target's clone (``<workspace_root>/clones/<owner>/<name>/.ralph-work/<PBI-ID>/``).
-    """
-    from dataclasses import replace
-
-    from ralph_executor import target_clone as tc_mod
-
-    try:
-        clone = tc_mod.ensure_clone(info, workspace_root=cfg.workspace_root)
-    except tc_mod.TargetUnreachable as exc:
-        raise _ClaimError(f"target unreachable: {exc}") from exc
-    _warn_project_toml_in_target_clone(clone.clone_root)
-    # Pre-flight the base ref BEFORE the inbox -> current move. An empty
-    # target repo (no commits, no main branch) would otherwise crash
-    # ``ensure_worktree`` below with a raw ``GitCommandError`` after the
-    # PBI has already been promoted to ``current/`` — taking the loop
-    # down AND stranding the PBI with no worktree. Routing this through
-    # ``_ClaimError`` here keeps the claim atomic and lets ``iterate_once``
-    # demote the PBI inbox -> blocked with the reason in HISTORY.md.
-    if not git_ops.is_branch_remote(clone.clone_root, cfg.main_branch):
-        raise _ClaimError(
-            f"target repo {target_url} has no origin/{cfg.main_branch} "
-            f"(target may be empty or the main branch is misnamed)"
-        )
-    event_log = open_log(_queue_repo_root(cfg))
-    try:
-        moved = move_inbox_to_current(
-            cfg,
-            pbi,
-            event_log=event_log,
-            now=datetime.now(tz=UTC),
-            instance_id=cfg.instance_id,
-            hostname=socket.gethostname(),
-        )
-    finally:
-        event_log.close()
-    branch = _feature_branch_name(moved)
-    work_wt = work_worktree_path(clone.clone_root, moved.id)
-    ensure_worktree(
-        clone.clone_root,
-        worktree_path=work_wt,
-        branch=branch,
-        create_branch_from=f"origin/{cfg.main_branch}",
-    )
-    return replace(
-        moved,
-        target_repo=target_url,
-        target_info=info,
-        work_worktree=work_wt,
-    )
 
 
 def _run_ralph(cfg: ExecutorConfig, pbi: PBI) -> tuple[ClaudeOutcome, IterationResult]:
@@ -978,8 +516,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
 
     ``.ralph/`` lives in the queue clone at ``<workspace_root>/queue/``;
     callers inspect it via ``_queue_repo_root(cfg)`` (the primary
-    checkout is never branch-swapped — that single-checkout model is
-    gone).
+    checkout is never branch-swapped).
 
     Raises ``HaltedError`` if the halt sentinel is active (Plan 9 Layer 3).
     """
@@ -1019,14 +556,14 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
             target_url = _read_target_repo_from_pbi(current)
         except _ClaimError:
             target_url = ""
-        # Parse the URL outside the worktree-mode guard so non-worktree
-        # mode resumed PBIs also get target_info populated — without it
+        # Parse the URL outside the info guard so resumed PBIs get
+        # target_info populated — without it
         # ``spawn_claude_p``'s ``GH_OWNER`` injection (guarded by
         # ``pbi.target_info is not None``) silently no-ops for every
         # iteration after the first, and any ``gh`` / ``pr-github`` call
         # the spawned Claude makes uses the wrong (or absent) owner.
-        # TargetRepoInfo is imported into this module's TYPE_CHECKING
-        # block; ``None`` is annotation enough at runtime.
+        # No ``TargetRepoInfo`` annotation needed — ``None`` plus the
+        # ``parse_target_repo`` return type infer it.
         info = None
         if target_url:
             try:
@@ -1037,7 +574,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
                 # owner, same as legacy behaviour before this PR.
                 info = None
         work_wt: Path | None = None
-        if cfg.use_worktrees and info is not None:
+        if info is not None:
             # ``clone_root`` is fully determined by workspace_root + owner +
             # name; compute deterministically so a transient fetch failure
             # (network blip, auth expired, etc.) does NOT leave
@@ -1162,7 +699,7 @@ def _iterate_once_inner(cfg: ExecutorConfig) -> IterationResult:
             )
         return result
 
-    # Current empty → sweep (Plan 8 stub), pick next, claim if any.
+    # Current empty → run the sweep, pick next, claim if any.
     _run_sweep(cfg, source)
 
     picked = source.pick_next()

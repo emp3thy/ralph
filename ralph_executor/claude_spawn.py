@@ -95,17 +95,15 @@ def _pbi_frontmatter_has_signature(pbi: PBI) -> bool:
 
 
 def _queue_repo_root_for_spawn(cfg: ExecutorConfig) -> Path:
-    """Filesystem path of the queue clone (replica of ``loop._queue_repo_root``).
+    """Filesystem path of the queue clone (replica of ``queue_git.queue_repo_root``).
 
-    Replicated here rather than imported to avoid a ``claude_spawn`` ->
-    ``loop`` circular import (``loop`` already imports ``spawn_claude_p``
-    from this module). The body must stay in sync with
-    ``ralph_executor.loop._queue_repo_root``; that function is the single
-    source of truth for the queue-clone path in non-spawn code paths.
-    The PLAN template proposed a ``cfg.use_worktrees`` branch, but
-    ``load_config`` rejects ``use_worktrees=False`` at config-load time,
-    so the branch is unreachable; this replica mirrors the loop helper
-    exactly.
+    Replicated here rather than imported — the helper originally lived in
+    the loop module, where importing it would have created a
+    ``claude_spawn`` -> loop circular import (the loop module, now
+    ``iteration``, imports ``spawn_claude_p`` from this module). The body
+    must stay in sync with ``ralph_executor.queue_git.queue_repo_root``;
+    that function is the single source of truth for the queue-clone path
+    in non-spawn code paths.
     """
     return cfg.queue_clone_path
 
@@ -128,8 +126,7 @@ def _build_argv(cfg: ExecutorConfig, *, pbi_dir: Path, pbi: PBI) -> list[str]:
     ``docs/superpowers/specs/2026-05-31-prompt-md-split-design.md``.
 
     ``pbi_dir`` is the absolute on-disk path Claude should read/write.
-    In legacy single-checkout mode it equals ``pbi.path``; in worktree
-    mode it points into the queue worktree (``.ralph-work/queue/.ralph/
+    It points into the queue worktree (``.ralph-work/queue/.ralph/
     current/<id>/``) rather than the work worktree where Claude's cwd
     is rooted. ``pbi`` is forwarded so the composer can pick the
     per-type assembly (feature/bug/pr-feedback).
@@ -386,7 +383,8 @@ def _build_subprocess_env(
     # Per-PBI owner so the spawned Claude's ``pr-github`` skill (and any
     # ``gh`` invocation that reads GH_OWNER) writes to the target repo
     # owner from ``pbi.target_repo``, not whatever owner the operator
-    # configured for ralph itself. None in legacy single-target mode.
+    # configured for ralph itself. ``target_info`` is None when the PBI's
+    # ``target_repo`` frontmatter is missing or malformed.
     if pbi.target_info is not None:
         env["GH_OWNER"] = pbi.target_info.owner
         # Per-PBI better-memory project scope so the subagent's observations
@@ -396,10 +394,11 @@ def _build_subprocess_env(
         # memory-project-env-override).
         env["BETTER_MEMORY_PROJECT"] = pbi.target_info.name
     else:
-        # Legacy single-target mode — strip any BETTER_MEMORY_PROJECT
-        # inherited from ralph's parent env so the subagent's
-        # observations don't leak into whatever project name the
-        # operator happens to have set for ralph itself.
+        # No target info (missing or malformed ``target_repo``
+        # frontmatter) — strip any BETTER_MEMORY_PROJECT inherited from
+        # ralph's parent env so the subagent's observations don't leak
+        # into whatever project name the operator happens to have set
+        # for ralph itself.
         env.pop("BETTER_MEMORY_PROJECT", None)
     # Autobug recursion guard: when the spawned Claude is itself iterating
     # on an autobug PBI, mark the child env so any further crash inside
@@ -434,11 +433,11 @@ def spawn_claude_p(
     can be spawned.
 
     ``pbi_dir`` overrides the on-disk PBI directory the spawned Claude
-    reads/writes; defaults to ``pbi.path`` for legacy mode. In worktree
-    mode the loop passes the absolute path under the queue worktree so
-    Claude finds ``.ralph/current/<id>/`` even though its cwd is the
-    work worktree. The value is forwarded both as the ``RALPH_PBI_DIR``
-    environment variable and as the path substituted into the prompt.
+    reads/writes; defaults to ``pbi.path`` when omitted. The loop passes
+    the absolute path under the queue worktree so Claude finds
+    ``.ralph/current/<id>/`` even though its cwd is the work worktree.
+    The value is forwarded both as the ``RALPH_PBI_DIR`` environment
+    variable and as the path substituted into the prompt.
 
     Both overrides are validated as existing directories before exec so
     a misconfigured worktree fails fast with a clear error rather than

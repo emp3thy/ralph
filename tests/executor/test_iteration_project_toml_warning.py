@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ralph_executor.loop import _warn_project_toml_in_target_clone
+from ralph_executor.iteration import _warn_project_toml_in_target_clone
 
 
 def test_warns_when_project_toml_present(
@@ -16,7 +16,7 @@ def test_warns_when_project_toml_present(
     cfg_file = clone_root / ".ralph" / "config.toml"
     cfg_file.write_text("# legacy project TOML\n", encoding="utf-8")
 
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+    with caplog.at_level("WARNING", logger="ralph_executor.pbi_claim"):
         _warn_project_toml_in_target_clone(clone_root)
 
     messages = [r.getMessage() for r in caplog.records]
@@ -32,7 +32,7 @@ def test_no_warning_when_project_toml_absent(
     clone_root = tmp_path / "clones" / "acme" / "widget"
     clone_root.mkdir(parents=True)
 
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+    with caplog.at_level("WARNING", logger="ralph_executor.pbi_claim"):
         _warn_project_toml_in_target_clone(clone_root)
 
     assert caplog.records == []
@@ -45,7 +45,7 @@ def test_no_warning_when_clone_root_missing(
     """Defensive: never crash on a clone_root that doesn't exist."""
     clone_root = tmp_path / "does" / "not" / "exist"
 
-    with caplog.at_level("WARNING", logger="ralph_executor.loop"):
+    with caplog.at_level("WARNING", logger="ralph_executor.pbi_claim"):
         _warn_project_toml_in_target_clone(clone_root)
 
     assert caplog.records == []
@@ -65,7 +65,7 @@ def test_permission_denied_logged_at_debug(
 
     monkeypatch.setattr(Path, "is_file", _boom)
 
-    with caplog.at_level("DEBUG", logger="ralph_executor.loop"):
+    with caplog.at_level("DEBUG", logger="ralph_executor.pbi_claim"):
         _warn_project_toml_in_target_clone(clone_root)
 
     # No WARNING records emitted.
