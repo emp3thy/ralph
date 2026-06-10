@@ -784,38 +784,18 @@ def _resolve_host_settings(toml_overrides: Mapping[str, Any], source_label: str)
     )
 
 
-def load_config() -> ExecutorConfig:
-    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+class _TimeoutSettings(NamedTuple):
+    bot_author_email: str
+    stale_days: int
+    bash_max_timeout_ms: int
+    claude_session_timeout_seconds: int
+    pr_check_poll_max_attempts: int
+    pr_check_poll_interval_seconds: float
 
-    The executor is queue-driven: ``ExecutorConfig`` has no
-    ``repo_path``. ``workspace_root`` is the only configured root; every
-    per-iteration target clone is materialised under
-    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
-    ``target_repo`` frontmatter.
 
-    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
-    empty string means "use claude CLI's OAuth session".
-    """
-    from ralph_executor.user_config import (
-        _warn_stale_ralph_home_in_user_config,
-        user_config_path,
-    )
-
-    _warn_stale_ralph_home_in_user_config()
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    toml_overrides = _load_user_toml_overrides()
-    source_label = str(user_config_path())
-
-    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
-    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
-    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
-        toml_overrides, source_label
-    )
-    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
-    git_host, gh_owner, ado_org_url, ado_project, halt_webhook = _resolve_host_settings(
-        toml_overrides, source_label
-    )
+def _resolve_timeout_settings(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _TimeoutSettings:
     bot_author_email = _resolve_str(
         name="bot_author_email",
         env_name="RALPH_ADO_AUTHOR_EMAIL",
@@ -869,6 +849,25 @@ def load_config() -> ExecutorConfig:
         default=DEFAULT_PR_CHECK_POLL_INTERVAL_SECONDS,
         source_label=source_label,
     )
+    return _TimeoutSettings(
+        bot_author_email=bot_author_email,
+        stale_days=stale_days,
+        bash_max_timeout_ms=bash_max_timeout_ms,
+        claude_session_timeout_seconds=claude_session_timeout_seconds,
+        pr_check_poll_max_attempts=pr_check_poll_max_attempts,
+        pr_check_poll_interval_seconds=pr_check_poll_interval_seconds,
+    )
+
+
+class _WorkspaceSettings(NamedTuple):
+    use_worktrees: bool
+    auto_merge_clean_prs: bool
+    workspace_root: Path
+
+
+def _resolve_workspace_settings(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _WorkspaceSettings:
     use_worktrees = _resolve_bool(
         name="use_worktrees",
         env_name="RALPH_USE_WORKTREES",
@@ -913,6 +912,23 @@ def load_config() -> ExecutorConfig:
             f"{source_label}: workspace_root parent {workspace_root.parent} "
             "does not exist. Create it (or change workspace_root)."
         )
+    return _WorkspaceSettings(
+        use_worktrees=use_worktrees,
+        auto_merge_clean_prs=auto_merge_clean_prs,
+        workspace_root=workspace_root,
+    )
+
+
+class _SweepThresholds(NamedTuple):
+    same_file_min_prs: int
+    same_file_window_hours: float
+    watch_mode: bool
+    idle_exit_threshold: int
+
+
+def _resolve_sweep_thresholds(
+    toml_overrides: Mapping[str, Any], source_label: str
+) -> _SweepThresholds:
     same_file_min_prs = _resolve_int(
         name="same_file_min_prs",
         env_name="RALPH_SAME_FILE_MIN_PRS",
@@ -954,6 +970,63 @@ def load_config() -> ExecutorConfig:
         raise ConfigError(
             f"{source_label}: idle_exit_threshold must be positive (got {idle_exit_threshold})"
         )
+    return _SweepThresholds(
+        same_file_min_prs=same_file_min_prs,
+        same_file_window_hours=same_file_window_hours,
+        watch_mode=watch_mode,
+        idle_exit_threshold=idle_exit_threshold,
+    )
+
+
+def load_config() -> ExecutorConfig:
+    """Read defaults < ``~/.ralph/config.toml`` < env, and validate.
+
+    The executor is queue-driven: ``ExecutorConfig`` has no
+    ``repo_path``. ``workspace_root`` is the only configured root; every
+    per-iteration target clone is materialised under
+    ``<workspace_root>/clones/<owner>/<name>/`` from the active PBI's
+    ``target_repo`` frontmatter.
+
+    ``ANTHROPIC_API_KEY`` is optional and env-only by policy (secret);
+    empty string means "use claude CLI's OAuth session".
+    """
+    from ralph_executor.user_config import (
+        _warn_stale_ralph_home_in_user_config,
+        user_config_path,
+    )
+
+    _warn_stale_ralph_home_in_user_config()
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    toml_overrides = _load_user_toml_overrides()
+    source_label = str(user_config_path())
+
+    queue_repo = _resolve_queue_repo(toml_overrides, source_label)
+    main_branch, queue_branch = _resolve_branches(toml_overrides, source_label)
+    max_attempts, log_level, iteration_sleep_seconds = _resolve_runtime_knobs(
+        toml_overrides, source_label
+    )
+    claude_binary, claude_permission_mode = _resolve_claude_settings(toml_overrides, source_label)
+    git_host, gh_owner, ado_org_url, ado_project, halt_webhook = _resolve_host_settings(
+        toml_overrides, source_label
+    )
+    (
+        bot_author_email,
+        stale_days,
+        bash_max_timeout_ms,
+        claude_session_timeout_seconds,
+        pr_check_poll_max_attempts,
+        pr_check_poll_interval_seconds,
+    ) = _resolve_timeout_settings(toml_overrides, source_label)
+    use_worktrees, auto_merge_clean_prs, workspace_root = _resolve_workspace_settings(
+        toml_overrides, source_label
+    )
+    (
+        same_file_min_prs,
+        same_file_window_hours,
+        watch_mode,
+        idle_exit_threshold,
+    ) = _resolve_sweep_thresholds(toml_overrides, source_label)
 
     # Multi-ralph (Scope 1) instance_id. The CLI flag layer plugs in via
     # ``ralph_executor.cli._apply_overrides`` (added in a follow-up task);
