@@ -441,16 +441,18 @@ class TestAttemptDivergence:
 
 class TestBlockedGrowth:
     def test_trips_when_blocks_exceed_closes(self, now: datetime) -> None:
+        # Trip requires MIN_BLOCKS=15 and ratio >= 3.0 — see the raised
+        # thresholds in ralph_executor/safety/cycle_detector.py.
         events: list[Event] = []
-        for i in range(6):
+        for i in range(16):
             events.append(
                 make_event(
                     kind=EventType.PBI_BLOCKED,
-                    recorded_at=offset(now, hours=-(20 - i)),
+                    recorded_at=offset(now, hours=-(20 - i % 16)),
                     pbi_id=f"WI-B{i}",
                 )
             )
-        for i in range(2):
+        for i in range(5):
             events.append(
                 make_event(
                     kind=EventType.PBI_MERGED,
@@ -461,6 +463,19 @@ class TestBlockedGrowth:
         signal = evaluate_blocked_growth(_events(events), now)
         assert signal is not None
         assert signal.kind == SignalKind.BLOCKED_GROWTH
+
+    def test_no_trip_below_min_blocks(self, now: datetime) -> None:
+        # 14 blocks is just below MIN_BLOCKS=15 even if the ratio looks bad.
+        events: list[Event] = []
+        for i in range(14):
+            events.append(
+                make_event(
+                    kind=EventType.PBI_BLOCKED,
+                    recorded_at=offset(now, hours=-(20 - i % 14)),
+                    pbi_id=f"WI-B{i}",
+                )
+            )
+        assert evaluate_blocked_growth(_events(events), now) is None
 
     def test_no_trip_when_closes_outpace_blocks(self, now: datetime) -> None:
         events: list[Event] = []

@@ -89,6 +89,42 @@ def test_main_wrapper_skips_autobug_when_disabled(
     assert called is False
 
 
+def test_main_wrapper_skips_autobug_for_halted_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """HaltedError is the intentional safety halt — autobug must NOT file it
+    as a python_crash, otherwise every cycle-detector trip emits a fresh
+    autobug PBI that itself contributes to blocked_growth on the next sweep,
+    re-tripping the detector in a closed loop.
+    """
+    from ralph_executor.safety.halt import HaltedError
+
+    called = 0
+
+    def _track(exc: BaseException, ctx: object, **kw: object) -> None:
+        nonlocal called
+        called += 1
+
+    monkeypatch.setattr(autobug, "detect_python_crash", _track)
+
+    def halting_iter(cfg: ExecutorConfig):  # type: ignore[no-untyped-def]
+        if False:
+            yield
+        raise HaltedError(
+            meta_bug_id="META-cycle-TEST",
+            meta_bug_path=tmp_path / "META.md",
+            sentinel_path=tmp_path / "halted",
+        )
+
+    monkeypatch.setattr(cli, "run_loop", halting_iter)
+    cfg = _build_cfg()
+    # Wrapper should exit cleanly (return 0), NOT re-raise HaltedError, and
+    # NOT call autobug. Same shape as the KeyboardInterrupt branch.
+    rc = cli.run_loop_with_autobug(cfg)
+    assert rc == 0, f"wrapper must exit cleanly on halt; got rc={rc}"
+    assert called == 0, f"autobug must not fire for HaltedError; got {called} calls"
+
+
 def test_main_wrapper_skips_autobug_when_already_emitted_by_inner_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

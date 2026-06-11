@@ -503,6 +503,8 @@ def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
     3. ``KeyboardInterrupt`` short-circuits cleanly and does NOT trigger
        autobug emission.
     """
+    from ralph_executor.safety.halt import HaltedError
+
     try:
         for result in run_loop(cfg):
             log.info(
@@ -516,6 +518,16 @@ def run_loop_with_autobug(cfg: ExecutorConfig) -> int:
         return 0
     except KeyboardInterrupt:
         log.info("interrupted; exiting cleanly")
+        return 0
+    except HaltedError as halted:
+        # Intentional safety halt — NOT a crash. If we let this fall through
+        # to the BaseException branch, autobug would file the halt as a fresh
+        # python_crash PBI on every restart, that PBI lands in blocked/, the
+        # cycle detector sees blocked/ growing, trips again, halts again,
+        # autobug files it again — a closed feedback loop the operator can
+        # only break by deleting the autobug PBIs by hand. Mirror the
+        # KeyboardInterrupt path: log and exit 0.
+        log.warning("halt sentinel active: %s -- exiting", halted)
         return 0
     except BaseException as original_exc:
         if getattr(cfg, "autobug_enabled", True) and not getattr(
