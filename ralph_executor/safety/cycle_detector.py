@@ -47,8 +47,15 @@ ATTEMPT_RECENT_MIN_PBIS = 3
 ATTEMPT_BASELINE_MIN_PBIS = 5
 ATTEMPT_DIVERGENCE_DELTA = 1.5
 BLOCKED_GROWTH_WINDOW = timedelta(hours=24)
-BLOCKED_GROWTH_MIN_BLOCKS = 5
-BLOCKED_GROWTH_RATIO_THRESHOLD = 1.5
+# Raised from 5 to 15 after a real-world false-positive: a brief autobug
+# storm (HaltedError mis-capture loop, fixed separately in cli.py) tripped
+# the detector at min=5 even though the underlying signal was healthy
+# operator triage, not a degenerating queue.
+BLOCKED_GROWTH_MIN_BLOCKS = 15
+# Raised from 1.5 to 3.0 for the same reason — small block bursts paired
+# with low close volume should not page the operator until the ratio is
+# clearly pathological.
+BLOCKED_GROWTH_RATIO_THRESHOLD = 3.0
 
 
 # ----------------------------------------------------------------------
